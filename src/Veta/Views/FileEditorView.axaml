@@ -1,0 +1,10 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Veta.ViewModels"
+             xmlns:behaviors="using:Veta.Behaviors"
+             x:Class="Veta.Views.FileEditorView"
+             x:DataType="vm:FileEditorViewModel">
+    <DataGrid ItemsSource="{Binding Rows}"
+              behaviors:DataGridColumnsBehavior.ColumnNames="{Binding ColumnNames}"
+              IsReadOnly="True"/>
+</UserControl>

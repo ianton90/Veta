@@ -48,7 +48,17 @@ Follow the [Microsoft C# Coding Conventions](https://learn.microsoft.com/en-us/d
 - No unnecessary comments — code should be self-explanatory
 - No over-engineering — don't add abstractions until they're needed
 - No premature optimization
+- No ceremony — prefer flat, direct code over intermediate variables and nested assignments
+
+## Localization
+
+- All user-visible strings must be localized — no hardcoded strings in Views or ViewModels
+- Translation files are JSON, one per language: `Resources/Translations/Translation.en.json`, `Resources/Translations/Translation.es.json`, etc.
+- The `Localizer` service (in `Services/Localizer.cs`) auto-detects the system language and loads the appropriate file, falling back to English
+- Access strings in ViewModels via `Localizer.Get("KeyName")`
+- In XAML, bind via the ViewModel — expose localized strings as ViewModel properties
 
 ## Files
 - One class per file
 - File name must match the class name (e.g. `ParquetFile.cs` contains `class ParquetFile`)
+

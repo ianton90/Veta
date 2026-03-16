@@ -10,11 +10,33 @@
         Title="Veta">
 
     <Design.DataContext>
-        <!-- This only sets the DataContext for the previewer in an IDE,
-             to set the actual DataContext for runtime, set the DataContext property in code (look at App.axaml.cs) -->
         <vm:MainWindowViewModel/>
     </Design.DataContext>
 
-    <TextBlock Text="{Binding Greeting}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    <DockPanel>
+        <Menu DockPanel.Dock="Top">
+            <MenuItem Header="{Binding FileMenuHeader}">
+                <MenuItem Header="{Binding NewFileHeader}" Command="{Binding NewFileCommand}"/>
+                <MenuItem Header="{Binding OpenFileHeader}" Command="{Binding OpenFileCommand}"/>
+                <Separator/>
+                <MenuItem Header="{Binding SaveHeader}" Command="{Binding SaveCommand}"/>
+                <MenuItem Header="{Binding SaveAsHeader}" Command="{Binding SaveAsCommand}"/>
+                <Separator/>
+                <MenuItem Header="{Binding OptionsHeader}" Command="{Binding OptionsCommand}"/>
+                <Separator/>
+                <MenuItem Header="{Binding ExitHeader}" Command="{Binding ExitCommand}"/>
+            </MenuItem>
+        </Menu>
+        <TabControl ItemsSource="{Binding Tabs}">
+            <TabControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:FileEditorViewModel">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="{Binding Title}" VerticalAlignment="Center"/>
+                        <Button Content="×" Command="{Binding CloseCommand}" Padding="4,0"/>
+                    </StackPanel>
+                </DataTemplate>
+            </TabControl.ItemTemplate>
+        </TabControl>
+    </DockPanel>
 
 </Window>
