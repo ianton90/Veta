@@ -50,6 +50,7 @@ pub fn run(files: Vec<PathBuf>) -> iced::Result {
     .title(App::title)
     .theme(App::theme)
     .subscription(App::subscription)
+    .exit_on_close_request(false)
     .settings(iced::Settings {
         default_font: font,
         default_text_size: Pixels(size),
@@ -172,6 +173,25 @@ struct App {
     menu: Option<ContextMenu>,
     /// Document being saved; the window is blocked meanwhile.
     saving: Option<DocumentId>,
+    /// Tabs being closed, waiting for "save changes?" answers.
+    closing: Option<Closing>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Closing {
+    /// Documents still to close, in order. The first one is being asked
+    /// about when it has unsaved changes.
+    queue: Vec<DocumentId>,
+    /// Quit the app once all are closed.
+    exit: bool,
+}
+
+/// Answer to "save changes before closing?".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseAnswer {
+    Save,
+    Discard,
+    Cancel,
 }
 
 /// An open right-click menu.
@@ -231,6 +251,9 @@ enum Dialog {
         document: DocumentId,
         dialog: MetadataDialog,
     },
+    ConfirmClose {
+        document: DocumentId,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -248,6 +271,8 @@ enum Message {
     DismissError(usize),
     Settings(SettingsMessage),
     CloseDialog,
+    CloseRequested,
+    CloseAnswer(CloseAnswer),
     /// Esc: closes a dialog or cancels an edit.
     Escape,
     EditInput(String),
@@ -306,6 +331,7 @@ impl App {
             edit: None,
             menu: None,
             saving: None,
+            closing: None,
         };
         let open = app.open(files);
         let system = iced::system::theme().map(Message::SystemMode);
@@ -314,6 +340,7 @@ impl App {
 
     fn title(&self) -> String {
         match self.active_document() {
+            Some((_, doc)) if doc.is_modified() => format!("● {} — Veta", doc.title()),
             Some((_, doc)) => format!("{} — Veta", doc.title()),
             None => "Veta".to_owned(),
         }
@@ -366,6 +393,7 @@ impl App {
         });
         Subscription::batch([
             events,
+            window::close_requests().map(|_| Message::CloseRequested),
             iced::system::theme_changes().map(Message::SystemMode),
         ])
     }
@@ -417,13 +445,28 @@ impl App {
                             }
                         }
                         self.refresh(id);
+                        if self
+                            .closing
+                            .as_ref()
+                            .is_some_and(|c| c.queue.first() == Some(&id))
+                        {
+                            return self.continue_closing();
+                        }
                     }
                     Ok(None) => {}
-                    Err(e) => self.errors.push(format!("Could not save: {e}")),
+                    Err(e) => {
+                        self.errors.push(format!("Could not save: {e}"));
+                        self.closing = None;
+                    }
                 }
             }
             Message::SelectTab(id) => self.active = Some(id),
-            Message::CloseTab(id) => self.close(id),
+            Message::CloseTab(id) => return self.request_close(vec![id], false),
+            Message::CloseRequested => {
+                let all = self.tabs.iter().map(|t| t.id).collect();
+                return self.request_close(all, true);
+            }
+            Message::CloseAnswer(answer) => return self.answer_close(answer),
             Message::Grid(id, event) => match event {
                 GridEvent::StartEdit { initial } => return self.start_edit(id, initial),
                 GridEvent::InsertRows => self.insert_rows(id, false),
@@ -594,6 +637,7 @@ impl App {
                 if self.menu.take().is_some() {
                 } else if self.dialog.is_some() {
                     self.dialog = None;
+                    self.closing = None;
                 } else if self.edit.take().is_some() {
                     return iced::widget::operation::focus(GRID_ID);
                 }
@@ -616,7 +660,10 @@ impl App {
                     }
                 }
             }
-            Message::CloseDialog => self.dialog = None,
+            Message::CloseDialog => {
+                self.dialog = None;
+                self.closing = None;
+            }
             Message::SystemMode(mode) => {
                 self.system_mode = match mode {
                     iced::theme::Mode::Light => Some(Mode::Light),
@@ -637,7 +684,7 @@ impl App {
             }
             Action::Close => {
                 if let Some(id) = self.active {
-                    self.close(id);
+                    return self.request_close(vec![id], false);
                 }
             }
             Action::Save => {
@@ -811,6 +858,72 @@ impl App {
             )
         {
             tab.grid.select_rows(at..at + count, doc);
+        }
+    }
+
+    /// Closes documents, asking about unsaved changes first. With `exit`,
+    /// quits the app afterwards.
+    fn request_close(&mut self, documents: Vec<DocumentId>, exit: bool) -> Task<Message> {
+        self.commit_edit();
+        self.menu = None;
+        self.closing = Some(Closing {
+            queue: documents,
+            exit,
+        });
+        self.continue_closing()
+    }
+
+    /// Closes queued documents until one has unsaved changes (then asks) or
+    /// the queue is empty.
+    fn continue_closing(&mut self) -> Task<Message> {
+        loop {
+            let Some(closing) = &mut self.closing else {
+                return Task::none();
+            };
+            let exit = closing.exit;
+            let Some(&id) = closing.queue.first() else {
+                self.closing = None;
+                self.dialog = None;
+                return if exit { iced::exit() } else { Task::none() };
+            };
+            if self.workbook.get(id).is_some_and(Document::is_modified) {
+                self.active = Some(id);
+                self.dialog = Some(Dialog::ConfirmClose { document: id });
+                return Task::none();
+            }
+            closing.queue.remove(0);
+            if !exit {
+                self.close(id);
+            }
+        }
+    }
+
+    fn answer_close(&mut self, answer: CloseAnswer) -> Task<Message> {
+        let Some(Dialog::ConfirmClose { document }) = self.dialog else {
+            return Task::none();
+        };
+        match answer {
+            CloseAnswer::Cancel => {
+                self.dialog = None;
+                self.closing = None;
+                Task::none()
+            }
+            CloseAnswer::Discard => {
+                if let Some(closing) = &mut self.closing {
+                    closing.queue.retain(|&id| id != document);
+                    if !closing.exit {
+                        self.close(document);
+                    }
+                }
+                self.dialog = None;
+                self.continue_closing()
+            }
+            CloseAnswer::Save => {
+                self.dialog = None;
+                // Keep it at the front of the queue: when the save finishes
+                // it is no longer modified and gets closed.
+                self.start_save(document, None)
+            }
         }
     }
 
@@ -1104,9 +1217,15 @@ impl App {
             container(main).height(Length::Fill),
             divider(ui.tokens, false),
             panes::tab_bar(
-                self.tabs
-                    .iter()
-                    .filter_map(|t| Some((t.id, self.workbook.get(t.id)?.title()))),
+                self.tabs.iter().filter_map(|t| {
+                    let doc = self.workbook.get(t.id)?;
+                    let title = if doc.is_modified() {
+                        format!("● {}", doc.title())
+                    } else {
+                        doc.title()
+                    };
+                    Some((t.id, title))
+                }),
                 self.active,
                 ui,
             ),
@@ -1169,6 +1288,14 @@ impl App {
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
             Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
             Dialog::Metadata { dialog, .. } => dialog.view(ui.tokens).map(Message::Metadata),
+            Dialog::ConfirmClose { document } => {
+                let name = self
+                    .workbook
+                    .get(*document)
+                    .map(Document::title)
+                    .unwrap_or_default();
+                settings::confirm_close(name, ui.tokens)
+            }
         };
         stack![
             window,
@@ -1538,6 +1665,107 @@ mod tests {
         let _ = app.update(saved);
         assert_eq!(app.title(), "copy.parquet — Veta");
         assert!(copy.exists());
+    }
+
+    #[test]
+    fn closing_asks_about_unsaved_changes() {
+        let dir = TempDir::new();
+        let a = dir.join("a.parquet");
+        let b = dir.join("b.parquet");
+        fixtures::mixed_settings(&a);
+        fixtures::mixed_settings(&b);
+        let mut app = app_with(&[&a, &b]);
+        let (ida, idb) = (app.tabs[0].id, app.tabs[1].id);
+
+        // Unmodified tabs close straight away.
+        let _ = app.update(Message::CloseTab(idb));
+        assert_eq!(app.tabs.len(), 1);
+
+        let _ = app.update(Message::Grid(
+            ida,
+            GridEvent::SelectRows {
+                row: 0,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::RemoveRows));
+        assert!(app.title().starts_with('●'));
+
+        let _ = app.update(Message::Action(Action::Close));
+        assert!(matches!(app.dialog, Some(Dialog::ConfirmClose { .. })));
+        let _ = app.update(Message::CloseAnswer(CloseAnswer::Cancel));
+        assert!(app.dialog.is_none() && app.closing.is_none());
+        assert_eq!(app.tabs.len(), 1);
+
+        let _ = app.update(Message::Action(Action::Close));
+        let _ = app.update(Message::CloseAnswer(CloseAnswer::Discard));
+        assert!(app.tabs.is_empty());
+        assert!(app.dialog.is_none() && app.closing.is_none());
+    }
+
+    #[test]
+    fn save_then_close() {
+        let dir = TempDir::new();
+        let a = dir.join("a.parquet");
+        fixtures::mixed_settings(&a);
+        let mut app = app_with(&[&a]);
+        let id = app.tabs[0].id;
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectRows {
+                row: 0,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::RemoveRows));
+
+        let _ = app.update(Message::CloseTab(id));
+        let _ = app.update(Message::CloseAnswer(CloseAnswer::Save));
+        assert_eq!(app.saving, Some(id));
+        // What the worker thread does.
+        let job = app.workbook.get(id).unwrap().save_job(None).unwrap();
+        let _ = app.update(Message::Saved(
+            id,
+            job.run().map(Slot::new).map_err(|e| e.to_string()),
+        ));
+        assert!(app.tabs.is_empty(), "closed after saving");
+        assert_eq!(
+            Document::open(&a, OpenOptions::default())
+                .unwrap()
+                .num_rows(),
+            999
+        );
+    }
+
+    #[test]
+    fn quitting_goes_through_every_modified_document() {
+        let dir = TempDir::new();
+        let paths: Vec<_> = (0..3).map(|i| dir.join(&format!("{i}.parquet"))).collect();
+        for p in &paths {
+            fixtures::mixed_settings(p);
+        }
+        let mut app = app_with(&paths.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+        for id in [app.tabs[0].id, app.tabs[2].id] {
+            let _ = app.update(Message::Grid(
+                id,
+                GridEvent::SelectRows {
+                    row: 0,
+                    extend: false,
+                },
+            ));
+            let _ = app.update(Message::SelectTab(id));
+            let _ = app.update(Message::Action(Action::RemoveRows));
+        }
+        let _ = app.update(Message::CloseRequested);
+        assert!(
+            matches!(app.dialog, Some(Dialog::ConfirmClose { document }) if document == app.tabs[0].id)
+        );
+        let _ = app.update(Message::CloseAnswer(CloseAnswer::Discard));
+        assert!(
+            matches!(app.dialog, Some(Dialog::ConfirmClose { document }) if document == app.tabs[2].id)
+        );
+        let _ = app.update(Message::CloseAnswer(CloseAnswer::Discard));
+        assert!(app.dialog.is_none() && app.closing.is_none(), "exits");
     }
 
     #[test]

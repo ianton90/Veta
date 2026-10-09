@@ -225,6 +225,28 @@ pub fn about<'a, Message: Clone + 'a>(close: Message, tokens: Tokens) -> Element
     card(body.into(), tokens, 380.0)
 }
 
+/// "Save changes to X?" when closing a modified document.
+pub fn confirm_close<'a>(name: String, tokens: Tokens) -> Element<'a, crate::Message> {
+    use crate::{CloseAnswer, Message};
+    let body = column![
+        text(format!("Save changes to {name}?")).size(20),
+        text("Your changes will be lost if you don't save them.").color(tokens.muted_text),
+        row![
+            button(text("Don't save"))
+                .style(button::danger)
+                .on_press(Message::CloseAnswer(CloseAnswer::Discard)),
+            iced::widget::Space::new().width(Length::Fill),
+            button(text("Cancel"))
+                .style(button::secondary)
+                .on_press(Message::CloseAnswer(CloseAnswer::Cancel)),
+            button(text("Save")).on_press(Message::CloseAnswer(CloseAnswer::Save)),
+        ]
+        .spacing(8),
+    ]
+    .spacing(14);
+    card(body.into(), tokens, 440.0)
+}
+
 fn section<'a, Message: 'a>(title: &'a str) -> Element<'a, Message> {
     text(title).size(15).font(crate::bold()).into()
 }
