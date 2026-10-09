@@ -8,6 +8,7 @@ pub mod error;
 pub mod io;
 pub mod model;
 pub mod source;
+pub mod steps;
 
 /// The Arrow crate used by core, re-exported so front ends use the same version.
 pub use arrow;

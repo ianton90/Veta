@@ -8,16 +8,15 @@ use arrow::record_batch::RecordBatch;
 use super::{FileInfo, FileMetadata, WriterSettings};
 use crate::error::Result;
 use crate::io::{OpenOptions, open_parquet};
-use crate::source::{DataSource, MemorySource, SourceMode};
+use crate::source::{MemorySource, SourceMode};
+use crate::steps::{Pipeline, Step};
 
-/// One open file (or a new, unsaved one).
-///
-/// Steps and history are added by later milestones (see
-/// `docs/ARCHITECTURE.md`).
+/// One open file (or a new, unsaved one): its source data, the steps applied
+/// to it, and file-level settings. See `docs/ARCHITECTURE.md`.
 #[derive(Debug)]
 pub struct Document {
     pub(crate) path: Option<PathBuf>,
-    pub(crate) source: Arc<dyn DataSource>,
+    pub(crate) pipeline: Pipeline,
     pub(crate) info: Option<FileInfo>,
     pub(crate) metadata: FileMetadata,
     pub(crate) writer: WriterSettings,
@@ -27,7 +26,7 @@ impl Default for Document {
     fn default() -> Self {
         Self {
             path: None,
-            source: Arc::new(MemorySource::empty()),
+            pipeline: Pipeline::new(Arc::new(MemorySource::empty())),
             info: None,
             metadata: FileMetadata::default(),
             writer: WriterSettings::default(),
@@ -47,7 +46,7 @@ impl Document {
         let opened = open_parquet(&path, options)?;
         Ok(Self {
             path: Some(path),
-            source: opened.source,
+            pipeline: Pipeline::new(opened.source),
             info: Some(opened.info),
             metadata: opened.metadata,
             writer: opened.writer,
@@ -68,25 +67,31 @@ impl Document {
             .unwrap_or_else(|| "Untitled".to_owned())
     }
 
+    /// Schema after all steps.
     pub fn schema(&self) -> SchemaRef {
-        self.source.schema()
+        self.pipeline.schema()
     }
 
+    /// Row count after all steps.
     pub fn num_rows(&self) -> usize {
-        self.source.num_rows()
+        self.pipeline.num_rows()
     }
 
     pub fn num_columns(&self) -> usize {
-        self.source.schema().fields().len()
+        self.pipeline.schema().fields().len()
     }
 
-    /// Reads rows in `range` (clamped to the row count).
+    /// Reads rows in `range` (clamped to the row count), after all steps.
     pub fn read(&self, range: Range<usize>) -> Result<RecordBatch> {
-        self.source.read(range)
+        self.pipeline.read(range)
+    }
+
+    pub fn steps(&self) -> &[Step] {
+        self.pipeline.steps()
     }
 
     pub fn source_mode(&self) -> SourceMode {
-        self.source.mode()
+        self.pipeline.source().mode()
     }
 
     /// Layout of the file the document was opened from, if any.
