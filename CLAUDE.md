@@ -10,6 +10,7 @@
 ## How we work
 
 - The owner reviews code but has little time: take the lead, keep answers short, and explain only when asked.
+- Make one commit per task (issue), not one per milestone.
 - Work one milestone at a time. When it's done, report what changed and any gaps, then ask before starting the next one.
 - Commits on `dv` don't auto-close issues (only the default branch does). Close each finished issue, and its milestone parent, by hand with reason "completed".
 - Gaps, tech debt or untested parts found along the way become sub-issues of #53 "Follow-ups". Notes that only matter to an existing task go as a comment on that issue.
