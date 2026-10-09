@@ -63,7 +63,6 @@ impl Action {
             | Action::DuplicateColumn
             | Action::RenameColumn => 25,
             Action::KeepRows => 36,
-            Action::RemoveRows | Action::InsertRows => 24,
             Action::SortAscending | Action::SortDescending => 37,
             Action::DataType => 35,
             Action::ReplaceValues | Action::FillDown | Action::FormatText => 38,
@@ -75,6 +74,8 @@ impl Action {
             Action::FileMetadata => 28,
             Action::WriterSettings => 27,
             Action::Open
+            | Action::InsertRows
+            | Action::RemoveRows
             | Action::Undo
             | Action::Redo
             | Action::Close
@@ -92,6 +93,8 @@ impl Action {
             Action::Save => Some("Ctrl+S"),
             Action::SaveAs => Some("Ctrl+Shift+S"),
             Action::Undo => Some("Ctrl+Z"),
+            Action::InsertRows => Some("Ctrl++"),
+            Action::RemoveRows => Some("Ctrl+-"),
             Action::Redo => Some("Ctrl+Y"),
             Action::Settings => Some("Ctrl+,"),
             _ => None,
@@ -345,6 +348,7 @@ fn groups(tab: Tab) -> Vec<Group> {
 #[derive(Debug, Clone, Copy)]
 pub struct Context {
     pub has_document: bool,
+    pub has_selection: bool,
     pub can_undo: bool,
     pub can_redo: bool,
     pub details_visible: bool,
@@ -361,6 +365,7 @@ impl Context {
         match action {
             Action::Close => self.has_document,
             Action::Undo => self.can_undo,
+            Action::InsertRows | Action::RemoveRows => self.has_selection,
             Action::Redo => self.can_redo,
             _ => true,
         }

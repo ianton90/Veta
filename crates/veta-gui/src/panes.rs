@@ -2,14 +2,15 @@
 
 use std::path::PathBuf;
 
-use iced::widget::{button, center, column, container, row, scrollable, text, text_input};
+use iced::widget::{button, center, column, container, row, rule, scrollable, text, text_input};
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 use veta_core::display::{abbreviate, human_bytes};
 use veta_core::{Document, DocumentId, SourceMode};
 
+use crate::grid::MenuTarget;
 use crate::icon::{Icon, icon};
 use crate::theme::Tokens;
-use crate::{Edit, FORMULA_ID, Message, Tab, Ui, bold};
+use crate::{Edit, FORMULA_ID, MenuItem, Message, Tab, Ui, bold};
 
 const SIDE_PANE_WIDTH: f32 = 300.0;
 
@@ -300,6 +301,106 @@ pub fn formula_bar<'a>(
     .width(Length::Fill)
     .style(move |_theme: &Theme| container::Style::default().background(t.background))
     .into()
+}
+
+/// Right-click menu for cells, rows or columns. `rows` is how many rows are
+/// selected.
+pub fn context_menu<'a>(target: MenuTarget, rows: usize, ui: Ui) -> Element<'a, Message> {
+    let t = ui.tokens;
+    let rows_label = |verb: &str, rest: &str| {
+        if rows == 1 {
+            format!("{verb} row{rest}")
+        } else {
+            format!("{verb} {rows} rows{rest}")
+        }
+    };
+    let mut items: Vec<Option<(Icon, String, &str, MenuItem)>> = Vec::new();
+    if target == MenuTarget::Cell {
+        items.push(Some((
+            Icon::Rename,
+            "Edit cell".into(),
+            "Enter",
+            MenuItem::EditCell,
+        )));
+        items.push(Some((
+            Icon::Eraser,
+            "Set to null".into(),
+            "Delete",
+            MenuItem::ClearCell,
+        )));
+        items.push(None);
+    }
+    if matches!(target, MenuTarget::Cell | MenuTarget::Rows) {
+        items.push(Some((
+            Icon::InsertRows,
+            rows_label("Insert", " above"),
+            "Ctrl++",
+            MenuItem::InsertRowsAbove,
+        )));
+        items.push(Some((
+            Icon::InsertRows,
+            rows_label("Insert", " below"),
+            "",
+            MenuItem::InsertRowsBelow,
+        )));
+        items.push(Some((
+            Icon::Trash,
+            rows_label("Delete", ""),
+            "Ctrl+-",
+            MenuItem::DeleteRows,
+        )));
+    }
+
+    let mut list = column![].spacing(1);
+    for item in items {
+        list = match item {
+            None => list.push(
+                container(
+                    rule::horizontal(1).style(move |_theme: &Theme| rule::Style {
+                        color: t.border,
+                        radius: 0.0.into(),
+                        fill_mode: rule::FillMode::Full,
+                        snap: true,
+                    }),
+                )
+                .padding([3, 0]),
+            ),
+            Some((glyph, label, shortcut, message)) => list.push(
+                button(
+                    row![
+                        icon(glyph, ui.small()).color(t.muted_text),
+                        text(label).size(ui.small()).width(Length::Fill),
+                        text(shortcut).size(ui.small() - 1.0).color(t.muted_text),
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .padding([5, 10])
+                .style(move |_theme: &Theme, status| subtle_button(t, status))
+                .on_press(Message::Menu(message)),
+            ),
+        };
+    }
+    container(list)
+        .width(240)
+        .padding(4)
+        .style(move |_theme: &Theme| {
+            container::Style::default()
+                .background(t.background)
+                .color(t.text)
+                .border(Border {
+                    color: t.border,
+                    width: 1.0,
+                    radius: 6.0.into(),
+                })
+                .shadow(iced::Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.2),
+                    offset: iced::Vector::new(0.0, 3.0),
+                    blur_radius: 12.0,
+                })
+        })
+        .into()
 }
 
 fn surface(t: Tokens) -> container::Style {

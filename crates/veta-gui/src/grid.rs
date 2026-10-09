@@ -18,6 +18,7 @@ use iced::{
     Border, Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Renderer, Size, Theme,
     font,
 };
+use std::ops::Range;
 use std::time::{Duration, Instant};
 use veta_core::Document;
 
@@ -89,6 +90,27 @@ pub enum GridEvent {
     },
     /// Set the selected cell to null.
     ClearCell,
+    /// A row number was clicked; `extend` (Shift) extends the selection.
+    SelectRows {
+        row: usize,
+        extend: bool,
+    },
+    /// Insert as many rows as are selected, above the selection.
+    InsertRows,
+    DeleteRows,
+    /// Right-click; `position` is in window coordinates.
+    ContextMenu {
+        target: MenuTarget,
+        position: Point,
+    },
+}
+
+/// What a context menu was opened on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuTarget {
+    Cell,
+    Rows,
+    Column(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +147,9 @@ pub struct GridView {
     body_width: f32,
     scroll_x: f32,
     selected: Option<(usize, usize)>,
+    /// Whole-row selection as (anchor, end), inclusive, set by clicking row
+    /// numbers.
+    rows: Option<(usize, usize)>,
     /// First row of `cells`.
     window_start: usize,
     cells: Vec<Vec<Option<String>>>,
@@ -153,6 +178,7 @@ impl GridView {
             body_width: 800.0,
             scroll_x: 0.0,
             selected: None,
+            rows: None,
             window_start: 0,
             cells: Vec::new(),
             error: None,
@@ -191,6 +217,30 @@ impl GridView {
         self.selected
     }
 
+    /// Selected rows: the row selection, or the selected cell's row.
+    pub fn selected_rows(&self) -> Option<Range<usize>> {
+        match (self.rows, self.selected) {
+            (Some((a, b)), _) => Some(a.min(b)..a.max(b) + 1),
+            (None, Some((r, _))) => Some(r..r + 1),
+            (None, None) => None,
+        }
+    }
+
+    /// Selects whole rows `range` (e.g. after inserting them).
+    pub fn select_rows(&mut self, range: Range<usize>, document: &Document) {
+        if range.is_empty() || range.end > self.num_rows {
+            return;
+        }
+        let column = self.selected.map_or(0, |(_, c)| c);
+        self.rows = Some((range.start, range.end - 1));
+        self.selected = Some((range.start, column));
+        self.reveal(
+            range.start,
+            column.min(self.columns.len().saturating_sub(1)),
+        );
+        self.load(document, false);
+    }
+
     /// Text of a loaded cell: `Some(None)` for null, `None` if not loaded.
     pub fn value(&self, row: usize, column: usize) -> Option<Option<&str>> {
         self.cell(row, column).map(Option::as_deref)
@@ -224,6 +274,9 @@ impl GridView {
             (self.num_rows > 0 && !self.columns.is_empty())
                 .then(|| (r.min(self.num_rows - 1), c.min(self.columns.len() - 1)))
         });
+        self.rows = self.rows.and_then(|(a, b)| {
+            (self.num_rows > 0).then(|| (a.min(self.num_rows - 1), b.min(self.num_rows - 1)))
+        });
         self.set_scroll(self.first_row, self.scroll_x);
         self.load(document, true);
         for i in fresh {
@@ -250,12 +303,33 @@ impl GridView {
             GridEvent::Select { row, column } => {
                 if row < self.num_rows && column < self.columns.len() {
                     self.selected = Some((row, column));
+                    self.rows = None;
                     self.reveal(row, column);
                 }
             }
-            GridEvent::Navigate(nav) => self.navigate(nav),
-            // Edits go through the app, which owns the formula bar.
-            GridEvent::StartEdit { .. } | GridEvent::ClearCell => {}
+            GridEvent::SelectRows { row, extend } => {
+                if row < self.num_rows && !self.columns.is_empty() {
+                    let anchor = match (extend, self.rows, self.selected) {
+                        (true, Some((anchor, _)), _) => anchor,
+                        (true, None, Some((r, _))) => r,
+                        _ => row,
+                    };
+                    let column = self.selected.map_or(0, |(_, c)| c);
+                    self.rows = Some((anchor, row));
+                    self.selected = Some((row, column));
+                    self.reveal(row, column);
+                }
+            }
+            GridEvent::Navigate(nav) => {
+                self.rows = None;
+                self.navigate(nav);
+            }
+            // Handled by the app, which turns them into commands.
+            GridEvent::StartEdit { .. }
+            | GridEvent::ClearCell
+            | GridEvent::InsertRows
+            | GridEvent::DeleteRows
+            | GridEvent::ContextMenu { .. } => {}
             GridEvent::ColumnResized { column, width } => {
                 if let Some(c) = self.columns.get_mut(column) {
                     c.width = width.max(MIN_COLUMN_WIDTH);
@@ -398,6 +472,7 @@ struct State {
     reported: Option<(usize, u32)>,
     /// Time and cell of the last click, to detect double-clicks.
     last_click: Option<(Instant, (usize, usize))>,
+    modifiers: keyboard::Modifiers,
 }
 
 impl widget::operation::Focusable for State {
@@ -559,6 +634,23 @@ impl<Message> Grid<'_, Message> {
             .map(|(i, _, _)| i)
     }
 
+    /// Row under a y coordinate in the body.
+    fn row_at(&self, regions: &Regions, y: f32) -> Option<usize> {
+        if y < regions.body.y || y >= regions.body.y + regions.body.height {
+            return None;
+        }
+        let row = self.view.first_row + ((y - regions.body.y) / regions.m.row_height) as usize;
+        (row < self.view.num_rows).then_some(row)
+    }
+
+    /// Column under an x coordinate.
+    fn column_at(&self, regions: &Regions, x: f32) -> Option<usize> {
+        self.visible_columns(regions.body)
+            .into_iter()
+            .find(|&(_, left, w)| x >= left && x < left + w)
+            .map(|(i, _, _)| i)
+    }
+
     fn cell_at(&self, regions: &Regions, position: Point) -> Option<(usize, usize)> {
         if !regions.body.contains(position) {
             return None;
@@ -660,7 +752,14 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 state.focused = true;
                 shell.capture_event();
 
-                if let Some(column) = self.column_border_at(&regions, position) {
+                if regions.row_numbers.contains(position) {
+                    if let Some(row) = self.row_at(&regions, position.y) {
+                        shell.publish((self.on_event)(GridEvent::SelectRows {
+                            row,
+                            extend: state.modifiers.shift(),
+                        }));
+                    }
+                } else if let Some(column) = self.column_border_at(&regions, position) {
                     state.drag = Drag::Column {
                         column,
                         origin_x: position.x,
@@ -720,6 +819,40 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     }
                 }
             }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                let Some(position) = cursor.position_over(regions.bounds) else {
+                    return;
+                };
+                state.focused = true;
+                shell.capture_event();
+                let in_rows = |row: usize| view.selected_rows().is_some_and(|r| r.contains(&row));
+                let target = if let Some((row, column)) = self.cell_at(&regions, position) {
+                    if !(view.rows.is_some() && in_rows(row)) {
+                        shell.publish((self.on_event)(GridEvent::Select { row, column }));
+                    }
+                    Some(MenuTarget::Cell)
+                } else if regions.row_numbers.contains(position) {
+                    self.row_at(&regions, position.y).map(|row| {
+                        if !(view.rows.is_some() && in_rows(row)) {
+                            shell.publish((self.on_event)(GridEvent::SelectRows {
+                                row,
+                                extend: false,
+                            }));
+                        }
+                        MenuTarget::Rows
+                    })
+                } else if regions.header.contains(position) {
+                    self.column_at(&regions, position.x).map(MenuTarget::Column)
+                } else {
+                    None
+                };
+                if let Some(target) = target {
+                    shell.publish((self.on_event)(GridEvent::ContextMenu { target, position }));
+                }
+            }
+            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                state.modifiers = *modifiers;
+            }
             Event::Mouse(mouse::Event::CursorMoved { position }) => match state.drag {
                 Drag::None => {}
                 Drag::Column {
@@ -773,6 +906,18 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 ..
             }) if state.focused => {
                 let ctrl = modifiers.command();
+                let rows = match key.as_ref() {
+                    keyboard::Key::Character("-") if ctrl => Some(GridEvent::DeleteRows),
+                    keyboard::Key::Character("+" | "=") if ctrl => Some(GridEvent::InsertRows),
+                    _ => None,
+                };
+                if let Some(event) = rows {
+                    if view.selected.is_some() {
+                        shell.publish((self.on_event)(event));
+                        shell.capture_event();
+                    }
+                    return;
+                }
                 let edit = match key.as_ref() {
                     keyboard::Key::Named(Named::Enter | Named::F2) => {
                         Some(GridEvent::StartEdit { initial: None })
@@ -867,6 +1012,12 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         fill(renderer, regions.bounds, t.background);
 
         let columns = self.visible_columns(regions.body);
+        // Whole-row selection only; a single selected cell is outlined below.
+        let selected_rows = if view.rows.is_some() {
+            view.selected_rows().unwrap_or(0..0)
+        } else {
+            0..0
+        };
         let rows_on_screen = (regions.body.height / m.row_height).ceil() as usize;
         let last_row = (view.first_row + rows_on_screen).min(view.num_rows);
 
@@ -883,6 +1034,16 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             let Some(row_rect) = row_rect else { continue };
             if row % 2 == 1 {
                 fill(renderer, row_rect, stripe);
+            }
+            if selected_rows.contains(&row) {
+                fill(
+                    renderer,
+                    row_rect,
+                    Color {
+                        a: 0.14,
+                        ..t.selection
+                    },
+                );
             }
             for &(column, x, width) in &columns {
                 let cell = Rectangle {
@@ -1018,7 +1179,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             height: m.header_height - 1.0,
         };
         fill(renderer, corner, header_bg);
-        let selected_row = view.selected.map(|(r, _)| r);
+        let highlighted = view.selected_rows().unwrap_or(0..0);
         for row in view.first_row..last_row {
             let cell = Rectangle {
                 x: regions.row_numbers.x,
@@ -1029,7 +1190,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             let Some(clip) = cell.intersection(&regions.row_numbers) else {
                 continue;
             };
-            let (font, color) = if selected_row == Some(row) {
+            let (font, color) = if highlighted.contains(&row) {
                 (bold, t.selection)
             } else {
                 (Font::DEFAULT, muted)

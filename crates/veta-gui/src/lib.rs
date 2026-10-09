@@ -15,7 +15,7 @@ mod theme;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use iced::widget::{center, column, container, mouse_area, opaque, row, rule, stack};
+use iced::widget::{center, column, container, mouse_area, opaque, pin, row, rule, stack};
 use iced::{
     Color, Element, Font, Length, Pixels, Size, Subscription, Task, Theme, event, font, keyboard,
     window,
@@ -25,7 +25,7 @@ use veta_core::{Command, Document, DocumentId, OpenOptions, Workbook, controller
 use crate::config::Config;
 #[cfg(test)]
 use crate::config::ModePreference;
-use crate::grid::{GRID_ID, GridEvent, GridView, Nav};
+use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav};
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
 use crate::settings::{Draft, Outcome, SettingsMessage};
 use crate::theme::{Mode, Tokens, VetaTheme};
@@ -164,6 +164,24 @@ struct App {
     text_size: f32,
     /// Cell being edited in the formula bar.
     edit: Option<Edit>,
+    menu: Option<ContextMenu>,
+}
+
+/// An open right-click menu.
+#[derive(Debug, Clone, PartialEq)]
+struct ContextMenu {
+    document: DocumentId,
+    target: MenuTarget,
+    position: iced::Point,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuItem {
+    EditCell,
+    ClearCell,
+    InsertRowsAbove,
+    InsertRowsBelow,
+    DeleteRows,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -202,6 +220,8 @@ enum Message {
     Escape,
     EditInput(String),
     CommitEdit,
+    Menu(MenuItem),
+    CloseMenu,
     SystemMode(iced::theme::Mode),
     OpenDialog,
 }
@@ -240,6 +260,7 @@ impl App {
             system_mode: None,
             text_size,
             edit: None,
+            menu: None,
         };
         let open = app.open(files);
         let system = iced::system::theme().map(Message::SystemMode);
@@ -327,6 +348,16 @@ impl App {
             Message::CloseTab(id) => self.close(id),
             Message::Grid(id, event) => match event {
                 GridEvent::StartEdit { initial } => return self.start_edit(id, initial),
+                GridEvent::InsertRows => self.insert_rows(id, false),
+                GridEvent::DeleteRows => self.delete_rows(id),
+                GridEvent::ContextMenu { target, position } => {
+                    self.commit_edit();
+                    self.menu = Some(ContextMenu {
+                        document: id,
+                        target,
+                        position,
+                    });
+                }
                 GridEvent::ClearCell => {
                     if let Some((row, column)) = self.selected_cell(id) {
                         self.execute(
@@ -340,7 +371,12 @@ impl App {
                     }
                 }
                 event => {
-                    if matches!(event, GridEvent::Select { .. } | GridEvent::Navigate(_)) {
+                    if matches!(
+                        event,
+                        GridEvent::Select { .. }
+                            | GridEvent::SelectRows { .. }
+                            | GridEvent::Navigate(_)
+                    ) {
                         self.commit_edit();
                     }
                     if let (Some(doc), Some(tab)) = (
@@ -369,8 +405,25 @@ impl App {
                     return iced::widget::operation::focus(GRID_ID);
                 }
             }
+            Message::Menu(item) => {
+                let Some(menu) = self.menu.take() else {
+                    return Task::none();
+                };
+                let id = menu.document;
+                match item {
+                    MenuItem::EditCell => return self.start_edit(id, None),
+                    MenuItem::ClearCell => {
+                        return self.update(Message::Grid(id, GridEvent::ClearCell));
+                    }
+                    MenuItem::InsertRowsAbove => self.insert_rows(id, false),
+                    MenuItem::InsertRowsBelow => self.insert_rows(id, true),
+                    MenuItem::DeleteRows => self.delete_rows(id),
+                }
+            }
+            Message::CloseMenu => self.menu = None,
             Message::Escape => {
-                if self.dialog.is_some() {
+                if self.menu.take().is_some() {
+                } else if self.dialog.is_some() {
                     self.dialog = None;
                 } else if self.edit.take().is_some() {
                     return iced::widget::operation::focus(GRID_ID);
@@ -435,6 +488,16 @@ impl App {
                     }
                 }
             }
+            Action::InsertRows => {
+                if let Some(id) = self.active {
+                    self.insert_rows(id, false);
+                }
+            }
+            Action::RemoveRows => {
+                if let Some(id) = self.active {
+                    self.delete_rows(id);
+                }
+            }
             Action::ToggleDetails => self.show_side_pane = !self.show_side_pane,
             Action::Mode(mode) => {
                 self.config.appearance.mode = mode;
@@ -481,6 +544,36 @@ impl App {
             self.tabs.iter_mut().find(|t| t.id == id),
         ) {
             tab.grid.apply(event, doc);
+        }
+    }
+
+    fn selected_rows(&self, id: DocumentId) -> Option<std::ops::Range<usize>> {
+        self.tabs.iter().find(|t| t.id == id)?.grid.selected_rows()
+    }
+
+    /// Inserts as many empty rows as are selected, above or below the
+    /// selection, and selects them.
+    fn insert_rows(&mut self, id: DocumentId, below: bool) {
+        self.commit_edit();
+        let Some(rows) = self.selected_rows(id) else {
+            return;
+        };
+        let at = if below { rows.end } else { rows.start };
+        let count = rows.len();
+        if self.execute(id, Command::InsertRows { at, count })
+            && let (Some(doc), Some(tab)) = (
+                self.workbook.get(id),
+                self.tabs.iter_mut().find(|t| t.id == id),
+            )
+        {
+            tab.grid.select_rows(at..at + count, doc);
+        }
+    }
+
+    fn delete_rows(&mut self, id: DocumentId) {
+        self.edit = None;
+        if let Some(rows) = self.selected_rows(id) {
+            self.execute(id, Command::DeleteRows { rows: vec![rows] });
         }
     }
 
@@ -640,6 +733,7 @@ impl App {
 
         let context = ribbon::Context {
             has_document: self.active.is_some(),
+            has_selection: self.active.and_then(|id| self.selected_rows(id)).is_some(),
             can_undo: self
                 .active_document()
                 .is_some_and(|(_, d)| d.history().can_undo()),
@@ -667,6 +761,21 @@ impl App {
             panes::status_bar(self.active_document(), self.opening.len(), ui),
         ];
 
+        if let Some(menu) = &self.menu {
+            let rows = self.selected_rows(menu.document).map_or(1, |r| r.len());
+            return stack![
+                window,
+                mouse_area(
+                    container(iced::widget::Space::new())
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                )
+                .on_press(Message::CloseMenu)
+                .on_right_press(Message::CloseMenu),
+                pin(panes::context_menu(menu.target, rows, ui)).position(menu.position),
+            ]
+            .into();
+        }
         let Some(dialog) = &self.dialog else {
             return window.into();
         };
@@ -850,6 +959,62 @@ mod tests {
         assert_eq!(score(&app).as_deref(), Some("1.0"));
         let _ = app.update(Message::Action(Action::Redo));
         assert_eq!(score(&app).as_deref(), Some("7.25"));
+    }
+
+    #[test]
+    fn insert_and_delete_rows() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let rows = |app: &App| app.workbook.get(id).unwrap().num_rows();
+
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectRows {
+                row: 2,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectRows {
+                row: 4,
+                extend: true,
+            },
+        ));
+        assert_eq!(app.selected_rows(id), Some(2..5));
+
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::ContextMenu {
+                target: MenuTarget::Rows,
+                position: iced::Point::ORIGIN,
+            },
+        ));
+        assert!(app.menu.is_some());
+        let _ = app.update(Message::Menu(MenuItem::InsertRowsBelow));
+        assert!(app.menu.is_none());
+        assert_eq!(rows(&app), 1003);
+        assert_eq!(
+            app.selected_rows(id),
+            Some(5..8),
+            "inserted rows are selected"
+        );
+        assert_eq!(app.tabs[0].grid.value(5, 0), Some(None));
+
+        let _ = app.update(Message::Action(Action::RemoveRows));
+        assert_eq!(rows(&app), 1000);
+        // Like Excel, the same row positions stay selected after a delete.
+        let _ = app.update(Message::Grid(id, GridEvent::DeleteRows));
+        assert_eq!(rows(&app), 997);
+
+        let _ = app.update(Message::Action(Action::Undo));
+        let _ = app.update(Message::Action(Action::Undo));
+        let _ = app.update(Message::Action(Action::Undo));
+        assert_eq!(rows(&app), 1000);
+        assert!(!app.workbook.get(id).unwrap().is_modified());
     }
 
     #[test]
