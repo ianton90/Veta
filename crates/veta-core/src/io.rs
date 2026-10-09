@@ -1,14 +1,21 @@
-//! Reading Parquet files into documents.
+//! Reading and writing Parquet files.
 
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use parquet::arrow::arrow_reader::{
     ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
 };
-use parquet::basic::{Compression as PqCompression, Encoding as PqEncoding};
-use parquet::file::metadata::{ColumnChunkMetaData, PageIndexPolicy, ParquetMetaData};
+use parquet::arrow::{ArrowSchemaConverter, ArrowWriter};
+use parquet::basic::{
+    BrotliLevel, Compression as PqCompression, Encoding as PqEncoding, GzipLevel, Type as Physical,
+    ZstdLevel,
+};
+use parquet::file::metadata::{
+    ColumnChunkMetaData, KeyValue as PqKeyValue, PageIndexPolicy, ParquetMetaData,
+};
+use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
 
 use crate::error::Result;
 use crate::model::{
@@ -16,6 +23,7 @@ use crate::model::{
     RowGroupInfo, StatisticsLevel, WriterSettings,
 };
 use crate::source::{DataSource, MemorySource, PagedSource};
+use crate::steps::Pipeline;
 
 /// Default memory budget for loading a file: 1 GiB.
 pub const DEFAULT_MEMORY_BUDGET: usize = 1024 * 1024 * 1024;
@@ -162,7 +170,17 @@ fn writer_settings(metadata: &ParquetMetaData) -> WriterSettings {
     WriterSettings {
         format_version,
         max_row_group_rows,
-        default_column: defaults.default_column,
+        // New columns follow the file's first column, except for its
+        // encoding, which may only suit that column's type.
+        default_column: metadata
+            .row_groups()
+            .first()
+            .and_then(|rg| rg.columns().first())
+            .map(|c| ColumnSettings {
+                encoding: Encoding::Plain,
+                ..column_settings(c)
+            })
+            .unwrap_or(defaults.default_column),
         columns,
     }
 }
@@ -215,6 +233,213 @@ fn compression(c: PqCompression) -> Compression {
         PqCompression::LZ4 => Compression::Lz4,
         PqCompression::ZSTD(_) => Compression::Zstd(None),
         PqCompression::LZ4_RAW => Compression::Lz4Raw,
+    }
+}
+
+/// Key written by Arrow writers with the serialized Arrow schema. The writer
+/// regenerates it, so the document's copy is never written back.
+pub const ARROW_SCHEMA_KEY: &str = "ARROW:schema";
+
+/// Rows read from the document per batch while writing.
+const WRITE_BATCH_ROWS: usize = 64 * 1024;
+
+/// Everything needed to write a document, detached from it so it can run on
+/// another thread.
+#[derive(Debug, Clone)]
+pub struct SaveJob {
+    pub(crate) pipeline: Pipeline,
+    pub(crate) metadata: FileMetadata,
+    pub(crate) writer: WriterSettings,
+    pub(crate) target: PathBuf,
+    /// Set when the target is the document's source file, which must be
+    /// reopened after it is replaced.
+    pub(crate) reopen: Option<OpenOptions>,
+}
+
+/// Outcome of a successful [`SaveJob::run`].
+#[derive(Debug)]
+pub struct SaveResult {
+    pub(crate) target: PathBuf,
+    pub(crate) reopened: Option<OpenedFile>,
+}
+
+impl SaveJob {
+    pub fn target(&self) -> &Path {
+        &self.target
+    }
+
+    /// Writes the file: to a temporary file next to the target, then renamed
+    /// over it, so a failed save never leaves a half-written file.
+    pub fn run(self) -> Result<SaveResult> {
+        let dir = match self.target.parent() {
+            Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        let name = self
+            .target
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".into());
+        let temp = dir.join(format!(".{name}.veta-{}.tmp", std::process::id()));
+
+        let written = write_parquet(&self.pipeline, &self.metadata, &self.writer, &temp)
+            .and_then(|()| std::fs::rename(&temp, &self.target).map_err(Into::into));
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&temp);
+            return Err(e);
+        }
+        let reopened = match self.reopen {
+            Some(options) => Some(open_parquet(&self.target, options)?),
+            None => None,
+        };
+        Ok(SaveResult {
+            target: self.target,
+            reopened,
+        })
+    }
+}
+
+/// Streams the pipeline's output into a Parquet file at `path`.
+pub fn write_parquet(
+    pipeline: &Pipeline,
+    metadata: &FileMetadata,
+    settings: &WriterSettings,
+    path: &Path,
+) -> Result<()> {
+    let schema = pipeline.schema();
+    let props = writer_properties(&schema, metadata, settings)?;
+    let file = File::create(path)?;
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
+    let rows = pipeline.num_rows();
+    let mut start = 0;
+    while start < rows {
+        let end = (start + WRITE_BATCH_ROWS).min(rows);
+        writer.write(&pipeline.read(start..end)?)?;
+        start = end;
+    }
+    writer.close()?;
+    Ok(())
+}
+
+/// Builds parquet writer properties from Veta's settings for `schema`.
+fn writer_properties(
+    schema: &arrow::datatypes::Schema,
+    metadata: &FileMetadata,
+    settings: &WriterSettings,
+) -> Result<WriterProperties> {
+    let d = &settings.default_column;
+    let mut builder = WriterProperties::builder()
+        .set_writer_version(match settings.format_version {
+            FormatVersion::V1 => WriterVersion::PARQUET_1_0,
+            FormatVersion::V2 => WriterVersion::PARQUET_2_0,
+        })
+        .set_max_row_group_row_count(Some(settings.max_row_group_rows.max(1)))
+        .set_compression(to_parquet_compression(d.compression)?)
+        .set_dictionary_enabled(d.dictionary)
+        .set_statistics_enabled(to_statistics(d.statistics))
+        .set_bloom_filter_enabled(d.bloom_filter);
+
+    let key_value: Vec<PqKeyValue> = metadata
+        .key_value
+        .iter()
+        .filter(|kv| kv.key != ARROW_SCHEMA_KEY)
+        .map(|kv| PqKeyValue {
+            key: kv.key.clone(),
+            value: kv.value.clone(),
+        })
+        .collect();
+    if !key_value.is_empty() {
+        builder = builder.set_key_value_metadata(Some(key_value));
+    }
+
+    // Per leaf column, using the parquet schema the writer will produce.
+    let descriptor = ArrowSchemaConverter::new().convert(schema)?;
+    for leaf in descriptor.columns() {
+        let path = leaf.path().clone();
+        let c = settings.column(&path.string());
+        builder = builder
+            .set_column_compression(path.clone(), to_parquet_compression(c.compression)?)
+            .set_column_dictionary_enabled(path.clone(), c.dictionary)
+            .set_column_statistics_enabled(path.clone(), to_statistics(c.statistics))
+            .set_column_bloom_filter_enabled(path.clone(), c.bloom_filter);
+        if let Some(encoding) = to_parquet_encoding(c.encoding, leaf.physical_type()) {
+            builder = builder.set_column_encoding(path, encoding);
+        }
+    }
+    Ok(builder.build())
+}
+
+fn to_parquet_compression(c: Compression) -> Result<PqCompression> {
+    Ok(match c {
+        Compression::Uncompressed => PqCompression::UNCOMPRESSED,
+        Compression::Snappy => PqCompression::SNAPPY,
+        Compression::Gzip(level) => PqCompression::GZIP(match level {
+            Some(l) => GzipLevel::try_new(l)?,
+            None => GzipLevel::default(),
+        }),
+        Compression::Lzo => PqCompression::LZO,
+        Compression::Brotli(level) => PqCompression::BROTLI(match level {
+            Some(l) => BrotliLevel::try_new(l)?,
+            None => BrotliLevel::default(),
+        }),
+        Compression::Lz4 => PqCompression::LZ4,
+        Compression::Zstd(level) => PqCompression::ZSTD(match level {
+            Some(l) => ZstdLevel::try_new(l)?,
+            None => ZstdLevel::default(),
+        }),
+        Compression::Lz4Raw => PqCompression::LZ4_RAW,
+    })
+}
+
+fn to_statistics(level: StatisticsLevel) -> EnabledStatistics {
+    match level {
+        StatisticsLevel::None => EnabledStatistics::None,
+        StatisticsLevel::Chunk => EnabledStatistics::Chunk,
+        StatisticsLevel::Page => EnabledStatistics::Page,
+    }
+}
+
+/// The parquet encoding for `encoding`, or `None` when it is the default
+/// (plain) or does not apply to the column's physical type.
+fn to_parquet_encoding(encoding: Encoding, physical: Physical) -> Option<PqEncoding> {
+    let (parquet, fits) = match encoding {
+        Encoding::Plain => return None,
+        Encoding::DeltaBinaryPacked => (
+            PqEncoding::DELTA_BINARY_PACKED,
+            matches!(physical, Physical::INT32 | Physical::INT64),
+        ),
+        Encoding::DeltaLengthByteArray => (
+            PqEncoding::DELTA_LENGTH_BYTE_ARRAY,
+            physical == Physical::BYTE_ARRAY,
+        ),
+        Encoding::DeltaByteArray => (
+            PqEncoding::DELTA_BYTE_ARRAY,
+            matches!(
+                physical,
+                Physical::BYTE_ARRAY | Physical::FIXED_LEN_BYTE_ARRAY
+            ),
+        ),
+        Encoding::ByteStreamSplit => (
+            PqEncoding::BYTE_STREAM_SPLIT,
+            matches!(
+                physical,
+                Physical::FLOAT
+                    | Physical::DOUBLE
+                    | Physical::INT32
+                    | Physical::INT64
+                    | Physical::FIXED_LEN_BYTE_ARRAY
+            ),
+        ),
+        Encoding::Rle => (PqEncoding::RLE, physical == Physical::BOOLEAN),
+    };
+    fits.then_some(parquet)
+}
+
+/// Whether two paths name the same existing file.
+pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
     }
 }
 

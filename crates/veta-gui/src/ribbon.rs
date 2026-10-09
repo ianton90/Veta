@@ -56,7 +56,6 @@ impl Action {
     /// Issue tracking a command that is not built yet.
     pub fn planned(self) -> Option<u32> {
         Some(match self {
-            Action::Save | Action::SaveAs => 26,
             Action::Import => 45,
             Action::Export => 46,
             Action::DuplicateColumn => 40,
@@ -72,6 +71,8 @@ impl Action {
             Action::FileMetadata => 28,
             Action::WriterSettings => 27,
             Action::Open
+            | Action::Save
+            | Action::SaveAs
             | Action::AddColumn
             | Action::ChooseColumns
             | Action::RemoveColumns
@@ -372,7 +373,9 @@ impl Context {
             | Action::RemoveRows
             | Action::RemoveColumns
             | Action::RenameColumn => self.has_selection,
-            Action::AddColumn | Action::ChooseColumns => self.has_document,
+            Action::Save | Action::SaveAs | Action::AddColumn | Action::ChooseColumns => {
+                self.has_document
+            }
             Action::Redo => self.can_redo,
             _ => true,
         }

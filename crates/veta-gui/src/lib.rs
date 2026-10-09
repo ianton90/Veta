@@ -167,6 +167,8 @@ struct App {
     /// Cell being edited in the formula bar.
     edit: Option<Edit>,
     menu: Option<ContextMenu>,
+    /// Document being saved; the window is blocked meanwhile.
+    saving: Option<DocumentId>,
 }
 
 /// An open right-click menu.
@@ -226,6 +228,9 @@ enum Message {
     Ribbon(RibbonMessage),
     FilesPicked(Vec<PathBuf>),
     Opened(PathBuf, Result<Loaded, String>),
+    /// Save As dialog closed (with the chosen path, if any).
+    SaveTo(DocumentId, Option<PathBuf>),
+    Saved(DocumentId, Result<Slot<veta_core::SaveResult>, String>),
     SelectTab(DocumentId),
     CloseTab(DocumentId),
     Grid(DocumentId, GridEvent),
@@ -244,20 +249,28 @@ enum Message {
     OpenDialog,
 }
 
-/// A document opened on a worker thread. Messages must be `Clone`, documents
-/// are not, so the document travels in a take-once slot.
-#[derive(Debug, Clone)]
-struct Loaded(Arc<Mutex<Option<Document>>>);
+/// A value produced on a worker thread. Messages must be `Clone`; documents
+/// and save results are not, so they travel in a take-once slot.
+#[derive(Debug)]
+struct Slot<T>(Arc<Mutex<Option<T>>>);
 
-impl Loaded {
-    fn new(document: Document) -> Self {
-        Self(Arc::new(Mutex::new(Some(document))))
+impl<T> Clone for Slot<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T> Slot<T> {
+    fn new(value: T) -> Self {
+        Self(Arc::new(Mutex::new(Some(value))))
     }
 
-    fn take(&self) -> Option<Document> {
+    fn take(&self) -> Option<T> {
         self.0.lock().ok()?.take()
     }
 }
+
+type Loaded = Slot<Document>;
 
 impl App {
     fn new(startup: Startup, files: Vec<PathBuf>) -> (Self, Task<Message>) {
@@ -279,6 +292,7 @@ impl App {
             text_size,
             edit: None,
             menu: None,
+            saving: None,
         };
         let open = app.open(files);
         let system = iced::system::theme().map(Message::SystemMode);
@@ -325,6 +339,10 @@ impl App {
                     }
                     keyboard::Key::Character("z") => Some(Message::Action(Action::Undo)),
                     keyboard::Key::Character("y") => Some(Message::Action(Action::Redo)),
+                    keyboard::Key::Character("s") if modifiers.shift() => {
+                        Some(Message::Action(Action::SaveAs))
+                    }
+                    keyboard::Key::Character("s") => Some(Message::Action(Action::Save)),
                     keyboard::Key::Character("o") => Some(Message::Action(Action::Open)),
                     keyboard::Key::Character("w") => Some(Message::Action(Action::Close)),
                     keyboard::Key::Character(",") => Some(Message::Action(Action::Settings)),
@@ -340,6 +358,16 @@ impl App {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        if self.saving.is_some()
+            && !matches!(
+                message,
+                Message::Saved(..)
+                    | Message::SystemMode(_)
+                    | Message::Grid(_, GridEvent::Resized { .. } | GridEvent::Scroll { .. })
+            )
+        {
+            return Task::none();
+        }
         match message {
             Message::Action(action) => return self.perform(action),
             Message::OpenDialog => return self.perform(Action::Open),
@@ -360,6 +388,25 @@ impl App {
                     Err(e) => self
                         .errors
                         .push(format!("Could not open {}: {e}", path.display())),
+                }
+            }
+            Message::SaveTo(id, Some(path)) => return self.start_save(id, Some(path)),
+            Message::SaveTo(_, None) => {}
+            Message::Saved(id, result) => {
+                self.saving = None;
+                match result.map(|slot| slot.take()) {
+                    Ok(Some(saved)) => {
+                        if let Some(doc) = self.workbook.get_mut(id) {
+                            doc.finish_save(saved);
+                            if let Some(path) = doc.path().map(Path::to_path_buf) {
+                                self.config.add_recent(&path);
+                                self.save_config();
+                            }
+                        }
+                        self.refresh(id);
+                    }
+                    Ok(None) => {}
+                    Err(e) => self.errors.push(format!("Could not save: {e}")),
                 }
             }
             Message::SelectTab(id) => self.active = Some(id),
@@ -548,6 +595,21 @@ impl App {
                     self.close(id);
                 }
             }
+            Action::Save => {
+                if let Some(id) = self.active {
+                    let has_path = self.workbook.get(id).and_then(Document::path).is_some();
+                    return if has_path {
+                        self.start_save(id, None)
+                    } else {
+                        self.save_as(id)
+                    };
+                }
+            }
+            Action::SaveAs => {
+                if let Some(id) = self.active {
+                    return self.save_as(id);
+                }
+            }
             Action::Undo | Action::Redo => {
                 self.edit = None;
                 if let Some(id) = self.active
@@ -678,6 +740,40 @@ impl App {
             )
         {
             tab.grid.select_rows(at..at + count, doc);
+        }
+    }
+
+    /// Asks where to save, then saves there.
+    fn save_as(&mut self, id: DocumentId) -> Task<Message> {
+        self.commit_edit();
+        let Some(doc) = self.workbook.get(id) else {
+            return Task::none();
+        };
+        let name = doc.title();
+        let dir = doc.path().and_then(Path::parent).map(Path::to_path_buf);
+        Task::perform(pick_save_path(name, dir), move |path| {
+            Message::SaveTo(id, path)
+        })
+    }
+
+    /// Saves on a worker thread; `None` saves to the document's own path.
+    fn start_save(&mut self, id: DocumentId, target: Option<PathBuf>) -> Task<Message> {
+        self.commit_edit();
+        let Some(doc) = self.workbook.get(id) else {
+            return Task::none();
+        };
+        match doc.save_job(target) {
+            Ok(job) => {
+                self.saving = Some(id);
+                Task::perform(
+                    blocking(move || job.run().map(Slot::new).map_err(|e| e.to_string())),
+                    move |result| Message::Saved(id, result),
+                )
+            }
+            Err(e) => {
+                self.errors.push(format!("Could not save: {e}"));
+                Task::none()
+            }
         }
     }
 
@@ -946,6 +1042,33 @@ impl App {
             panes::status_bar(self.active_document(), self.opening.len(), ui),
         ];
 
+        if self.saving.is_some() {
+            let t = ui.tokens;
+            return stack![
+                window,
+                opaque(
+                    center(
+                        container(iced::widget::text("Saving…").size(ui.heading()))
+                            .padding(24)
+                            .style(move |_theme: &Theme| {
+                                container::Style::default()
+                                    .background(t.background)
+                                    .color(t.text)
+                                    .border(iced::Border {
+                                        color: t.border,
+                                        width: 1.0,
+                                        radius: 8.0.into(),
+                                    })
+                            })
+                    )
+                    .style(|_theme: &Theme| {
+                        container::Style::default()
+                            .background(Color::from_rgba(0.0, 0.0, 0.0, 0.25))
+                    })
+                ),
+            ]
+            .into();
+        }
         if let Some(menu) = &self.menu {
             let rows = self.selected_rows(menu.document).map_or(1, |r| r.len());
             let columns = self.selected_columns(menu.document).map_or(1, |c| c.len());
@@ -999,6 +1122,21 @@ fn divider<'a>(tokens: Tokens, vertical: bool) -> Element<'a, Message> {
     } else {
         rule::horizontal(1).style(style).into()
     }
+}
+
+async fn pick_save_path(name: String, dir: Option<PathBuf>) -> Option<PathBuf> {
+    let mut dialog = rfd::AsyncFileDialog::new()
+        .set_title("Save as")
+        .set_file_name(name)
+        .add_filter("Parquet", &["parquet"]);
+    if let Some(dir) = dir {
+        dialog = dialog.set_directory(dir);
+    }
+    let mut path = dialog.save_file().await?.path().to_path_buf();
+    if path.extension().is_none() {
+        path.set_extension("parquet");
+    }
+    Some(path)
 }
 
 async fn pick_files() -> Option<Vec<PathBuf>> {
@@ -1288,6 +1426,45 @@ mod tests {
             let _ = app.update(Message::Action(Action::Undo));
         }
         assert_eq!(names(&app), ["id", "name", "score", "flag"]);
+    }
+
+    #[test]
+    fn save_in_place_and_save_as() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectRows {
+                row: 0,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::RemoveRows));
+        assert!(app.workbook.get(id).unwrap().is_modified());
+
+        // What the worker thread does, run inline.
+        let run = |app: &App, target: Option<PathBuf>| {
+            let job = app.workbook.get(id).unwrap().save_job(target).unwrap();
+            Message::Saved(id, job.run().map(Slot::new).map_err(|e| e.to_string()))
+        };
+        app.saving = Some(id);
+        let _ = app.update(Message::Action(Action::Undo)); // ignored while saving
+        let saved = run(&app, None);
+        let _ = app.update(saved);
+        assert!(app.saving.is_none());
+        let doc = app.workbook.get(id).unwrap();
+        assert!(!doc.is_modified());
+        assert_eq!(doc.num_rows(), 999);
+        assert_eq!(app.tabs[0].grid.value(0, 0), Some(Some("1")));
+
+        let copy = dir.join("copy.parquet");
+        let saved = run(&app, Some(copy.clone()));
+        let _ = app.update(saved);
+        assert_eq!(app.title(), "copy.parquet — Veta");
+        assert!(copy.exists());
     }
 
     #[test]

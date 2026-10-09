@@ -178,7 +178,6 @@ impl History {
         }
     }
 
-    #[allow(dead_code)] // Used by saving (#26).
     pub(crate) fn mark_saved(&mut self) {
         self.saved = Some(self.undo.len());
     }
