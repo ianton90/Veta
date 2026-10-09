@@ -2,14 +2,14 @@
 
 use std::path::PathBuf;
 
-use iced::widget::{button, center, column, container, row, scrollable, text};
+use iced::widget::{button, center, column, container, row, scrollable, text, text_input};
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 use veta_core::display::{abbreviate, human_bytes};
 use veta_core::{Document, DocumentId, SourceMode};
 
 use crate::icon::{Icon, icon};
 use crate::theme::Tokens;
-use crate::{Message, Tab, Ui, bold};
+use crate::{Edit, FORMULA_ID, Message, Tab, Ui, bold};
 
 const SIDE_PANE_WIDTH: f32 = 300.0;
 
@@ -213,7 +213,14 @@ pub fn status_bar(
                 .unwrap_or_default();
             parts.push(format!("Row {}, {name}", r + 1));
         }
-        parts.push("No changes".into());
+        parts.push(
+            if doc.is_modified() {
+                "Unsaved changes"
+            } else {
+                "No changes"
+            }
+            .into(),
+        );
         if let Some(e) = tab.grid.error() {
             parts.push(format!("Read error: {e}"));
         }
@@ -230,6 +237,68 @@ pub fn status_bar(
     .padding([4, 12])
     .width(Length::Fill)
     .style(move |_theme: &Theme| surface(t))
+    .into()
+}
+
+/// Shows and edits the selected cell, like Excel's formula bar.
+pub fn formula_bar<'a>(
+    tab: &'a Tab,
+    doc: &'a Document,
+    edit: Option<&'a Edit>,
+    ui: Ui,
+) -> Element<'a, Message> {
+    let t = ui.tokens;
+    let selected = tab.grid.selected();
+    let label = match selected {
+        Some((row, column)) => {
+            let name = doc
+                .schema()
+                .fields()
+                .get(column)
+                .map(|f| f.name().clone())
+                .unwrap_or_default();
+            format!("{name} · row {}", row + 1)
+        }
+        None => String::new(),
+    };
+    let current = selected.and_then(|(r, c)| tab.grid.value(r, c));
+    let (value, placeholder) = match (edit, current) {
+        (Some(edit), _) => (edit.text.as_str(), ""),
+        (None, Some(Some(value))) => (value, ""),
+        (None, Some(None)) => ("", "null"),
+        (None, None) => ("", ""),
+    };
+    let mut input = text_input(placeholder, value)
+        .id(FORMULA_ID)
+        .size(ui.small())
+        .padding([3, 6]);
+    if selected.is_some() {
+        input = input
+            .on_input(Message::EditInput)
+            .on_submit(Message::CommitEdit);
+    }
+    let hint = if edit.is_some() {
+        "Enter to apply · Esc to cancel"
+    } else {
+        ""
+    };
+    container(
+        row![
+            text(label)
+                .size(ui.small())
+                .width(200)
+                .color(t.muted_text)
+                .wrapping(text::Wrapping::None),
+            icon(Icon::Function, ui.size).color(t.muted_text),
+            input,
+            text(hint).size(ui.small()).color(t.muted_text),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .padding([4, 8])
+    .width(Length::Fill)
+    .style(move |_theme: &Theme| container::Style::default().background(t.background))
     .into()
 }
 

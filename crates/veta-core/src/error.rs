@@ -25,7 +25,15 @@ impl fmt::Display for Error {
             Error::Io(e) => write!(f, "I/O error: {e}"),
             Error::Parquet(e) => write!(f, "Parquet error: {e}"),
             Error::Arrow(e) => write!(f, "Arrow error: {e}"),
-            Error::InvalidCommand(msg) => write!(f, "invalid command: {msg}"),
+            Error::InvalidCommand(msg) => {
+                // Messages are written lowercase to compose; show them as a
+                // sentence on their own.
+                let mut chars = msg.chars();
+                match chars.next() {
+                    Some(first) => write!(f, "{}{}", first.to_uppercase(), chars.as_str()),
+                    None => Ok(()),
+                }
+            }
             Error::DocumentNotFound(id) => write!(f, "document {id} not found"),
         }
     }

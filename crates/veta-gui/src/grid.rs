@@ -18,6 +18,7 @@ use iced::{
     Border, Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Renderer, Size, Theme,
     font,
 };
+use std::time::{Duration, Instant};
 use veta_core::Document;
 
 use crate::theme::Tokens;
@@ -81,6 +82,13 @@ pub enum GridEvent {
         column: usize,
         width: f32,
     },
+    /// Start editing the selected cell, optionally replacing its text with
+    /// what was typed.
+    StartEdit {
+        initial: Option<String>,
+    },
+    /// Set the selected cell to null.
+    ClearCell,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,26 +164,71 @@ impl GridView {
 
     /// Sizes each column to its header and the values currently loaded.
     fn fit_columns(&mut self) {
-        for (i, column) in self.columns.iter_mut().enumerate() {
-            let values = self
-                .cells
-                .iter()
-                .filter_map(|row| row.get(i))
-                .map(|v| v.as_deref().unwrap_or(NULL_TEXT).chars().count());
-            let chars = values
-                .chain([
-                    column.name.chars().count(),
-                    column.type_name.chars().count(),
-                ])
-                .max()
-                .unwrap_or(0);
-            column.width = (chars as f32 * self.metrics.char_width + 2.0 * CELL_PADDING + 4.0)
-                .clamp(MIN_FITTED_WIDTH, MAX_FITTED_WIDTH);
+        for i in 0..self.columns.len() {
+            self.fit_column(i);
         }
+    }
+
+    fn fit_column(&mut self, i: usize) {
+        let column = &self.columns[i];
+        let values = self
+            .cells
+            .iter()
+            .filter_map(|row| row.get(i))
+            .map(|v| v.as_deref().unwrap_or(NULL_TEXT).chars().count());
+        let chars = values
+            .chain([
+                column.name.chars().count(),
+                column.type_name.chars().count(),
+            ])
+            .max()
+            .unwrap_or(0);
+        self.columns[i].width = (chars as f32 * self.metrics.char_width + 2.0 * CELL_PADDING + 4.0)
+            .clamp(MIN_FITTED_WIDTH, MAX_FITTED_WIDTH);
     }
 
     pub fn selected(&self) -> Option<(usize, usize)> {
         self.selected
+    }
+
+    /// Text of a loaded cell: `Some(None)` for null, `None` if not loaded.
+    pub fn value(&self, row: usize, column: usize) -> Option<Option<&str>> {
+        self.cell(row, column).map(Option::as_deref)
+    }
+
+    /// Re-reads the document after it changed: columns (keeping the widths
+    /// of columns that still exist), row count, selection and visible rows.
+    pub fn refresh(&mut self, document: &Document) {
+        let old: Vec<Column> = std::mem::take(&mut self.columns);
+        let schema = document.schema();
+        let mut fresh = Vec::new();
+        self.columns = schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let kept = old.iter().find(|c| &c.name == f.name());
+                if kept.is_none() {
+                    fresh.push(i);
+                }
+                Column {
+                    name: f.name().clone(),
+                    type_name: type_name(f.data_type()),
+                    numeric: is_numeric(f.data_type()),
+                    width: kept.map_or(MIN_FITTED_WIDTH, |c| c.width),
+                }
+            })
+            .collect();
+        self.num_rows = document.num_rows();
+        self.selected = self.selected.and_then(|(r, c)| {
+            (self.num_rows > 0 && !self.columns.is_empty())
+                .then(|| (r.min(self.num_rows - 1), c.min(self.columns.len() - 1)))
+        });
+        self.set_scroll(self.first_row, self.scroll_x);
+        self.load(document, true);
+        for i in fresh {
+            self.fit_column(i);
+        }
     }
 
     /// Error from the last read, if it failed.
@@ -201,6 +254,8 @@ impl GridView {
                 }
             }
             GridEvent::Navigate(nav) => self.navigate(nav),
+            // Edits go through the app, which owns the formula bar.
+            GridEvent::StartEdit { .. } | GridEvent::ClearCell => {}
             GridEvent::ColumnResized { column, width } => {
                 if let Some(c) = self.columns.get_mut(column) {
                     c.width = width.max(MIN_COLUMN_WIDTH);
@@ -341,7 +396,27 @@ struct State {
     focused: bool,
     drag: Drag,
     reported: Option<(usize, u32)>,
+    /// Time and cell of the last click, to detect double-clicks.
+    last_click: Option<(Instant, (usize, usize))>,
 }
+
+impl widget::operation::Focusable for State {
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn focus(&mut self) {
+        self.focused = true;
+    }
+
+    fn unfocus(&mut self) {
+        self.focused = false;
+    }
+}
+
+/// Id of the grid widget, for moving keyboard focus to it.
+pub const GRID_ID: widget::Id = widget::Id::new("grid");
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 #[derive(Debug, Default, Clone, Copy)]
 enum Drag {
@@ -513,6 +588,17 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         layout::Node::new(limits.max())
     }
 
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        _renderer: &Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        let state = tree.state.downcast_mut::<State>();
+        operation.focusable(Some(&GRID_ID), layout.bounds(), state);
+    }
+
     fn tag(&self) -> widget::tree::Tag {
         widget::tree::Tag::of::<State>()
     }
@@ -622,6 +708,16 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     }
                 } else if let Some((row, column)) = self.cell_at(&regions, position) {
                     shell.publish((self.on_event)(GridEvent::Select { row, column }));
+                    let now = Instant::now();
+                    let double = state.last_click.is_some_and(|(at, cell)| {
+                        cell == (row, column) && now.duration_since(at) < DOUBLE_CLICK
+                    });
+                    if double {
+                        state.last_click = None;
+                        shell.publish((self.on_event)(GridEvent::StartEdit { initial: None }));
+                    } else {
+                        state.last_click = Some((now, (row, column)));
+                    }
                 }
             }
             Event::Mouse(mouse::Event::CursorMoved { position }) => match state.drag {
@@ -670,10 +766,36 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 state.drag = Drag::None;
             }
-            Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
-                if state.focused =>
-            {
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                modifiers,
+                text,
+                ..
+            }) if state.focused => {
                 let ctrl = modifiers.command();
+                let edit = match key.as_ref() {
+                    keyboard::Key::Named(Named::Enter | Named::F2) => {
+                        Some(GridEvent::StartEdit { initial: None })
+                    }
+                    keyboard::Key::Named(Named::Delete) => Some(GridEvent::ClearCell),
+                    keyboard::Key::Named(Named::Backspace) => Some(GridEvent::StartEdit {
+                        initial: Some(String::new()),
+                    }),
+                    _ if !ctrl && !modifiers.alt() => text
+                        .as_ref()
+                        .filter(|t| t.chars().all(|c| !c.is_control()) && !t.is_empty())
+                        .map(|t| GridEvent::StartEdit {
+                            initial: Some(t.to_string()),
+                        }),
+                    _ => None,
+                };
+                if let Some(event) = edit {
+                    if view.selected.is_some() {
+                        shell.publish((self.on_event)(event));
+                        shell.capture_event();
+                    }
+                    return;
+                }
                 let nav = match key.as_ref() {
                     keyboard::Key::Named(Named::ArrowUp) => Some(Nav::Up),
                     keyboard::Key::Named(Named::ArrowDown) => Some(Nav::Down),

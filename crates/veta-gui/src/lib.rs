@@ -20,15 +20,18 @@ use iced::{
     Color, Element, Font, Length, Pixels, Size, Subscription, Task, Theme, event, font, keyboard,
     window,
 };
-use veta_core::{Document, DocumentId, OpenOptions, Workbook};
+use veta_core::{Command, Document, DocumentId, OpenOptions, Workbook, controller};
 
 use crate::config::Config;
 #[cfg(test)]
 use crate::config::ModePreference;
-use crate::grid::{GridEvent, GridView};
+use crate::grid::{GRID_ID, GridEvent, GridView, Nav};
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
 use crate::settings::{Draft, Outcome, SettingsMessage};
 use crate::theme::{Mode, Tokens, VetaTheme};
+
+/// Id of the formula bar's text input.
+const FORMULA_ID: iced::widget::Id = iced::widget::Id::new("formula");
 
 /// Opens the main window with `files` and blocks until it is closed.
 pub fn run(files: Vec<PathBuf>) -> iced::Result {
@@ -159,6 +162,16 @@ struct App {
     /// OS light/dark mode, once known.
     system_mode: Option<Mode>,
     text_size: f32,
+    /// Cell being edited in the formula bar.
+    edit: Option<Edit>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Edit {
+    document: DocumentId,
+    row: usize,
+    column: String,
+    text: String,
 }
 
 #[derive(Debug)]
@@ -185,6 +198,10 @@ enum Message {
     DismissError(usize),
     Settings(SettingsMessage),
     CloseDialog,
+    /// Esc: closes a dialog or cancels an edit.
+    Escape,
+    EditInput(String),
+    CommitEdit,
     SystemMode(iced::theme::Mode),
     OpenDialog,
 }
@@ -222,6 +239,7 @@ impl App {
             themes_dir: startup.themes_dir,
             system_mode: None,
             text_size,
+            edit: None,
         };
         let open = app.open(files);
         let system = iced::system::theme().map(Message::SystemMode);
@@ -258,11 +276,16 @@ impl App {
             iced::Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(keyboard::key::Named::Escape),
                 ..
-            }) => Some(Message::CloseDialog),
+            }) => Some(Message::Escape),
             iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
                 if modifiers.command() && status == event::Status::Ignored =>
             {
                 match key.as_ref() {
+                    keyboard::Key::Character("z") if modifiers.shift() => {
+                        Some(Message::Action(Action::Redo))
+                    }
+                    keyboard::Key::Character("z") => Some(Message::Action(Action::Undo)),
+                    keyboard::Key::Character("y") => Some(Message::Action(Action::Redo)),
                     keyboard::Key::Character("o") => Some(Message::Action(Action::Open)),
                     keyboard::Key::Character("w") => Some(Message::Action(Action::Close)),
                     keyboard::Key::Character(",") => Some(Message::Action(Action::Settings)),
@@ -302,12 +325,55 @@ impl App {
             }
             Message::SelectTab(id) => self.active = Some(id),
             Message::CloseTab(id) => self.close(id),
-            Message::Grid(id, event) => {
-                if let (Some(doc), Some(tab)) = (
-                    self.workbook.get(id),
-                    self.tabs.iter_mut().find(|t| t.id == id),
-                ) {
-                    tab.grid.apply(event, doc);
+            Message::Grid(id, event) => match event {
+                GridEvent::StartEdit { initial } => return self.start_edit(id, initial),
+                GridEvent::ClearCell => {
+                    if let Some((row, column)) = self.selected_cell(id) {
+                        self.execute(
+                            id,
+                            Command::SetCell {
+                                row,
+                                column,
+                                value: None,
+                            },
+                        );
+                    }
+                }
+                event => {
+                    if matches!(event, GridEvent::Select { .. } | GridEvent::Navigate(_)) {
+                        self.commit_edit();
+                    }
+                    if let (Some(doc), Some(tab)) = (
+                        self.workbook.get(id),
+                        self.tabs.iter_mut().find(|t| t.id == id),
+                    ) {
+                        tab.grid.apply(event, doc);
+                    }
+                }
+            },
+            Message::EditInput(text) => match &mut self.edit {
+                Some(edit) => edit.text = text,
+                None => {
+                    // Typing straight into the formula bar starts an edit.
+                    if let Some(id) = self.active {
+                        let task = self.start_edit(id, Some(text));
+                        return task;
+                    }
+                }
+            },
+            Message::CommitEdit => {
+                if self.commit_edit()
+                    && let Some(id) = self.active
+                {
+                    self.grid_event(id, GridEvent::Navigate(Nav::Down));
+                    return iced::widget::operation::focus(GRID_ID);
+                }
+            }
+            Message::Escape => {
+                if self.dialog.is_some() {
+                    self.dialog = None;
+                } else if self.edit.take().is_some() {
+                    return iced::widget::operation::focus(GRID_ID);
                 }
             }
             Message::DismissError(index) => {
@@ -352,6 +418,23 @@ impl App {
                     self.close(id);
                 }
             }
+            Action::Undo | Action::Redo => {
+                self.edit = None;
+                if let Some(id) = self.active
+                    && let Some(doc) = self.workbook.get_mut(id)
+                {
+                    let result = if action == Action::Undo {
+                        Ok(controller::undo(doc))
+                    } else {
+                        controller::redo(doc)
+                    };
+                    match result {
+                        Ok(true) => self.refresh(id),
+                        Ok(false) => {}
+                        Err(e) => self.errors.push(e.to_string()),
+                    }
+                }
+            }
             Action::ToggleDetails => self.show_side_pane = !self.show_side_pane,
             Action::Mode(mode) => {
                 self.config.appearance.mode = mode;
@@ -363,6 +446,105 @@ impl App {
             _ => {}
         }
         Task::none()
+    }
+
+    /// Runs a command on a document and refreshes its grid. Errors are
+    /// shown to the user. Returns whether the command succeeded.
+    fn execute(&mut self, id: DocumentId, command: Command) -> bool {
+        let Some(doc) = self.workbook.get_mut(id) else {
+            return false;
+        };
+        match controller::execute(doc, command) {
+            Ok(()) => {
+                self.refresh(id);
+                true
+            }
+            Err(e) => {
+                self.errors.push(e.to_string());
+                false
+            }
+        }
+    }
+
+    fn refresh(&mut self, id: DocumentId) {
+        if let (Some(doc), Some(tab)) = (
+            self.workbook.get(id),
+            self.tabs.iter_mut().find(|t| t.id == id),
+        ) {
+            tab.grid.refresh(doc);
+        }
+    }
+
+    fn grid_event(&mut self, id: DocumentId, event: GridEvent) {
+        if let (Some(doc), Some(tab)) = (
+            self.workbook.get(id),
+            self.tabs.iter_mut().find(|t| t.id == id),
+        ) {
+            tab.grid.apply(event, doc);
+        }
+    }
+
+    /// Row and column name of the selected cell in a document's grid.
+    fn selected_cell(&self, id: DocumentId) -> Option<(usize, String)> {
+        let tab = self.tabs.iter().find(|t| t.id == id)?;
+        let (row, column) = tab.grid.selected()?;
+        let doc = self.workbook.get(id)?;
+        Some((row, doc.schema().field(column).name().clone()))
+    }
+
+    /// Starts editing the selected cell in the formula bar.
+    fn start_edit(&mut self, id: DocumentId, initial: Option<String>) -> Task<Message> {
+        let Some((row, column)) = self.selected_cell(id) else {
+            return Task::none();
+        };
+        let text = initial.unwrap_or_else(|| self.cell_text(id).unwrap_or_default());
+        self.edit = Some(Edit {
+            document: id,
+            row,
+            column,
+            text,
+        });
+        Task::batch([
+            iced::widget::operation::focus(FORMULA_ID),
+            iced::widget::operation::move_cursor_to_end(FORMULA_ID),
+        ])
+    }
+
+    /// Text of the selected cell (empty for null).
+    fn cell_text(&self, id: DocumentId) -> Option<String> {
+        let tab = self.tabs.iter().find(|t| t.id == id)?;
+        let (row, column) = tab.grid.selected()?;
+        match tab.grid.value(row, column) {
+            Some(value) => Some(value.unwrap_or_default().to_owned()),
+            None => {
+                let batch = self.workbook.get(id)?.read(row..row + 1).ok()?;
+                let cells = veta_core::display::format_batch(&batch).ok()?;
+                Some(cells.first()?.get(column)?.clone().unwrap_or_default())
+            }
+        }
+    }
+
+    /// Applies the formula bar edit, if any. Returns whether it was applied.
+    fn commit_edit(&mut self) -> bool {
+        let Some(edit) = self.edit.take() else {
+            return false;
+        };
+        if self.cell_text(edit.document).as_deref() == Some(edit.text.as_str()) {
+            return true;
+        }
+        let ok = self.execute(
+            edit.document,
+            Command::SetCell {
+                row: edit.row,
+                column: edit.column.clone(),
+                value: Some(edit.text.clone()),
+            },
+        );
+        if !ok {
+            // Keep the text so it can be fixed.
+            self.edit = Some(edit);
+        }
+        ok
     }
 
     fn save_config(&mut self) {
@@ -440,8 +622,13 @@ impl App {
         let main: Element<'_, Message> = match self.active_document() {
             Some((tab, doc)) => {
                 let id = tab.id;
+                let edit = self.edit.as_ref().filter(|e| e.document == id);
                 let grid = grid::grid(&tab.grid, ui.tokens, move |e| Message::Grid(id, e));
-                let grid = container(grid).width(Length::Fill).height(Length::Fill);
+                let grid = column![
+                    panes::formula_bar(tab, doc, edit, ui),
+                    divider(ui.tokens, false),
+                    container(grid).width(Length::Fill).height(Length::Fill),
+                ];
                 if self.show_side_pane {
                     row![grid, divider(ui.tokens, true), panes::side_pane(doc, ui)].into()
                 } else {
@@ -453,6 +640,12 @@ impl App {
 
         let context = ribbon::Context {
             has_document: self.active.is_some(),
+            can_undo: self
+                .active_document()
+                .is_some_and(|(_, d)| d.history().can_undo()),
+            can_redo: self
+                .active_document()
+                .is_some_and(|(_, d)| d.history().can_redo()),
             details_visible: self.show_side_pane,
             mode: self.config.appearance.mode,
             tokens: ui.tokens,
@@ -615,6 +808,48 @@ mod tests {
         assert_eq!(app.errors.len(), 1);
         let _ = app.update(Message::DismissError(0));
         assert!(app.errors.is_empty());
+    }
+
+    #[test]
+    fn edit_commit_and_undo() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let score = |app: &App| app.tabs[0].grid.value(2, 2).flatten().map(str::to_owned);
+
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 2, column: 2 }));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::StartEdit {
+                initial: Some("7".into()),
+            },
+        ));
+        let _ = app.update(Message::EditInput("7.25".into()));
+        let _ = app.update(Message::CommitEdit);
+        assert!(app.edit.is_none());
+        assert_eq!(score(&app).as_deref(), Some("7.25"));
+        assert_eq!(app.tabs[0].grid.selected(), Some((3, 2)), "moved down");
+        assert!(app.workbook.get(id).unwrap().is_modified());
+
+        // Invalid input keeps the edit open and reports the error.
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::StartEdit {
+                initial: Some("x".into()),
+            },
+        ));
+        let _ = app.update(Message::CommitEdit);
+        assert!(app.edit.is_some());
+        assert_eq!(app.errors.len(), 1);
+        let _ = app.update(Message::Escape);
+        assert!(app.edit.is_none());
+
+        let _ = app.update(Message::Action(Action::Undo));
+        assert_eq!(score(&app).as_deref(), Some("1.0"));
+        let _ = app.update(Message::Action(Action::Redo));
+        assert_eq!(score(&app).as_deref(), Some("7.25"));
     }
 
     #[test]

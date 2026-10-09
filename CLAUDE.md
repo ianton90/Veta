@@ -27,4 +27,4 @@ xvfb-run -a -s "-screen 0 1280x800x24" bash -c \
   './target/debug/veta open /tmp/fx/*.parquet & P=$!; sleep 12; import -window root /tmp/shot.png; kill $P'
 ```
 
-Use `xdotool` (mousemove, click, key) inside the `xvfb-run` script to interact, take screenshots with `import`, and look at them before reporting GUI work as done. Drag and drop can't be tested this way.
+Use `xdotool` (mousemove, click, key) inside the `xvfb-run` script to interact; first give the window keyboard focus with `xdotool windowfocus $(xdotool search --name Veta | head -1)` (there is no window manager). Take screenshots with `import`, and look at them before reporting GUI work as done. Drag and drop can't be tested this way.

@@ -58,7 +58,6 @@ impl Action {
             Action::Save | Action::SaveAs => 26,
             Action::Import => 45,
             Action::Export => 46,
-            Action::Undo | Action::Redo => 21,
             Action::ChooseColumns
             | Action::RemoveColumns
             | Action::DuplicateColumn
@@ -76,6 +75,8 @@ impl Action {
             Action::FileMetadata => 28,
             Action::WriterSettings => 27,
             Action::Open
+            | Action::Undo
+            | Action::Redo
             | Action::Close
             | Action::ToggleDetails
             | Action::Mode(_)
@@ -344,6 +345,8 @@ fn groups(tab: Tab) -> Vec<Group> {
 #[derive(Debug, Clone, Copy)]
 pub struct Context {
     pub has_document: bool,
+    pub can_undo: bool,
+    pub can_redo: bool,
     pub details_visible: bool,
     pub mode: ModePreference,
     pub tokens: Tokens,
@@ -357,6 +360,8 @@ impl Context {
         }
         match action {
             Action::Close => self.has_document,
+            Action::Undo => self.can_undo,
+            Action::Redo => self.can_redo,
             _ => true,
         }
     }
