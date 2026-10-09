@@ -23,7 +23,7 @@ Cloud containers have no display. To see the app:
 apt-get install -y libxkbcommon-x11-0 xdotool        # once per container
 cargo run -p veta-testkit --example fixtures -- /tmp/fx
 xvfb-run -a -s "-screen 0 1280x800x24" bash -c \
-  './target/debug/veta open /tmp/fx/*.parquet & sleep 12; import -window root /tmp/shot.png; kill %1'
+  './target/debug/veta open /tmp/fx/*.parquet & P=$!; sleep 12; import -window root /tmp/shot.png; kill $P'
 ```
 
 Use `xdotool` (mousemove, click, key) inside the `xvfb-run` script to interact, take screenshots with `import`, and look at them before reporting GUI work as done. Drag and drop can't be tested this way.
