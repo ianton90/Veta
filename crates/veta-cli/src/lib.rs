@@ -3,11 +3,12 @@
 
 mod table;
 
+use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use veta_core::arrow::datatypes::{DataType, Field};
 use veta_core::display::{abbreviate, format_batch, human_bytes, type_name};
 use veta_core::{Document, OpenOptions};
@@ -55,7 +56,37 @@ pub enum Invocation {
 /// Parses the process arguments. Prints help/version or an argument error
 /// and exits the process when clap requires it.
 pub fn parse() -> Invocation {
-    invocation(Cli::parse())
+    parse_from(std::env::args_os())
+}
+
+/// Like [`parse`], for the given arguments (the first is the program name).
+///
+/// Arguments that start with a file path instead of a subcommand open the
+/// GUI with those files: this is how file managers launch the app
+/// (`veta C:\data\sales.parquet`).
+pub fn parse_from<I, T>(args: I) -> Invocation
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    if args.get(1).is_some_and(|first| is_file_argument(first)) {
+        return Invocation::Gui {
+            files: args[1..].iter().map(PathBuf::from).collect(),
+        };
+    }
+    invocation(Cli::parse_from(args))
+}
+
+/// Whether `arg` is neither an option nor a subcommand name.
+fn is_file_argument(arg: &OsStr) -> bool {
+    let arg = arg.to_string_lossy();
+    if arg.starts_with('-') || arg == "help" {
+        return false;
+    }
+    !Cli::command()
+        .get_subcommands()
+        .any(|c| c.get_name() == arg || c.get_all_aliases().any(|a| a == arg))
 }
 
 fn invocation(cli: Cli) -> Invocation {
@@ -250,7 +281,6 @@ fn head(doc: &Document, rows: usize, out: &mut impl Write) -> Result<(), Error> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
     use veta_testkit::{TempDir, fixtures};
 
     fn parse_args(args: &[&str]) -> Invocation {
@@ -284,6 +314,30 @@ mod tests {
                 rows: 3
             })
         );
+    }
+
+    #[test]
+    fn bare_file_paths_open_the_gui() {
+        // File managers launch `veta <path>` without the `open` subcommand.
+        assert_eq!(
+            parse_from(["veta", r"C:\Users\me\data.parquet"]),
+            Invocation::Gui {
+                files: vec![r"C:\Users\me\data.parquet".into()]
+            }
+        );
+        assert_eq!(
+            parse_from(["veta", "a.parquet", "b.parquet"]),
+            Invocation::Gui {
+                files: vec!["a.parquet".into(), "b.parquet".into()]
+            }
+        );
+        assert_eq!(
+            parse_from(["veta", "schema", "a.parquet"]),
+            Invocation::Cli(Command::Schema {
+                file: "a.parquet".into()
+            })
+        );
+        assert_eq!(parse_from(["veta"]), Invocation::Gui { files: vec![] });
     }
 
     #[test]
