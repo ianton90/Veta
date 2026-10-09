@@ -26,7 +26,9 @@ use veta_core::{Command, Document, DocumentId, OpenOptions, Workbook, controller
 use crate::config::Config;
 #[cfg(test)]
 use crate::config::ModePreference;
-use crate::dialogs::{ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage};
+use crate::dialogs::{
+    ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage, WriterDialog, WriterMessage,
+};
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav};
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
 use crate::settings::{Draft, Outcome, SettingsMessage};
@@ -220,6 +222,10 @@ enum Dialog {
         document: DocumentId,
         dialog: ChooseColumns,
     },
+    Writer {
+        document: DocumentId,
+        dialog: WriterDialog,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -245,6 +251,7 @@ enum Message {
     CloseMenu,
     ColumnDialog(ColumnMessage),
     Choose(ChooseMessage),
+    Writer(WriterMessage),
     SystemMode(iced::theme::Mode),
     OpenDialog,
 }
@@ -529,6 +536,19 @@ impl App {
                     }
                 }
             }
+            Message::Writer(message) => {
+                if let Some(Dialog::Writer { document, dialog }) = &mut self.dialog {
+                    let id = *document;
+                    let cancel = matches!(message, WriterMessage::Cancel);
+                    if let Some(command) = dialog.update(message) {
+                        if self.execute(id, command) {
+                            self.dialog = None;
+                        }
+                    } else if cancel {
+                        self.dialog = None;
+                    }
+                }
+            }
             Message::Choose(message) => {
                 if let Some(Dialog::Choose { document, dialog }) = &mut self.dialog {
                     let id = *document;
@@ -668,6 +688,22 @@ impl App {
                     self.dialog = Some(Dialog::Choose {
                         document: id,
                         dialog: ChooseColumns::new(names),
+                    });
+                }
+            }
+            Action::WriterSettings => {
+                if let Some(id) = self.active
+                    && let Some(doc) = self.workbook.get(id)
+                {
+                    let columns = doc
+                        .schema()
+                        .fields()
+                        .iter()
+                        .map(|f| (f.name().clone(), f.data_type().clone()))
+                        .collect();
+                    self.dialog = Some(Dialog::Writer {
+                        document: id,
+                        dialog: WriterDialog::new(doc.writer_settings().clone(), columns),
                     });
                 }
             }
@@ -1096,6 +1132,7 @@ impl App {
             Dialog::About => settings::about(Message::CloseDialog, ui.tokens),
             Dialog::Column { dialog, .. } => dialog.view(ui.tokens).map(Message::ColumnDialog),
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
+            Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
         };
         stack![
             window,

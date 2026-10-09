@@ -191,3 +191,69 @@ impl std::fmt::Display for StatisticsLevel {
         })
     }
 }
+
+impl Compression {
+    /// Codecs offered when choosing a compression (LZO cannot be written).
+    pub const CHOICES: [Compression; 7] = [
+        Compression::Uncompressed,
+        Compression::Snappy,
+        Compression::Gzip(None),
+        Compression::Brotli(None),
+        Compression::Lz4,
+        Compression::Lz4Raw,
+        Compression::Zstd(None),
+    ];
+
+    /// The same codec without a level.
+    pub fn without_level(self) -> Compression {
+        match self {
+            Compression::Gzip(_) => Compression::Gzip(None),
+            Compression::Brotli(_) => Compression::Brotli(None),
+            Compression::Zstd(_) => Compression::Zstd(None),
+            other => other,
+        }
+    }
+}
+
+impl StatisticsLevel {
+    pub const ALL: [StatisticsLevel; 3] = [Self::None, Self::Chunk, Self::Page];
+}
+
+impl FormatVersion {
+    pub const ALL: [FormatVersion; 2] = [Self::V1, Self::V2];
+}
+
+impl Encoding {
+    /// Encodings that apply to columns of `data_type`.
+    pub fn choices_for(data_type: &arrow::datatypes::DataType) -> Vec<Encoding> {
+        use arrow::datatypes::DataType as T;
+        let mut choices = vec![Encoding::Plain];
+        match data_type {
+            T::Int8
+            | T::Int16
+            | T::Int32
+            | T::Int64
+            | T::UInt8
+            | T::UInt16
+            | T::UInt32
+            | T::UInt64
+            | T::Date32
+            | T::Date64
+            | T::Time32(_)
+            | T::Time64(_)
+            | T::Timestamp(..)
+            | T::Duration(_)
+            | T::Decimal32(..)
+            | T::Decimal64(..) => {
+                choices.extend([Encoding::DeltaBinaryPacked, Encoding::ByteStreamSplit]);
+            }
+            T::Float16 | T::Float32 | T::Float64 => choices.push(Encoding::ByteStreamSplit),
+            T::Utf8 | T::LargeUtf8 | T::Utf8View | T::Binary | T::LargeBinary | T::BinaryView => {
+                choices.extend([Encoding::DeltaLengthByteArray, Encoding::DeltaByteArray]);
+            }
+            T::Boolean => choices.push(Encoding::Rle),
+            _ => {}
+        }
+        choices
+    }
+}

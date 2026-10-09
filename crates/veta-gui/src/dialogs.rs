@@ -1,9 +1,12 @@
-//! Small dialogs for column commands: add, rename, choose columns.
+//! Dialogs for column commands (add, rename, choose columns) and writer
+//! settings.
 
 use iced::widget::{Space, button, checkbox, column, pick_list, row, scrollable, text, text_input};
 use iced::{Alignment, Element, Length};
-use veta_core::Command;
 use veta_core::arrow::datatypes::{DataType, TimeUnit};
+use veta_core::{
+    ColumnSettings, Command, Compression, Encoding, FormatVersion, StatisticsLevel, WriterSettings,
+};
 
 use crate::settings::card;
 use crate::theme::Tokens;
@@ -232,6 +235,184 @@ impl ChooseColumns {
     }
 }
 
+/// Edit the settings used when saving: file-wide settings, defaults for new
+/// columns, and per-column settings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WriterDialog {
+    settings: WriterSettings,
+    /// Top-level columns and their types, in order.
+    columns: Vec<(String, DataType)>,
+    row_group: String,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum WriterMessage {
+    Version(FormatVersion),
+    RowGroup(String),
+    /// `None` edits the defaults for new columns.
+    Compression(Option<usize>, Compression),
+    Encoding(usize, Encoding),
+    Dictionary(Option<usize>, bool),
+    Statistics(Option<usize>, StatisticsLevel),
+    Bloom(Option<usize>, bool),
+    Apply,
+    Cancel,
+}
+
+impl WriterDialog {
+    pub fn new(settings: WriterSettings, columns: Vec<(String, DataType)>) -> Self {
+        Self {
+            row_group: settings.max_row_group_rows.to_string(),
+            settings,
+            columns,
+            error: None,
+        }
+    }
+
+    /// Handles a message. Returns the command to run on apply.
+    pub fn update(&mut self, message: WriterMessage) -> Option<Command> {
+        match message {
+            WriterMessage::Version(v) => self.settings.format_version = v,
+            WriterMessage::RowGroup(text) => self.row_group = text,
+            WriterMessage::Compression(i, c) => self.edit(i, |s| s.compression = c),
+            WriterMessage::Encoding(i, e) => self.edit(Some(i), |s| s.encoding = e),
+            WriterMessage::Dictionary(i, on) => self.edit(i, |s| s.dictionary = on),
+            WriterMessage::Statistics(i, level) => self.edit(i, |s| s.statistics = level),
+            WriterMessage::Bloom(i, on) => self.edit(i, |s| s.bloom_filter = on),
+            WriterMessage::Cancel => {}
+            WriterMessage::Apply => match self.row_group.trim().parse::<usize>() {
+                Ok(rows) if rows > 0 => {
+                    let mut settings = self.settings.clone();
+                    settings.max_row_group_rows = rows;
+                    return Some(Command::SetWriterSettings(settings));
+                }
+                _ => self.error = Some("Rows per row group must be a whole number above 0.".into()),
+            },
+        }
+        None
+    }
+
+    fn column_settings(&self, i: Option<usize>) -> ColumnSettings {
+        match i.and_then(|i| self.columns.get(i)) {
+            Some((name, _)) => *self.settings.column(name),
+            None => self.settings.default_column,
+        }
+    }
+
+    fn edit(&mut self, i: Option<usize>, change: impl FnOnce(&mut ColumnSettings)) {
+        let Some((name, _)) = i.and_then(|i| self.columns.get(i)) else {
+            change(&mut self.settings.default_column);
+            return;
+        };
+        let mut column = *self.settings.column(name);
+        change(&mut column);
+        match self.settings.columns.iter_mut().find(|(p, _)| p == name) {
+            Some((_, existing)) => *existing = column,
+            None => self.settings.columns.push((name.clone(), column)),
+        }
+    }
+
+    pub fn view(&self, tokens: Tokens) -> Element<'_, WriterMessage> {
+        const NAME: f32 = 150.0;
+        const COMPRESSION: f32 = 150.0;
+        const ENCODING: f32 = 200.0;
+        const STATISTICS: f32 = 100.0;
+        const FLAG: f32 = 90.0;
+
+        let header = row![
+            text("Column").width(NAME),
+            text("Compression").width(COMPRESSION),
+            text("Encoding").width(ENCODING),
+            text("Dictionary").width(FLAG),
+            text("Statistics").width(STATISTICS),
+            text("Bloom filter").width(FLAG),
+        ]
+        .spacing(8);
+
+        let settings_row = |i: Option<usize>, label: String, encodings: Option<Vec<Encoding>>| {
+            let s = self.column_settings(i);
+            let encoding: Element<'_, WriterMessage> = match (encodings, i) {
+                (Some(choices), Some(i)) => pick_list(choices, Some(s.encoding), move |e| {
+                    WriterMessage::Encoding(i, e)
+                })
+                .width(ENCODING)
+                .into(),
+                _ => text("plain")
+                    .width(ENCODING)
+                    .color(tokens.muted_text)
+                    .into(),
+            };
+            row![
+                text(label).width(NAME),
+                pick_list(
+                    Compression::CHOICES,
+                    Some(s.compression.without_level()),
+                    move |c| { WriterMessage::Compression(i, c) }
+                )
+                .width(COMPRESSION),
+                encoding,
+                checkbox(s.dictionary)
+                    .on_toggle(move |on| WriterMessage::Dictionary(i, on))
+                    .width(FLAG),
+                pick_list(StatisticsLevel::ALL, Some(s.statistics), move |l| {
+                    WriterMessage::Statistics(i, l)
+                })
+                .width(STATISTICS),
+                checkbox(s.bloom_filter)
+                    .on_toggle(move |on| WriterMessage::Bloom(i, on))
+                    .width(FLAG),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+        };
+
+        let mut columns = column![header].spacing(6);
+        for (i, (name, data_type)) in self.columns.iter().enumerate() {
+            columns = columns.push(settings_row(
+                Some(i),
+                name.clone(),
+                Some(Encoding::choices_for(data_type)),
+            ));
+        }
+
+        let mut body = column![
+            text("Writer settings").size(20),
+            text("Used when saving. Opened files keep the settings they were written with.")
+                .color(tokens.muted_text),
+            row![
+                text("Format version").width(NAME),
+                pick_list(
+                    FormatVersion::ALL,
+                    Some(self.settings.format_version),
+                    WriterMessage::Version
+                )
+                .width(COMPRESSION),
+                Space::new().width(24),
+                text("Rows per row group"),
+                text_input("1048576", &self.row_group)
+                    .on_input(WriterMessage::RowGroup)
+                    .width(140),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            text("Columns").size(16),
+            scrollable(columns).height(Length::Fixed(260.0)),
+            settings_row(None, "New columns".into(), None),
+        ]
+        .spacing(14);
+        if let Some(error) = &self.error {
+            body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
+        }
+        body = body.push(buttons(
+            "Apply",
+            WriterMessage::Cancel,
+            WriterMessage::Apply,
+        ));
+        card(body.into(), tokens, 860.0)
+    }
+}
+
 fn buttons<'a, M: Clone + 'a>(action: &'a str, cancel: M, submit: M) -> Element<'a, M> {
     row![
         Space::new().width(Length::Fill),
@@ -270,6 +451,35 @@ mod tests {
                 to: "b".into()
             })
         );
+    }
+
+    #[test]
+    fn writer_dialog_edits_columns_and_defaults() {
+        let mut settings = WriterSettings::default();
+        settings
+            .columns
+            .push(("a".into(), ColumnSettings::default()));
+        let mut dialog = WriterDialog::new(
+            settings,
+            vec![("a".into(), DataType::Int64), ("b".into(), DataType::Utf8)],
+        );
+        dialog.update(WriterMessage::Compression(Some(0), Compression::Zstd(None)));
+        dialog.update(WriterMessage::Encoding(1, Encoding::DeltaByteArray));
+        dialog.update(WriterMessage::Dictionary(None, false));
+        dialog.update(WriterMessage::Version(FormatVersion::V1));
+        dialog.update(WriterMessage::RowGroup("x".into()));
+        assert_eq!(dialog.update(WriterMessage::Apply), None);
+        assert!(dialog.error.is_some());
+        dialog.update(WriterMessage::RowGroup("5000".into()));
+        let Some(Command::SetWriterSettings(s)) = dialog.update(WriterMessage::Apply) else {
+            panic!("expected settings");
+        };
+        assert_eq!(s.max_row_group_rows, 5000);
+        assert_eq!(s.format_version, FormatVersion::V1);
+        assert_eq!(s.column("a").compression, Compression::Zstd(None));
+        assert_eq!(s.column("b").encoding, Encoding::DeltaByteArray);
+        assert!(!s.default_column.dictionary);
+        assert_eq!(s.columns.len(), 2);
     }
 
     #[test]

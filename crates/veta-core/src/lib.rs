@@ -16,6 +16,8 @@ pub use arrow;
 pub use command::Command;
 pub use error::{Error, Result};
 pub use io::{OpenOptions, SaveJob, SaveResult};
-pub use model::{Compression, StatisticsLevel};
+pub use model::{
+    ColumnSettings, Compression, Encoding, FormatVersion, StatisticsLevel, WriterSettings,
+};
 pub use model::{Document, DocumentId, Workbook};
 pub use source::SourceMode;

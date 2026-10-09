@@ -69,8 +69,8 @@ impl Action {
             Action::AppliedSteps => 34,
             Action::StatisticsPane => 43,
             Action::FileMetadata => 28,
-            Action::WriterSettings => 27,
             Action::Open
+            | Action::WriterSettings
             | Action::Save
             | Action::SaveAs
             | Action::AddColumn
@@ -373,9 +373,11 @@ impl Context {
             | Action::RemoveRows
             | Action::RemoveColumns
             | Action::RenameColumn => self.has_selection,
-            Action::Save | Action::SaveAs | Action::AddColumn | Action::ChooseColumns => {
-                self.has_document
-            }
+            Action::Save
+            | Action::SaveAs
+            | Action::AddColumn
+            | Action::ChooseColumns
+            | Action::WriterSettings => self.has_document,
             Action::Redo => self.can_redo,
             _ => true,
         }
