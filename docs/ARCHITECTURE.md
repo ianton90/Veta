@@ -133,22 +133,29 @@ undone one edit at a time.
 - Themes: TOML files with font family/size, palette and light/dark flag,
   converted to an iced `Theme` plus Veta's own style tokens.
 
-## CLI shape (draft)
+## CLI
 
 ```
-veta                                  # open GUI
-veta open <file>...                   # open GUI with files
-veta info <file>                      # schema, row count, row groups, metadata
-veta head <file> [-n N]               # print rows
-veta stats <file> [--column C]
-veta set-cell <file> --row R --column C --value V [-o out]
-veta add-column / remove-column / rename-column ...
-veta meta get|set|remove <file> [key[=value]]
-veta apply <recipe.toml> <file> [-o out]
-veta convert <in> <out> [--format csv|json|parquet]
+veta [FILE]...                         # open GUI (with files)
+veta open <file>...                    # same
+veta info | schema <file>
+veta head <file> [-n N]
+veta set-cell <file> --row R --column C (--value V | --null)
+veta insert-rows <file> --at R [--count N]
+veta delete-rows <file> --rows 5,10-20
+veta add-column <file> <name> --type T [--at P]
+veta remove-column <file> <name>...
+veta rename-column <file> <from> <to>
+veta move-column <file> <name> --to P
+veta meta list|get|set|remove <file> [key [value]]
+veta writer-settings <file> [--column C]... [--compression ...] [--level N]
+      [--encoding ...] [--dictionary on|off] [--statistics none|chunk|page]
+      [--bloom-filter on|off] [--row-group-rows N] [--format-version 1|2]
 ```
 
-Commands that modify write in place unless `-o` is given.
+Rows and positions are numbered from 1, as in the GUI. Commands that modify
+write in place unless `-o FILE` is given. Planned: `stats`, `apply`,
+`convert`.
 
 ## Testing
 - `veta-core`: unit tests per module; integration tests on small parquet

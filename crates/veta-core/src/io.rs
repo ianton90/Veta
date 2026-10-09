@@ -195,6 +195,8 @@ fn column_settings(column: &ColumnChunkMetaData) -> ColumnSettings {
 
     // RLE is listed for definition/repetition levels and PLAIN for dictionary
     // pages, so a specialised encoding, if present, is the data encoding.
+    // With a dictionary, the fallback encoding only appears if the dictionary
+    // overflowed, so it can't always be recovered.
     let encoding = encodings
         .iter()
         .find_map(|e| match e {

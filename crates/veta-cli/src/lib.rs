@@ -1,6 +1,7 @@
 //! Veta's command-line interface. Parses arguments with clap and runs
 //! headless commands through `veta-core`.
 
+mod edit;
 mod table;
 
 use std::ffi::{OsStr, OsString};
@@ -11,7 +12,7 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser, Subcommand};
 use veta_core::arrow::datatypes::{DataType, Field};
 use veta_core::display::{abbreviate, format_batch, human_bytes, type_name};
-use veta_core::{Document, OpenOptions};
+use veta_core::{Command as CoreCommand, Document, OpenOptions};
 
 /// Parquet viewer and editor.
 ///
@@ -42,6 +43,85 @@ pub enum Command {
         #[arg(short = 'n', long, default_value_t = 10)]
         rows: usize,
     },
+    /// Set one cell. Rows are numbered from 1.
+    SetCell {
+        file: PathBuf,
+        #[arg(long)]
+        row: usize,
+        #[arg(long)]
+        column: String,
+        /// New value, parsed as the column's type.
+        #[arg(long, required_unless_present = "null", conflicts_with = "null")]
+        value: Option<String>,
+        /// Set the cell to null instead.
+        #[arg(long)]
+        null: bool,
+        #[command(flatten)]
+        output: edit::Output,
+    },
+    /// Insert empty rows before row AT (use the row count + 1 to append).
+    InsertRows {
+        file: PathBuf,
+        #[arg(long)]
+        at: usize,
+        #[arg(long, default_value_t = 1)]
+        count: usize,
+        #[command(flatten)]
+        output: edit::Output,
+    },
+    /// Delete rows, e.g. --rows 5 --rows 10-20 or --rows 5,10-20.
+    DeleteRows {
+        file: PathBuf,
+        #[arg(long, required = true)]
+        rows: Vec<String>,
+        #[command(flatten)]
+        output: edit::Output,
+    },
+    /// Add an empty column.
+    AddColumn {
+        file: PathBuf,
+        name: String,
+        /// Type, e.g. string, int64, float64, bool, date, timestamp[ms].
+        #[arg(long = "type", value_name = "TYPE")]
+        data_type: String,
+        /// Position, from 1 (default: last).
+        #[arg(long)]
+        at: Option<usize>,
+        #[command(flatten)]
+        output: edit::Output,
+    },
+    /// Remove columns.
+    RemoveColumn {
+        file: PathBuf,
+        #[arg(required = true)]
+        names: Vec<String>,
+        #[command(flatten)]
+        output: edit::Output,
+    },
+    /// Rename a column.
+    RenameColumn {
+        file: PathBuf,
+        from: String,
+        to: String,
+        #[command(flatten)]
+        output: edit::Output,
+    },
+    /// Move a column to a position, from 1.
+    MoveColumn {
+        file: PathBuf,
+        name: String,
+        #[arg(long)]
+        to: usize,
+        #[command(flatten)]
+        output: edit::Output,
+    },
+    /// Read or change key/value metadata.
+    Meta {
+        #[command(subcommand)]
+        command: edit::MetaCommand,
+    },
+    /// Show writer settings, or change them with the options below.
+    WriterSettings(edit::WriterArgs),
 }
 
 /// What the `veta` binary should do for the given arguments.
@@ -114,7 +194,7 @@ pub fn run(command: Command) -> ExitCode {
 }
 
 #[derive(Debug)]
-enum Error {
+pub(crate) enum Error {
     Core(veta_core::Error),
     Io(std::io::Error),
     Usage(String),
@@ -148,11 +228,88 @@ fn execute(command: Command, out: &mut impl Write) -> Result<(), Error> {
         Command::Info { file } => info(&open(&file)?, out),
         Command::Schema { file } => schema(&open(&file)?, out),
         Command::Head { file, rows } => head(&open(&file)?, rows, out),
+        Command::SetCell {
+            file,
+            row,
+            column,
+            value,
+            null,
+            output,
+        } => {
+            let row = edit::row_index(row)?;
+            let value = if null { None } else { value };
+            edit::edit(&file, &output, out, |_| {
+                Ok(vec![CoreCommand::SetCell { row, column, value }])
+            })
+        }
+        Command::InsertRows {
+            file,
+            at,
+            count,
+            output,
+        } => {
+            let at = edit::row_index(at)?;
+            edit::edit(&file, &output, out, |_| {
+                Ok(vec![CoreCommand::InsertRows { at, count }])
+            })
+        }
+        Command::DeleteRows { file, rows, output } => {
+            let rows = edit::parse_rows(&rows)?;
+            edit::edit(&file, &output, out, |_| {
+                Ok(vec![CoreCommand::DeleteRows { rows }])
+            })
+        }
+        Command::AddColumn {
+            file,
+            name,
+            data_type,
+            at,
+            output,
+        } => {
+            let data_type = edit::parse_type(&data_type)?;
+            let at = at.map(edit::row_index).transpose()?;
+            edit::edit(&file, &output, out, |doc| {
+                Ok(vec![CoreCommand::AddColumn {
+                    name,
+                    data_type,
+                    at: at.unwrap_or(doc.num_columns()),
+                }])
+            })
+        }
+        Command::RemoveColumn {
+            file,
+            names,
+            output,
+        } => edit::edit(&file, &output, out, |_| {
+            Ok(vec![CoreCommand::RemoveColumns { names }])
+        }),
+        Command::RenameColumn {
+            file,
+            from,
+            to,
+            output,
+        } => edit::edit(&file, &output, out, |_| {
+            Ok(vec![CoreCommand::RenameColumn { from, to }])
+        }),
+        Command::MoveColumn {
+            file,
+            name,
+            to,
+            output,
+        } => {
+            let to = edit::row_index(to)?;
+            edit::edit(&file, &output, out, |_| {
+                Ok(vec![CoreCommand::MoveColumn { name, to }])
+            })
+        }
+        Command::Meta { command } => edit::meta(command, out),
+        Command::WriterSettings(args) => edit::writer_settings(args, out),
     }
 }
 
-/// CLI commands read only what they print, so files are always paged.
-fn open(path: &std::path::Path) -> Result<Document, Error> {
+/// Files are always paged: commands read only what they print or write, so
+/// memory stays bounded even for large files.
+pub(crate) fn open(path: &std::path::Path) -> Result<Document, Error> {
     Document::open(path, OpenOptions::paged()).map_err(|e| {
         Error::Core(match e {
             veta_core::Error::Io(io) => veta_core::Error::Io(std::io::Error::new(
@@ -201,32 +358,48 @@ fn info(doc: &Document, out: &mut impl Write) -> Result<(), Error> {
         }
     }
 
-    if !writer.columns.is_empty() {
-        writeln!(out, "\nColumns:")?;
-        let header = [
-            "column",
-            "compression",
-            "encoding",
-            "dictionary",
-            "statistics",
-            "bloom",
-        ];
-        let rows = writer
-            .columns
-            .iter()
-            .map(|(path, c)| {
-                vec![
-                    Some(path.clone()),
-                    Some(c.compression.to_string()),
-                    Some(c.encoding.to_string()),
-                    Some(yes_no(c.dictionary).to_owned()),
-                    Some(c.statistics.to_string()),
-                    Some(yes_no(c.bloom_filter).to_owned()),
-                ]
-            })
-            .collect::<Vec<_>>();
-        table::write(out, &header.map(String::from), None, &rows, &[false; 6])?;
+    writeln!(out)?;
+    print_writer_settings(doc, out)
+}
+
+/// Prints per-column writer settings as a table.
+pub(crate) fn print_writer_settings(doc: &Document, out: &mut impl Write) -> Result<(), Error> {
+    let writer = doc.writer_settings();
+    writeln!(
+        out,
+        "Writer: format {}, {} rows per row group",
+        writer.format_version, writer.max_row_group_rows
+    )?;
+    let schema = doc.schema();
+    let header = [
+        "column",
+        "compression",
+        "encoding",
+        "dictionary",
+        "statistics",
+        "bloom",
+    ];
+    let mut paths: Vec<String> = writer.columns.iter().map(|(p, _)| p.clone()).collect();
+    for f in schema.fields() {
+        if !paths.contains(f.name()) {
+            paths.push(f.name().clone());
+        }
     }
+    let rows = paths
+        .iter()
+        .map(|path| {
+            let c = writer.column(path);
+            vec![
+                Some(path.clone()),
+                Some(c.compression.to_string()),
+                Some(c.encoding.to_string()),
+                Some(yes_no(c.dictionary).to_owned()),
+                Some(c.statistics.to_string()),
+                Some(yes_no(c.bloom_filter).to_owned()),
+            ]
+        })
+        .collect::<Vec<_>>();
+    table::write(out, &header.map(String::from), None, &rows, &[false; 6])?;
     Ok(())
 }
 
@@ -381,6 +554,197 @@ mod tests {
         assert!(lines[1].contains("int64"));
         assert!(lines[3].contains("null"), "row 0 has a null name: {text}");
         assert_eq!(lines[6], "(3 of 1000 rows)");
+    }
+
+    fn run_args(args: &[&str]) -> Result<String, String> {
+        let Invocation::Cli(command) = parse_args(args) else {
+            panic!("not a CLI command");
+        };
+        let mut out = Vec::new();
+        execute(command, &mut out).map_err(|e| e.to_string())?;
+        Ok(String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn edit_commands_change_the_file() {
+        let dir = TempDir::new();
+        let file = dir.join("mixed.parquet");
+        fixtures::mixed_settings(&file);
+        let f = file.to_str().unwrap();
+
+        run_args(&[
+            "veta", "set-cell", f, "--row", "1", "--column", "name", "--value", "first",
+        ])
+        .unwrap();
+        run_args(&[
+            "veta", "set-cell", f, "--row", "2", "--column", "score", "--null",
+        ])
+        .unwrap();
+        run_args(&["veta", "insert-rows", f, "--at", "1001", "--count", "2"]).unwrap();
+        run_args(&["veta", "delete-rows", f, "--rows", "3-4,10"]).unwrap();
+        run_args(&[
+            "veta",
+            "add-column",
+            f,
+            "note",
+            "--type",
+            "string",
+            "--at",
+            "1",
+        ])
+        .unwrap();
+        run_args(&["veta", "rename-column", f, "flag", "ok"]).unwrap();
+        run_args(&["veta", "move-column", f, "ok", "--to", "2"]).unwrap();
+        run_args(&["veta", "remove-column", f, "score"]).unwrap();
+
+        let doc = Document::open(&file, OpenOptions::default()).unwrap();
+        assert_eq!(doc.num_rows(), 1000 + 2 - 3);
+        let names: Vec<_> = doc
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(names, ["note", "ok", "id", "name"]);
+        let head = output(Command::Head {
+            file: file.clone(),
+            rows: 2,
+        });
+        assert!(head.contains("first"), "{head}");
+    }
+
+    #[test]
+    fn edit_to_output_leaves_source_alone() {
+        let dir = TempDir::new();
+        let file = dir.join("mixed.parquet");
+        fixtures::mixed_settings(&file);
+        let copy = dir.join("copy.parquet");
+        let text = run_args(&[
+            "veta",
+            "delete-rows",
+            file.to_str().unwrap(),
+            "--rows",
+            "1-500",
+            "-o",
+            copy.to_str().unwrap(),
+        ])
+        .unwrap();
+        assert!(text.starts_with("Saved"));
+        assert_eq!(
+            Document::open(&file, OpenOptions::default())
+                .unwrap()
+                .num_rows(),
+            1000
+        );
+        assert_eq!(
+            Document::open(&copy, OpenOptions::default())
+                .unwrap()
+                .num_rows(),
+            500
+        );
+    }
+
+    #[test]
+    fn meta_commands() {
+        let dir = TempDir::new();
+        let file = dir.join("mixed.parquet");
+        fixtures::mixed_settings(&file);
+        let f = file.to_str().unwrap();
+        run_args(&["veta", "meta", "set", f, "team", "data"]).unwrap();
+        assert_eq!(
+            run_args(&["veta", "meta", "get", f, "team"]).unwrap(),
+            "data\n"
+        );
+        run_args(&["veta", "meta", "remove", f, "owner"]).unwrap();
+        let list = run_args(&["veta", "meta", "list", f]).unwrap();
+        assert!(
+            list.contains("team = data") && !list.contains("owner"),
+            "{list}"
+        );
+        assert!(run_args(&["veta", "meta", "get", f, "owner"]).is_err());
+    }
+
+    #[test]
+    fn writer_settings_command() {
+        let dir = TempDir::new();
+        let file = dir.join("mixed.parquet");
+        fixtures::mixed_settings(&file);
+        let f = file.to_str().unwrap();
+        let shown = run_args(&["veta", "writer-settings", f]).unwrap();
+        assert!(shown.contains("300 rows per row group"), "{shown}");
+
+        run_args(&[
+            "veta",
+            "writer-settings",
+            f,
+            "--column",
+            "name",
+            "--compression",
+            "zstd",
+            "--level",
+            "5",
+            "--encoding",
+            "delta-byte-array",
+            "--dictionary",
+            "off",
+            "--row-group-rows",
+            "100",
+        ])
+        .unwrap();
+        let doc = Document::open(&file, OpenOptions::default()).unwrap();
+        let name = doc.writer_settings().column("name");
+        assert!(matches!(name.compression, veta_core::Compression::Zstd(_)));
+        assert_eq!(name.encoding, veta_core::Encoding::DeltaByteArray);
+        assert_eq!(doc.file_info().unwrap().row_groups.len(), 10);
+
+        let err = run_args(&[
+            "veta",
+            "writer-settings",
+            f,
+            "--column",
+            "flag",
+            "--encoding",
+            "delta-byte-array",
+        ])
+        .unwrap_err();
+        assert!(err.contains("does not apply"), "{err}");
+        assert!(run_args(&["veta", "writer-settings", f, "--level", "3"]).is_err());
+    }
+
+    #[test]
+    fn edit_errors_are_reported() {
+        let dir = TempDir::new();
+        let file = dir.join("mixed.parquet");
+        fixtures::mixed_settings(&file);
+        let f = file.to_str().unwrap();
+        let err = run_args(&[
+            "veta", "set-cell", f, "--row", "1", "--column", "score", "--value", "abc",
+        ])
+        .unwrap_err();
+        assert!(err.contains("not a valid float64"), "{err}");
+        assert!(
+            run_args(&[
+                "veta", "set-cell", f, "--row", "0", "--column", "id", "--value", "1"
+            ])
+            .is_err()
+        );
+        assert!(run_args(&["veta", "add-column", f, "x", "--type", "colour"]).is_err());
+        assert!(run_args(&["veta", "remove-column", f, "nope"]).is_err());
+        // Nothing was written by the failed commands.
+        assert!(
+            !Document::open(&file, OpenOptions::default())
+                .unwrap()
+                .is_modified()
+        );
+        assert_eq!(
+            output(Command::Head {
+                file: file.clone(),
+                rows: 1
+            })
+            .lines()
+            .count(),
+            5
+        );
     }
 
     #[test]

@@ -87,6 +87,77 @@ pub fn type_name(data_type: &DataType) -> String {
     }
 }
 
+/// Parses a type name as written by [`type_name`] for flat types, e.g.
+/// `int64`, `string`, `timestamp[ms, UTC]`, `decimal(10, 2)`. Also accepts
+/// a few aliases (`int`, `float`, `double`, `text`, `boolean`).
+pub fn parse_type_name(name: &str) -> Option<DataType> {
+    let raw = name.trim();
+    let lower = raw.to_ascii_lowercase();
+    let unit = |u: &str| match u.trim() {
+        "s" => Some(TimeUnit::Second),
+        "ms" => Some(TimeUnit::Millisecond),
+        "us" => Some(TimeUnit::Microsecond),
+        "ns" => Some(TimeUnit::Nanosecond),
+        _ => None,
+    };
+    // Arguments inside brackets, from the original text (time zone names are
+    // case-sensitive).
+    let args = |prefix: &str, open: char, close: char| -> Option<&str> {
+        if !lower.starts_with(prefix) {
+            return None;
+        }
+        raw[prefix.len()..].strip_prefix(open)?.strip_suffix(close)
+    };
+    let simple = match lower.as_str() {
+        "bool" | "boolean" => Some(DataType::Boolean),
+        "int8" => Some(DataType::Int8),
+        "int16" => Some(DataType::Int16),
+        "int32" => Some(DataType::Int32),
+        "int64" | "int" | "integer" => Some(DataType::Int64),
+        "uint8" => Some(DataType::UInt8),
+        "uint16" => Some(DataType::UInt16),
+        "uint32" => Some(DataType::UInt32),
+        "uint64" => Some(DataType::UInt64),
+        "float32" | "float" => Some(DataType::Float32),
+        "float64" | "double" => Some(DataType::Float64),
+        "string" | "text" | "utf8" => Some(DataType::Utf8),
+        "binary" => Some(DataType::Binary),
+        "date" => Some(DataType::Date32),
+        "timestamp" => Some(DataType::Timestamp(TimeUnit::Microsecond, None)),
+        _ => None,
+    };
+    if simple.is_some() {
+        return simple;
+    }
+    if let Some(args) = args("timestamp", '[', ']') {
+        let (u, tz) = match args.split_once(',') {
+            Some((u, tz)) => (u, Some(tz.trim()).filter(|t| !t.is_empty())),
+            None => (args, None),
+        };
+        return Some(DataType::Timestamp(
+            unit(&u.to_ascii_lowercase())?,
+            tz.map(Into::into),
+        ));
+    }
+    if let Some(args) = args("time", '[', ']') {
+        return Some(match unit(&args.to_ascii_lowercase())? {
+            u @ (TimeUnit::Second | TimeUnit::Millisecond) => DataType::Time32(u),
+            u => DataType::Time64(u),
+        });
+    }
+    if let Some(args) = args("decimal", '(', ')') {
+        let (p, s) = args.split_once(',')?;
+        let precision: u8 = p.trim().parse().ok()?;
+        let scale: i8 = s.trim().parse().ok()?;
+        return Some(if precision <= 38 {
+            DataType::Decimal128(precision, scale)
+        } else {
+            DataType::Decimal256(precision, scale)
+        });
+    }
+    None
+}
+
 /// Whether values of this type read best right-aligned.
 pub fn is_numeric(data_type: &DataType) -> bool {
     data_type.is_numeric() || matches!(data_type, DataType::Dictionary(_, v) if v.is_numeric())
@@ -176,6 +247,26 @@ mod tests {
     fn abbreviates_long_values() {
         assert_eq!(abbreviate("short", 10), "short");
         assert_eq!(abbreviate(&"x".repeat(2048), 3), "xxx… (2.0 KiB)");
+    }
+
+    #[test]
+    fn parses_type_names() {
+        for data_type in [
+            DataType::Int64,
+            DataType::Utf8,
+            DataType::Boolean,
+            DataType::Float32,
+            DataType::Date32,
+            DataType::Time64(TimeUnit::Microsecond),
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some("Europe/Madrid".into())),
+            DataType::Decimal128(10, 2),
+        ] {
+            assert_eq!(parse_type_name(&type_name(&data_type)), Some(data_type));
+        }
+        assert_eq!(parse_type_name(" Double "), Some(DataType::Float64));
+        assert_eq!(parse_type_name("timestamp[xs]"), None);
+        assert_eq!(parse_type_name("list<int32>"), None);
     }
 
     #[test]
