@@ -7,7 +7,7 @@ use std::ops::Range;
 
 use arrow::datatypes::DataType;
 
-use crate::model::WriterSettings;
+use crate::model::{KeyValue, WriterSettings};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -20,6 +20,9 @@ pub enum Command {
     RemoveMetadata {
         key: String,
     },
+    /// Replaces all key/value metadata at once. Keys must be unique and not
+    /// empty.
+    ReplaceMetadata(Vec<KeyValue>),
     /// Sets a cell from text, parsed as the column's type. `None`, or blank
     /// text in a non-text column, sets the cell to null.
     SetCell {

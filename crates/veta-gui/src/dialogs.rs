@@ -4,6 +4,8 @@
 use iced::widget::{Space, button, checkbox, column, pick_list, row, scrollable, text, text_input};
 use iced::{Alignment, Element, Length};
 use veta_core::arrow::datatypes::{DataType, TimeUnit};
+use veta_core::io::ARROW_SCHEMA_KEY;
+use veta_core::model::KeyValue;
 use veta_core::{
     ColumnSettings, Command, Compression, Encoding, FormatVersion, StatisticsLevel, WriterSettings,
 };
@@ -413,6 +415,141 @@ impl WriterDialog {
     }
 }
 
+/// Edit the file's key/value metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetadataDialog {
+    entries: Vec<(String, String)>,
+    /// The Arrow schema entry, kept as is: the writer regenerates it.
+    arrow_schema: Option<KeyValue>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum MetadataMessage {
+    Key(usize, String),
+    Value(usize, String),
+    Remove(usize),
+    Add,
+    Apply,
+    Cancel,
+}
+
+impl MetadataDialog {
+    pub fn new(entries: &[KeyValue]) -> Self {
+        Self {
+            entries: entries
+                .iter()
+                .filter(|kv| kv.key != ARROW_SCHEMA_KEY)
+                .map(|kv| (kv.key.clone(), kv.value.clone().unwrap_or_default()))
+                .collect(),
+            arrow_schema: entries
+                .iter()
+                .find(|kv| kv.key == ARROW_SCHEMA_KEY)
+                .cloned(),
+            error: None,
+        }
+    }
+
+    /// Handles a message. Returns the command to run on apply.
+    pub fn update(&mut self, message: MetadataMessage) -> Option<Command> {
+        match message {
+            MetadataMessage::Key(i, key) => {
+                if let Some(entry) = self.entries.get_mut(i) {
+                    entry.0 = key;
+                }
+            }
+            MetadataMessage::Value(i, value) => {
+                if let Some(entry) = self.entries.get_mut(i) {
+                    entry.1 = value;
+                }
+            }
+            MetadataMessage::Remove(i) => {
+                if i < self.entries.len() {
+                    self.entries.remove(i);
+                }
+            }
+            MetadataMessage::Add => self.entries.push((String::new(), String::new())),
+            MetadataMessage::Cancel => {}
+            MetadataMessage::Apply => {
+                let mut entries: Vec<KeyValue> = self
+                    .entries
+                    .iter()
+                    // Rows left completely empty are ignored.
+                    .filter(|(k, v)| !(k.trim().is_empty() && v.is_empty()))
+                    .map(|(k, v)| KeyValue {
+                        key: k.trim().to_owned(),
+                        value: (!v.is_empty()).then(|| v.clone()),
+                    })
+                    .collect();
+                if entries.iter().any(|kv| kv.key == ARROW_SCHEMA_KEY) {
+                    self.error = Some(format!("{ARROW_SCHEMA_KEY} is managed automatically."));
+                    return None;
+                }
+                entries.extend(self.arrow_schema.clone());
+                return Some(Command::ReplaceMetadata(entries));
+            }
+        }
+        None
+    }
+
+    /// Shows an error from applying the command.
+    pub fn set_error(&mut self, error: String) {
+        self.error = Some(error);
+    }
+
+    pub fn view(&self, tokens: Tokens) -> Element<'_, MetadataMessage> {
+        let mut rows =
+            column![row![text("Key").width(220), text("Value").width(Length::Fill)].spacing(8)]
+                .spacing(6);
+        for (i, (key, value)) in self.entries.iter().enumerate() {
+            rows = rows.push(
+                row![
+                    text_input("key", key)
+                        .on_input(move |k| MetadataMessage::Key(i, k))
+                        .width(220),
+                    text_input("value", value)
+                        .on_input(move |v| MetadataMessage::Value(i, v))
+                        .width(Length::Fill),
+                    button(text("Remove"))
+                        .style(button::text)
+                        .on_press(MetadataMessage::Remove(i)),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
+        }
+        if self.entries.is_empty() {
+            rows = rows.push(text("No metadata.").color(tokens.muted_text));
+        }
+        let mut body = column![
+            text("File metadata").size(20),
+            text("Key/value pairs stored in the file's footer.").color(tokens.muted_text),
+            scrollable(rows).height(Length::Fixed(280.0)),
+            button(text("Add entry"))
+                .style(button::secondary)
+                .on_press(MetadataMessage::Add),
+        ]
+        .spacing(14);
+        if self.arrow_schema.is_some() {
+            body = body.push(
+                text(format!(
+                    "{ARROW_SCHEMA_KEY} (the Arrow schema) is not shown: it is rewritten on save."
+                ))
+                .color(tokens.muted_text),
+            );
+        }
+        if let Some(error) = &self.error {
+            body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
+        }
+        body = body.push(buttons(
+            "Apply",
+            MetadataMessage::Cancel,
+            MetadataMessage::Apply,
+        ));
+        card(body.into(), tokens, 640.0)
+    }
+}
+
 fn buttons<'a, M: Clone + 'a>(action: &'a str, cancel: M, submit: M) -> Element<'a, M> {
     row![
         Space::new().width(Length::Fill),
@@ -480,6 +617,41 @@ mod tests {
         assert_eq!(s.column("b").encoding, Encoding::DeltaByteArray);
         assert!(!s.default_column.dictionary);
         assert_eq!(s.columns.len(), 2);
+    }
+
+    #[test]
+    fn metadata_dialog_keeps_arrow_schema_hidden() {
+        let kv = |k: &str, v: &str| KeyValue {
+            key: k.into(),
+            value: Some(v.into()),
+        };
+        let mut dialog = MetadataDialog::new(&[kv("owner", "me"), kv(ARROW_SCHEMA_KEY, "xyz")]);
+        assert_eq!(dialog.entries.len(), 1);
+        dialog.update(MetadataMessage::Add);
+        dialog.update(MetadataMessage::Key(1, " team ".into()));
+        dialog.update(MetadataMessage::Add); // left empty: ignored
+        dialog.update(MetadataMessage::Value(0, String::new()));
+        let Some(Command::ReplaceMetadata(entries)) = dialog.update(MetadataMessage::Apply) else {
+            panic!("expected metadata");
+        };
+        assert_eq!(
+            entries,
+            vec![
+                KeyValue {
+                    key: "owner".into(),
+                    value: None
+                },
+                KeyValue {
+                    key: "team".into(),
+                    value: None
+                },
+                kv(ARROW_SCHEMA_KEY, "xyz"),
+            ]
+        );
+
+        dialog.update(MetadataMessage::Key(0, ARROW_SCHEMA_KEY.into()));
+        assert_eq!(dialog.update(MetadataMessage::Apply), None);
+        assert!(dialog.error.is_some());
     }
 
     #[test]

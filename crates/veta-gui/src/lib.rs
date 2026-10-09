@@ -27,7 +27,8 @@ use crate::config::Config;
 #[cfg(test)]
 use crate::config::ModePreference;
 use crate::dialogs::{
-    ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage, WriterDialog, WriterMessage,
+    ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage, MetadataDialog, MetadataMessage,
+    WriterDialog, WriterMessage,
 };
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav};
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
@@ -226,6 +227,10 @@ enum Dialog {
         document: DocumentId,
         dialog: WriterDialog,
     },
+    Metadata {
+        document: DocumentId,
+        dialog: MetadataDialog,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -252,6 +257,7 @@ enum Message {
     ColumnDialog(ColumnMessage),
     Choose(ChooseMessage),
     Writer(WriterMessage),
+    Metadata(MetadataMessage),
     SystemMode(iced::theme::Mode),
     OpenDialog,
 }
@@ -549,6 +555,25 @@ impl App {
                     }
                 }
             }
+            Message::Metadata(message) => {
+                if let Some(Dialog::Metadata { document, dialog }) = &mut self.dialog {
+                    let id = *document;
+                    let cancel = matches!(message, MetadataMessage::Cancel);
+                    if let Some(command) = dialog.update(message) {
+                        let result = self
+                            .workbook
+                            .get_mut(id)
+                            .map(|doc| controller::execute(doc, command));
+                        match result {
+                            Some(Ok(())) => self.dialog = None,
+                            Some(Err(e)) => dialog.set_error(e.to_string()),
+                            None => {}
+                        }
+                    } else if cancel {
+                        self.dialog = None;
+                    }
+                }
+            }
             Message::Choose(message) => {
                 if let Some(Dialog::Choose { document, dialog }) = &mut self.dialog {
                     let id = *document;
@@ -688,6 +713,16 @@ impl App {
                     self.dialog = Some(Dialog::Choose {
                         document: id,
                         dialog: ChooseColumns::new(names),
+                    });
+                }
+            }
+            Action::FileMetadata => {
+                if let Some(id) = self.active
+                    && let Some(doc) = self.workbook.get(id)
+                {
+                    self.dialog = Some(Dialog::Metadata {
+                        document: id,
+                        dialog: MetadataDialog::new(&doc.metadata().key_value),
                     });
                 }
             }
@@ -1133,6 +1168,7 @@ impl App {
             Dialog::Column { dialog, .. } => dialog.view(ui.tokens).map(Message::ColumnDialog),
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
             Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
+            Dialog::Metadata { dialog, .. } => dialog.view(ui.tokens).map(Message::Metadata),
         };
         stack![
             window,

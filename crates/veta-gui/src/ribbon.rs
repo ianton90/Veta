@@ -68,8 +68,8 @@ impl Action {
             Action::Standard | Action::DateTime | Action::CustomColumn | Action::IndexColumn => 40,
             Action::AppliedSteps => 34,
             Action::StatisticsPane => 43,
-            Action::FileMetadata => 28,
             Action::Open
+            | Action::FileMetadata
             | Action::WriterSettings
             | Action::Save
             | Action::SaveAs

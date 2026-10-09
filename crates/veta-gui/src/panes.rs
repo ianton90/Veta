@@ -117,8 +117,24 @@ pub fn side_pane(doc: &Document, ui: Ui) -> Element<'_, Message> {
         );
     }
 
-    let metadata = &doc.metadata().key_value;
-    let mut meta = column![text("Metadata").size(ui.heading()).font(bold())].spacing(6);
+    // The Arrow schema entry is internal to the file format.
+    let metadata: Vec<_> = doc
+        .metadata()
+        .key_value
+        .iter()
+        .filter(|kv| kv.key != veta_core::io::ARROW_SCHEMA_KEY)
+        .collect();
+    let mut meta = column![
+        row![
+            text("Metadata").size(ui.heading()).font(bold()),
+            iced::widget::Space::new().width(Length::Fill),
+            button(text("Edit…").size(ui.small()))
+                .style(move |_theme: &Theme, status| subtle_button(t, status))
+                .on_press(Message::Action(crate::ribbon::Action::FileMetadata)),
+        ]
+        .align_y(Alignment::Center)
+    ]
+    .spacing(6);
     if metadata.is_empty() {
         meta = meta.push(text("None").size(ui.small()).color(t.muted_text));
     }

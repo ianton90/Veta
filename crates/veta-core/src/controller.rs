@@ -85,6 +85,25 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
                 },
             ))
         }
+        Command::ReplaceMetadata(entries) => {
+            for (i, kv) in entries.iter().enumerate() {
+                if kv.key.trim().is_empty() {
+                    return Err(invalid("metadata keys cannot be empty".into()));
+                }
+                if entries[..i].iter().any(|other| other.key == kv.key) {
+                    return Err(invalid(format!("metadata key {:?} appears twice", kv.key)));
+                }
+            }
+            let mut after = doc.metadata.clone();
+            after.key_value = entries;
+            Ok((
+                "Edit metadata".into(),
+                Change::Metadata {
+                    before: doc.metadata.clone(),
+                    after,
+                },
+            ))
+        }
         Command::SetCell { row, column, value } => {
             let schema = doc.schema();
             let field = schema
@@ -308,6 +327,28 @@ mod tests {
         execute(&mut doc, set("other", "x")).unwrap();
         assert!(!doc.history().can_redo());
         assert!(!redo(&mut doc).unwrap());
+    }
+
+    #[test]
+    fn replace_metadata() {
+        let mut doc = Document::new();
+        execute(&mut doc, set("a", "1")).unwrap();
+        let kv = |k: &str, v: Option<&str>| KeyValue {
+            key: k.into(),
+            value: v.map(str::to_owned),
+        };
+        let dup = vec![kv("x", None), kv("x", Some("2"))];
+        assert!(execute(&mut doc, Command::ReplaceMetadata(dup)).is_err());
+        assert!(execute(&mut doc, Command::ReplaceMetadata(vec![kv(" ", None)])).is_err());
+        execute(
+            &mut doc,
+            Command::ReplaceMetadata(vec![kv("b", Some("2")), kv("c", None)]),
+        )
+        .unwrap();
+        assert_eq!(doc.metadata().key_value.len(), 2);
+        assert_eq!(value(&doc, "a"), None);
+        undo(&mut doc);
+        assert_eq!(value(&doc, "a"), Some("1"));
     }
 
     #[test]
