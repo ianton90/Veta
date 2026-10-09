@@ -19,3 +19,7 @@ Short log of project decisions. Newest last.
 | 13 | 2026-10-09 | Enable arrow's `chrono-tz` feature | Needed to display timestamps with named time zones (e.g. `UTC`, `Europe/Madrid`). |
 | 14 | 2026-10-09 | Files are read in chunks of 64k rows within row groups, cached LRU under the memory budget (default 1 GiB) | Memory stays bounded even when a single row group is larger than the budget. |
 | 15 | 2026-10-09 | Grid is a custom iced widget drawing only visible cells | iced has no table widget; a custom widget keeps scrolling smooth on millions of rows. |
+| 16 | 2026-10-09 | Icons: a subset of the Lucide icon font vendored in `crates/veta-gui/assets` (ISC license) | No extra crate (an SVG renderer would pull in many); 18 KB. |
+| 17 | 2026-10-09 | Themes are TOML files; two built in, users add more in `<config dir>/themes` | Owner requirement; easy to share and edit. |
+| 18 | 2026-10-09 | Settings in `<config dir>/config.toml`; config dir resolved by hand (`%APPDATA%`, `~/Library/Application Support`, `$XDG_CONFIG_HOME`), overridable with `VETA_CONFIG_DIR` | Avoids a dependency for three paths. |
+| 19 | 2026-10-09 | Font family and size apply on restart; colors and light/dark switch live | iced sets the default font at startup. |

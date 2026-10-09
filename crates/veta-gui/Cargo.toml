@@ -11,6 +11,8 @@ repository.workspace = true
 veta-core.workspace = true
 iced.workspace = true
 rfd.workspace = true
+serde.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 veta-testkit.workspace = true

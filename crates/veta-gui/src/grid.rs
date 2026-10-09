@@ -19,23 +19,43 @@ use iced::{
     font,
 };
 use veta_core::Document;
+
+use crate::theme::Tokens;
 use veta_core::display::{format_batch, is_numeric, type_name};
 
-const ROW_HEIGHT: f32 = 24.0;
-const HEADER_HEIGHT: f32 = 40.0;
 const SCROLLBAR: f32 = 12.0;
 const MIN_THUMB: f32 = 24.0;
-const TEXT_SIZE: f32 = 13.0;
-const TYPE_TEXT_SIZE: f32 = 11.0;
 const CELL_PADDING: f32 = 6.0;
 const MIN_COLUMN_WIDTH: f32 = 40.0;
-/// Approximate width of one character at `TEXT_SIZE`, for sizing columns.
-const CHAR_WIDTH: f32 = 8.0;
 const MIN_FITTED_WIDTH: f32 = 60.0;
 const MAX_FITTED_WIDTH: f32 = 360.0;
 const RESIZE_GRAB: f32 = 4.0;
 const WHEEL_LINES: f32 = 3.0;
 const NULL_TEXT: &str = "null";
+
+/// Sizes derived from the text size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Metrics {
+    pub text_size: f32,
+    type_text_size: f32,
+    row_height: f32,
+    header_height: f32,
+    /// Approximate width of one character, for sizing columns.
+    char_width: f32,
+}
+
+impl Metrics {
+    pub fn new(text_size: f32) -> Self {
+        let row_height = (text_size * 1.85).round();
+        Self {
+            text_size,
+            type_text_size: (text_size * 0.85).round(),
+            row_height,
+            header_height: (row_height * 1.7).round(),
+            char_width: text_size * 0.62,
+        }
+    }
+}
 
 /// Input from the grid widget.
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +108,7 @@ struct Column {
 /// Per-tab grid state.
 #[derive(Debug, Clone)]
 pub struct GridView {
+    metrics: Metrics,
     columns: Vec<Column>,
     num_rows: usize,
     first_row: usize,
@@ -103,7 +124,7 @@ pub struct GridView {
 }
 
 impl GridView {
-    pub fn new(document: &Document) -> Self {
+    pub fn new(document: &Document, text_size: f32) -> Self {
         let schema = document.schema();
         let columns = schema
             .fields()
@@ -116,6 +137,7 @@ impl GridView {
             })
             .collect();
         let mut view = Self {
+            metrics: Metrics::new(text_size),
             columns,
             num_rows: document.num_rows(),
             first_row: 0,
@@ -147,7 +169,7 @@ impl GridView {
                 ])
                 .max()
                 .unwrap_or(0);
-            column.width = (chars as f32 * CHAR_WIDTH + 2.0 * CELL_PADDING + 4.0)
+            column.width = (chars as f32 * self.metrics.char_width + 2.0 * CELL_PADDING + 4.0)
                 .clamp(MIN_FITTED_WIDTH, MAX_FITTED_WIDTH);
         }
     }
@@ -283,13 +305,14 @@ impl GridView {
 
     fn row_number_width(&self) -> f32 {
         let digits = self.num_rows.max(1).to_string().len() as f32;
-        digits * CHAR_WIDTH + 3.0 * CELL_PADDING
+        digits * self.metrics.char_width + 3.0 * CELL_PADDING
     }
 }
 
 /// The grid widget. Create with [`grid`].
 pub struct Grid<'a, Message> {
     view: &'a GridView,
+    tokens: Tokens,
     on_event: Box<dyn Fn(GridEvent) -> Message + 'a>,
 }
 
@@ -303,10 +326,12 @@ impl<Message> std::fmt::Debug for Grid<'_, Message> {
 
 pub fn grid<'a, Message>(
     view: &'a GridView,
+    tokens: Tokens,
     on_event: impl Fn(GridEvent) -> Message + 'a,
 ) -> Grid<'a, Message> {
     Grid {
         view,
+        tokens,
         on_event: Box::new(on_event),
     }
 }
@@ -337,6 +362,7 @@ enum Drag {
 
 /// Screen regions of the grid, computed from its bounds.
 struct Regions {
+    m: Metrics,
     bounds: Rectangle,
     header: Rectangle,
     row_numbers: Rectangle,
@@ -347,20 +373,22 @@ struct Regions {
 
 impl Regions {
     fn new(bounds: Rectangle, view: &GridView) -> Self {
+        let m = view.metrics;
         let rn = view.row_number_width();
         let body = Rectangle {
             x: bounds.x + rn,
-            y: bounds.y + HEADER_HEIGHT,
+            y: bounds.y + m.header_height,
             width: (bounds.width - rn - SCROLLBAR).max(0.0),
-            height: (bounds.height - HEADER_HEIGHT - SCROLLBAR).max(0.0),
+            height: (bounds.height - m.header_height - SCROLLBAR).max(0.0),
         };
         Self {
+            m,
             bounds,
             header: Rectangle {
                 x: body.x,
                 y: bounds.y,
                 width: body.width,
-                height: HEADER_HEIGHT,
+                height: m.header_height,
             },
             row_numbers: Rectangle {
                 x: bounds.x,
@@ -385,7 +413,7 @@ impl Regions {
     }
 
     fn full_rows(&self) -> usize {
-        (self.body.height / ROW_HEIGHT).floor() as usize
+        (self.body.height / self.m.row_height).floor() as usize
     }
 
     /// Vertical thumb (offset from track top, length).
@@ -460,7 +488,8 @@ impl<Message> Grid<'_, Message> {
         if !regions.body.contains(position) {
             return None;
         }
-        let row = self.view.first_row + ((position.y - regions.body.y) / ROW_HEIGHT) as usize;
+        let row =
+            self.view.first_row + ((position.y - regions.body.y) / regions.m.row_height) as usize;
         let column = self
             .visible_columns(regions.body)
             .into_iter()
@@ -524,10 +553,12 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     return;
                 }
                 let (dx, dy) = match *delta {
-                    ScrollDelta::Lines { x, y } => (x * 40.0, y * WHEEL_LINES * ROW_HEIGHT),
+                    ScrollDelta::Lines { x, y } => {
+                        (x * 40.0, y * WHEEL_LINES * regions.m.row_height)
+                    }
                     ScrollDelta::Pixels { x, y } => (x, y),
                 };
-                let rows = (-dy / ROW_HEIGHT).round() as isize;
+                let rows = (-dy / regions.m.row_height).round() as isize;
                 let first_row = view.first_row.saturating_add_signed(rows);
                 shell.publish((self.on_event)(GridEvent::Scroll {
                     first_row,
@@ -691,7 +722,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         &self,
         _tree: &Tree,
         renderer: &mut Renderer,
-        theme: &Theme,
+        _theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -699,37 +730,32 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
     ) {
         let view = self.view;
         let regions = Regions::new(layout.bounds(), view);
-        let palette = theme.extended_palette();
-        let text_color = palette.background.base.text;
-        let muted = Color {
-            a: 0.55,
-            ..text_color
-        };
-        let line = palette.background.weak.color;
-        let header_bg = palette.background.weak.color;
-        let stripe = Color {
-            a: 0.35,
-            ..palette.background.weak.color
-        };
+        let m = regions.m;
+        let t = &self.tokens;
+        let text_color = t.text;
+        let muted = t.muted_text;
+        let line = t.border;
+        let header_bg = t.grid_header;
+        let stripe = t.grid_stripe;
         let bold = Font {
             weight: font::Weight::Bold,
             ..Font::DEFAULT
         };
 
-        fill(renderer, regions.bounds, palette.background.base.color);
+        fill(renderer, regions.bounds, t.background);
 
         let columns = self.visible_columns(regions.body);
-        let rows_on_screen = (regions.body.height / ROW_HEIGHT).ceil() as usize;
+        let rows_on_screen = (regions.body.height / m.row_height).ceil() as usize;
         let last_row = (view.first_row + rows_on_screen).min(view.num_rows);
 
         // Body: stripes, selection, cells.
         for row in view.first_row..last_row {
-            let y = regions.body.y + (row - view.first_row) as f32 * ROW_HEIGHT;
+            let y = regions.body.y + (row - view.first_row) as f32 * m.row_height;
             let row_rect = Rectangle {
                 x: regions.body.x,
                 y,
                 width: regions.body.width,
-                height: ROW_HEIGHT,
+                height: m.row_height,
             }
             .intersection(&regions.body);
             let Some(row_rect) = row_rect else { continue };
@@ -741,7 +767,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     x,
                     y,
                     width,
-                    height: ROW_HEIGHT,
+                    height: m.row_height,
                 };
                 let Some(clip) = cell.intersection(&regions.body) else {
                     continue;
@@ -757,7 +783,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     content,
                     cell,
                     numeric,
-                    TEXT_SIZE,
+                    m.text_size,
                     Font::DEFAULT,
                     color,
                     clip,
@@ -775,7 +801,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                         x: line_x,
                         y: regions.bounds.y,
                         width: 1.0,
-                        height: HEADER_HEIGHT + regions.body.height,
+                        height: m.header_height + regions.body.height,
                     },
                     line,
                 );
@@ -790,16 +816,16 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         {
             let rect = Rectangle {
                 x,
-                y: regions.body.y + (row - view.first_row) as f32 * ROW_HEIGHT,
+                y: regions.body.y + (row - view.first_row) as f32 * m.row_height,
                 width,
-                height: ROW_HEIGHT,
+                height: m.row_height,
             };
             if let Some(clip) = rect.intersection(&regions.body) {
                 renderer.fill_quad(
                     Quad {
                         bounds: clip,
                         border: Border {
-                            color: palette.primary.base.color,
+                            color: t.selection,
                             width: 2.0,
                             radius: 0.0.into(),
                         },
@@ -818,7 +844,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 x,
                 y: regions.bounds.y + 3.0,
                 width,
-                height: HEADER_HEIGHT / 2.0,
+                height: m.header_height / 2.0,
             };
             let Some(clip) = cell.intersection(&regions.header) else {
                 continue;
@@ -828,13 +854,13 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 c.name.clone(),
                 cell,
                 false,
-                TEXT_SIZE,
+                m.text_size,
                 bold,
                 text_color,
                 clip,
             );
             let type_cell = Rectangle {
-                y: cell.y + HEADER_HEIGHT / 2.0 - 4.0,
+                y: cell.y + m.header_height / 2.0 - 4.0,
                 ..cell
             };
             if let Some(clip) = type_cell.intersection(&regions.header) {
@@ -843,7 +869,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     c.type_name.clone(),
                     type_cell,
                     false,
-                    TYPE_TEXT_SIZE,
+                    m.type_text_size,
                     Font::DEFAULT,
                     muted,
                     clip,
@@ -854,7 +880,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             renderer,
             Rectangle {
                 x: regions.bounds.x,
-                y: regions.header.y + HEADER_HEIGHT - 1.0,
+                y: regions.header.y + m.header_height - 1.0,
                 width: regions.bounds.width,
                 height: 1.0,
             },
@@ -867,22 +893,22 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             x: regions.bounds.x,
             y: regions.bounds.y,
             width: regions.row_numbers.width,
-            height: HEADER_HEIGHT - 1.0,
+            height: m.header_height - 1.0,
         };
         fill(renderer, corner, header_bg);
         let selected_row = view.selected.map(|(r, _)| r);
         for row in view.first_row..last_row {
             let cell = Rectangle {
                 x: regions.row_numbers.x,
-                y: regions.body.y + (row - view.first_row) as f32 * ROW_HEIGHT,
+                y: regions.body.y + (row - view.first_row) as f32 * m.row_height,
                 width: regions.row_numbers.width - CELL_PADDING / 2.0,
-                height: ROW_HEIGHT,
+                height: m.row_height,
             };
             let Some(clip) = cell.intersection(&regions.row_numbers) else {
                 continue;
             };
             let (font, color) = if selected_row == Some(row) {
-                (bold, palette.primary.base.color)
+                (bold, t.selection)
             } else {
                 (Font::DEFAULT, muted)
             };
@@ -891,7 +917,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 (row + 1).to_string(),
                 cell,
                 true,
-                TEXT_SIZE,
+                m.text_size,
                 font,
                 color,
                 clip,
@@ -899,8 +925,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         }
 
         // Scrollbars.
-        let track = palette.background.weak.color;
-        let thumb_color = palette.background.strong.color;
+        let track = t.grid_header;
+        let thumb_color = t.border;
         fill(renderer, regions.v_track, track);
         fill(renderer, regions.h_track, track);
         fill(
@@ -944,7 +970,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 "This file has no columns.".into(),
                 regions.body,
                 false,
-                TEXT_SIZE,
+                m.text_size,
                 Font::DEFAULT,
                 muted,
                 regions.body,
@@ -1050,7 +1076,7 @@ mod tests {
     fn loads_only_a_window_around_the_view() {
         let dir = TempDir::new();
         let doc = open_large(&dir, 200_000);
-        let mut view = GridView::new(&doc);
+        let mut view = GridView::new(&doc, 13.0);
         resized(&mut view, &doc, 20);
 
         view.apply(
@@ -1073,7 +1099,7 @@ mod tests {
     fn scroll_is_clamped() {
         let dir = TempDir::new();
         let doc = open_large(&dir, 100);
-        let mut view = GridView::new(&doc);
+        let mut view = GridView::new(&doc, 13.0);
         resized(&mut view, &doc, 30);
         view.apply(
             GridEvent::Scroll {
@@ -1090,7 +1116,7 @@ mod tests {
     fn navigation_moves_selection_and_reveals_it() {
         let dir = TempDir::new();
         let doc = open_large(&dir, 1_000);
-        let mut view = GridView::new(&doc);
+        let mut view = GridView::new(&doc, 13.0);
         resized(&mut view, &doc, 10);
 
         view.apply(GridEvent::Select { row: 9, column: 0 }, &doc);
@@ -1115,7 +1141,7 @@ mod tests {
     fn column_resize_has_minimum() {
         let dir = TempDir::new();
         let doc = open_large(&dir, 10);
-        let mut view = GridView::new(&doc);
+        let mut view = GridView::new(&doc, 13.0);
         view.apply(
             GridEvent::ColumnResized {
                 column: 1,

@@ -1,31 +1,146 @@
 //! Veta's desktop interface, built with iced.
 //!
 //! The iced state holds the core [`Workbook`] (the model) plus GUI-only state
-//! (tabs, grid scroll positions, panes). Messages that change data will be
-//! turned into core commands; see `docs/ARCHITECTURE.md`.
+//! (tabs, grid scroll positions, panes, settings). Messages that change data
+//! will be turned into core commands; see `docs/ARCHITECTURE.md`.
 
+mod config;
 mod grid;
+mod icon;
 mod panes;
+mod ribbon;
+mod settings;
+mod theme;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use iced::widget::{column, container, row, rule};
-use iced::{Element, Length, Size, Subscription, Task, event, keyboard, window};
+use iced::widget::{center, column, container, mouse_area, opaque, row, rule, stack};
+use iced::{
+    Color, Element, Font, Length, Pixels, Size, Subscription, Task, Theme, event, font, keyboard,
+    window,
+};
 use veta_core::{Document, DocumentId, OpenOptions, Workbook};
 
+use crate::config::Config;
+#[cfg(test)]
+use crate::config::ModePreference;
 use crate::grid::{GridEvent, GridView};
+use crate::ribbon::{Action, Ribbon, RibbonMessage};
+use crate::settings::{Draft, Outcome, SettingsMessage};
+use crate::theme::{Mode, Tokens, VetaTheme};
 
 /// Opens the main window with `files` and blocks until it is closed.
 pub fn run(files: Vec<PathBuf>) -> iced::Result {
-    iced::application(move || App::new(files.clone()), App::update, App::view)
-        .title(App::title)
-        .subscription(App::subscription)
-        .window_size(Size::new(1280.0, 800.0))
-        .run()
+    let startup = Startup::load();
+    let (font, size) = startup.font();
+    iced::application(
+        move || App::new(startup.clone(), files.clone()),
+        App::update,
+        App::view,
+    )
+    .title(App::title)
+    .theme(App::theme)
+    .subscription(App::subscription)
+    .settings(iced::Settings {
+        default_font: font,
+        default_text_size: Pixels(size),
+        ..iced::Settings::default()
+    })
+    .font(icon::FONT_BYTES)
+    .window_size(Size::new(1280.0, 800.0))
+    .run()
 }
 
-#[derive(Debug, Default)]
+/// Everything read from disk before the window opens.
+#[derive(Debug, Clone)]
+struct Startup {
+    config: Config,
+    config_path: Option<PathBuf>,
+    themes: Vec<VetaTheme>,
+    themes_dir: Option<PathBuf>,
+    errors: Vec<String>,
+}
+
+impl Startup {
+    fn load() -> Self {
+        let dir = config::config_dir();
+        let config_path = dir.as_ref().map(|d| d.join("config.toml"));
+        let themes_dir = dir.as_ref().map(|d| d.join("themes"));
+        let (config, config_error) = match &config_path {
+            Some(path) => Config::load(path),
+            None => (Config::default(), None),
+        };
+        let (themes, mut errors) = theme::load_all(themes_dir.as_deref());
+        errors.extend(config_error);
+        Self {
+            config,
+            config_path,
+            themes,
+            themes_dir,
+            errors,
+        }
+    }
+
+    /// Font and text size for the session. The OS mode is unknown this early,
+    /// so "follow system" uses the light theme's font.
+    fn font(&self) -> (Font, f32) {
+        let theme = pick_theme(&self.themes, &self.config, None);
+        let family = self
+            .config
+            .appearance
+            .font_family
+            .clone()
+            .or_else(|| theme.font_family.clone());
+        let size = self.config.appearance.font_size.unwrap_or(theme.font_size);
+        let font = match family {
+            // iced needs a 'static name; this runs once per process.
+            Some(name) => Font::with_name(Box::leak(name.into_boxed_str())),
+            None => Font::DEFAULT,
+        };
+        (font, size)
+    }
+}
+
+/// The theme for the configured mode, falling back to the built-in one.
+fn pick_theme<'a>(themes: &'a [VetaTheme], config: &Config, system: Option<Mode>) -> &'a VetaTheme {
+    let mode = config.appearance.mode.resolve(system);
+    let (wanted, fallback) = match mode {
+        Mode::Light => (&config.appearance.light_theme, theme::DEFAULT_LIGHT),
+        Mode::Dark => (&config.appearance.dark_theme, theme::DEFAULT_DARK),
+    };
+    themes
+        .iter()
+        .find(|t| &t.name == wanted && t.mode == mode)
+        .or_else(|| themes.iter().find(|t| t.name == fallback))
+        .unwrap_or(&themes[0])
+}
+
+fn bold() -> Font {
+    Font {
+        weight: font::Weight::Bold,
+        ..Font::DEFAULT
+    }
+}
+
+/// Theme colors and base text size, passed to view functions.
+#[derive(Debug, Clone, Copy)]
+struct Ui {
+    tokens: Tokens,
+    size: f32,
+}
+
+impl Ui {
+    fn small(self) -> f32 {
+        (self.size - 1.0).max(8.0)
+    }
+
+    fn heading(self) -> f32 {
+        self.size + 2.0
+    }
+}
+
+#[derive(Debug)]
 struct App {
     workbook: Workbook,
     /// GUI state per open document, in tab order.
@@ -35,6 +150,15 @@ struct App {
     /// Files currently being opened in the background.
     opening: Vec<PathBuf>,
     errors: Vec<String>,
+    ribbon: Ribbon,
+    dialog: Option<Dialog>,
+    config: Config,
+    config_path: Option<PathBuf>,
+    themes: Vec<VetaTheme>,
+    themes_dir: Option<PathBuf>,
+    /// OS light/dark mode, once known.
+    system_mode: Option<Mode>,
+    text_size: f32,
 }
 
 #[derive(Debug)]
@@ -43,17 +167,26 @@ struct Tab {
     grid: GridView,
 }
 
+#[derive(Debug)]
+enum Dialog {
+    Settings(Draft),
+    About,
+}
+
 #[derive(Debug, Clone)]
 enum Message {
-    OpenDialog,
+    Action(Action),
+    Ribbon(RibbonMessage),
     FilesPicked(Vec<PathBuf>),
     Opened(PathBuf, Result<Loaded, String>),
     SelectTab(DocumentId),
     CloseTab(DocumentId),
-    CloseActiveTab,
     Grid(DocumentId, GridEvent),
-    ToggleSidePane,
     DismissError(usize),
+    Settings(SettingsMessage),
+    CloseDialog,
+    SystemMode(iced::theme::Mode),
+    OpenDialog,
 }
 
 /// A document opened on a worker thread. Messages must be `Clone`, documents
@@ -72,13 +205,27 @@ impl Loaded {
 }
 
 impl App {
-    fn new(files: Vec<PathBuf>) -> (Self, Task<Message>) {
+    fn new(startup: Startup, files: Vec<PathBuf>) -> (Self, Task<Message>) {
+        let (_, text_size) = startup.font();
         let mut app = Self {
+            workbook: Workbook::new(),
+            tabs: Vec::new(),
+            active: None,
             show_side_pane: true,
-            ..Self::default()
+            opening: Vec::new(),
+            errors: startup.errors,
+            ribbon: Ribbon::default(),
+            dialog: None,
+            config: startup.config,
+            config_path: startup.config_path,
+            themes: startup.themes,
+            themes_dir: startup.themes_dir,
+            system_mode: None,
+            text_size,
         };
-        let task = app.open(files);
-        (app, task)
+        let open = app.open(files);
+        let system = iced::system::theme().map(Message::SystemMode);
+        (app, Task::batch([open, system]))
     }
 
     fn title(&self) -> String {
@@ -88,40 +235,64 @@ impl App {
         }
     }
 
+    fn current_theme(&self) -> &VetaTheme {
+        pick_theme(&self.themes, &self.config, self.system_mode)
+    }
+
+    fn theme(&self) -> Theme {
+        self.current_theme().iced.clone()
+    }
+
+    fn ui(&self) -> Ui {
+        Ui {
+            tokens: self.current_theme().tokens,
+            size: self.text_size,
+        }
+    }
+
     fn subscription(&self) -> Subscription<Message> {
-        event::listen_with(|event, status, _window| match event {
+        let events = event::listen_with(|event, status, _window| match event {
             iced::Event::Window(window::Event::FileDropped(path)) => {
                 Some(Message::FilesPicked(vec![path]))
             }
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                ..
+            }) => Some(Message::CloseDialog),
             iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
                 if modifiers.command() && status == event::Status::Ignored =>
             {
                 match key.as_ref() {
-                    keyboard::Key::Character("o") => Some(Message::OpenDialog),
-                    keyboard::Key::Character("w") => Some(Message::CloseActiveTab),
+                    keyboard::Key::Character("o") => Some(Message::Action(Action::Open)),
+                    keyboard::Key::Character("w") => Some(Message::Action(Action::Close)),
+                    keyboard::Key::Character(",") => Some(Message::Action(Action::Settings)),
                     _ => None,
                 }
             }
             _ => None,
-        })
+        });
+        Subscription::batch([
+            events,
+            iced::system::theme_changes().map(Message::SystemMode),
+        ])
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::OpenDialog => {
-                return Task::perform(pick_files(), |files| {
-                    Message::FilesPicked(files.unwrap_or_default())
-                });
-            }
+            Message::Action(action) => return self.perform(action),
+            Message::OpenDialog => return self.perform(Action::Open),
+            Message::Ribbon(message) => self.ribbon.update(message),
             Message::FilesPicked(files) => return self.open(files),
             Message::Opened(path, result) => {
                 self.opening.retain(|p| p != &path);
                 match result.map(|loaded| loaded.take()) {
                     Ok(Some(document)) => {
-                        let grid = GridView::new(&document);
+                        let grid = GridView::new(&document, self.text_size);
                         let id = self.workbook.add(document);
                         self.tabs.push(Tab { id, grid });
                         self.active = Some(id);
+                        self.config.add_recent(&path);
+                        self.save_config();
                     }
                     Ok(None) => {}
                     Err(e) => self
@@ -131,11 +302,6 @@ impl App {
             }
             Message::SelectTab(id) => self.active = Some(id),
             Message::CloseTab(id) => self.close(id),
-            Message::CloseActiveTab => {
-                if let Some(id) = self.active {
-                    self.close(id);
-                }
-            }
             Message::Grid(id, event) => {
                 if let (Some(doc), Some(tab)) = (
                     self.workbook.get(id),
@@ -144,20 +310,77 @@ impl App {
                     tab.grid.apply(event, doc);
                 }
             }
-            Message::ToggleSidePane => self.show_side_pane = !self.show_side_pane,
             Message::DismissError(index) => {
                 if index < self.errors.len() {
                     self.errors.remove(index);
                 }
             }
+            Message::Settings(message) => {
+                if let Some(Dialog::Settings(draft)) = &mut self.dialog {
+                    match draft.update(message, &self.config) {
+                        Outcome::Editing => {}
+                        Outcome::Cancelled => self.dialog = None,
+                        Outcome::Saved(config) => {
+                            self.config = config;
+                            self.save_config();
+                            self.dialog = None;
+                        }
+                    }
+                }
+            }
+            Message::CloseDialog => self.dialog = None,
+            Message::SystemMode(mode) => {
+                self.system_mode = match mode {
+                    iced::theme::Mode::Light => Some(Mode::Light),
+                    iced::theme::Mode::Dark => Some(Mode::Dark),
+                    iced::theme::Mode::None => None,
+                };
+            }
         }
         Task::none()
+    }
+
+    fn perform(&mut self, action: Action) -> Task<Message> {
+        match action {
+            Action::Open => {
+                return Task::perform(pick_files(), |files| {
+                    Message::FilesPicked(files.unwrap_or_default())
+                });
+            }
+            Action::Close => {
+                if let Some(id) = self.active {
+                    self.close(id);
+                }
+            }
+            Action::ToggleDetails => self.show_side_pane = !self.show_side_pane,
+            Action::Mode(mode) => {
+                self.config.appearance.mode = mode;
+                self.save_config();
+            }
+            Action::Settings => self.dialog = Some(Dialog::Settings(Draft::new(&self.config))),
+            Action::About => self.dialog = Some(Dialog::About),
+            // Not built yet; the ribbon shows these disabled.
+            _ => {}
+        }
+        Task::none()
+    }
+
+    fn save_config(&mut self) {
+        if let Some(path) = &self.config_path
+            && let Err(e) = self.config.save(path)
+        {
+            self.errors.push(format!("Could not save settings: {e}"));
+        }
     }
 
     /// Starts opening `files` in the background. Files already open are
     /// focused instead.
     fn open(&mut self, files: Vec<PathBuf>) -> Task<Message> {
         let mut tasks = Vec::new();
+        let options = OpenOptions {
+            memory_budget: self.config.memory_budget(),
+            force_paged: false,
+        };
         for path in files {
             if let Some(id) = self.find_open(&path) {
                 self.active = Some(id);
@@ -170,7 +393,7 @@ impl App {
             let worker_path = path.clone();
             tasks.push(Task::perform(
                 blocking(move || {
-                    Document::open(worker_path, OpenOptions::default())
+                    Document::open(worker_path, options)
                         .map(Loaded::new)
                         .map_err(|e| e.to_string())
                 }),
@@ -213,43 +436,78 @@ impl App {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        let ui = self.ui();
         let main: Element<'_, Message> = match self.active_document() {
             Some((tab, doc)) => {
                 let id = tab.id;
-                let grid = grid::grid(&tab.grid, move |e| Message::Grid(id, e));
+                let grid = grid::grid(&tab.grid, ui.tokens, move |e| Message::Grid(id, e));
+                let grid = container(grid).width(Length::Fill).height(Length::Fill);
                 if self.show_side_pane {
-                    row![
-                        container(grid).width(Length::Fill).height(Length::Fill),
-                        rule::vertical(1),
-                        panes::side_pane(doc),
-                    ]
-                    .into()
+                    row![grid, divider(ui.tokens, true), panes::side_pane(doc, ui)].into()
                 } else {
-                    container(grid)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .into()
+                    grid.into()
                 }
             }
-            None => panes::empty_state(!self.opening.is_empty()),
+            None => panes::empty_state(!self.opening.is_empty(), &self.config.recent_files, ui),
         };
 
-        column![
-            panes::ribbon(self.active.is_some(), self.show_side_pane),
-            rule::horizontal(1),
-            panes::errors(&self.errors),
+        let context = ribbon::Context {
+            has_document: self.active.is_some(),
+            details_visible: self.show_side_pane,
+            mode: self.config.appearance.mode,
+            tokens: ui.tokens,
+            text_size: ui.size,
+        };
+        let window = column![
+            ribbon::view(&self.ribbon, context, Message::Ribbon, Message::Action),
+            divider(ui.tokens, false),
+            panes::errors(&self.errors, ui),
             container(main).height(Length::Fill),
-            rule::horizontal(1),
+            divider(ui.tokens, false),
             panes::tab_bar(
                 self.tabs
                     .iter()
                     .filter_map(|t| Some((t.id, self.workbook.get(t.id)?.title()))),
-                self.active
+                self.active,
+                ui,
             ),
-            rule::horizontal(1),
-            panes::status_bar(self.active_document(), self.opening.len()),
+            panes::status_bar(self.active_document(), self.opening.len(), ui),
+        ];
+
+        let Some(dialog) = &self.dialog else {
+            return window.into();
+        };
+        let card = match dialog {
+            Dialog::Settings(draft) => {
+                settings::view(draft, &self.themes, self.themes_dir.as_deref(), ui.tokens)
+                    .map(Message::Settings)
+            }
+            Dialog::About => settings::about(Message::CloseDialog, ui.tokens),
+        };
+        stack![
+            window,
+            opaque(
+                mouse_area(center(opaque(card)).style(|_theme: &Theme| {
+                    container::Style::default().background(Color::from_rgba(0.0, 0.0, 0.0, 0.35))
+                }))
+                .on_press(Message::CloseDialog)
+            )
         ]
         .into()
+    }
+}
+
+fn divider<'a>(tokens: Tokens, vertical: bool) -> Element<'a, Message> {
+    let style = move |_theme: &Theme| rule::Style {
+        color: tokens.border,
+        radius: 0.0.into(),
+        fill_mode: rule::FillMode::Full,
+        snap: true,
+    };
+    if vertical {
+        rule::vertical(1).style(style).into()
+    } else {
+        rule::horizontal(1).style(style).into()
     }
 }
 
@@ -277,8 +535,20 @@ mod tests {
     use super::*;
     use veta_testkit::{TempDir, fixtures};
 
+    fn app() -> App {
+        let (themes, _) = theme::load_all(None);
+        let startup = Startup {
+            config: Config::default(),
+            config_path: None,
+            themes,
+            themes_dir: None,
+            errors: Vec::new(),
+        };
+        App::new(startup, Vec::new()).0
+    }
+
     fn app_with(paths: &[&Path]) -> App {
-        let mut app = App::default();
+        let mut app = app();
         for path in paths {
             let doc = Document::open(path, OpenOptions::default()).unwrap();
             let _ = app.update(Message::Opened(path.to_path_buf(), Ok(Loaded::new(doc))));
@@ -298,6 +568,7 @@ mod tests {
         assert_eq!(app.tabs.len(), 2);
         assert_eq!(app.active, Some(app.tabs[1].id));
         assert_eq!(app.title(), "b.parquet — Veta");
+        assert_eq!(app.config.recent_files.len(), 2);
     }
 
     #[test]
@@ -326,7 +597,7 @@ mod tests {
         let ids: Vec<_> = app.tabs.iter().map(|t| t.id).collect();
 
         let _ = app.update(Message::SelectTab(ids[1]));
-        let _ = app.update(Message::CloseActiveTab);
+        let _ = app.update(Message::Action(Action::Close));
         assert_eq!(app.active, Some(ids[2]));
         let _ = app.update(Message::CloseTab(ids[2]));
         assert_eq!(app.active, Some(ids[0]));
@@ -337,12 +608,48 @@ mod tests {
 
     #[test]
     fn open_failure_is_reported() {
-        let mut app = App::default();
+        let mut app = app();
         app.opening.push("x.parquet".into());
         let _ = app.update(Message::Opened("x.parquet".into(), Err("boom".into())));
         assert!(app.opening.is_empty());
         assert_eq!(app.errors.len(), 1);
         let _ = app.update(Message::DismissError(0));
         assert!(app.errors.is_empty());
+    }
+
+    #[test]
+    fn theme_follows_mode() {
+        let mut app = app();
+        assert_eq!(app.current_theme().name, theme::DEFAULT_LIGHT);
+        let _ = app.update(Message::SystemMode(iced::theme::Mode::Dark));
+        assert_eq!(app.current_theme().name, theme::DEFAULT_DARK);
+        let _ = app.update(Message::Action(Action::Mode(ModePreference::Light)));
+        assert_eq!(app.current_theme().name, theme::DEFAULT_LIGHT);
+    }
+
+    #[test]
+    fn missing_theme_falls_back_to_built_in() {
+        let (themes, _) = theme::load_all(None);
+        let mut config = Config::default();
+        config.appearance.mode = ModePreference::Dark;
+        config.appearance.dark_theme = "Gone".into();
+        assert_eq!(pick_theme(&themes, &config, None).name, theme::DEFAULT_DARK);
+    }
+
+    #[test]
+    fn settings_dialog_saves_config() {
+        let mut app = app();
+        let _ = app.update(Message::Action(Action::Settings));
+        assert!(matches!(app.dialog, Some(Dialog::Settings(_))));
+        let _ = app.update(Message::Settings(SettingsMessage::Mode(
+            ModePreference::Dark,
+        )));
+        let _ = app.update(Message::Settings(SettingsMessage::Save));
+        assert!(app.dialog.is_none());
+        assert_eq!(app.config.appearance.mode, ModePreference::Dark);
+
+        let _ = app.update(Message::Action(Action::About));
+        let _ = app.update(Message::CloseDialog);
+        assert!(app.dialog.is_none());
     }
 }

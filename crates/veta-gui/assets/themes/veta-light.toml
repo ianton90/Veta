@@ -1,0 +1,26 @@
+# Veta's default light theme. Copy this file into the `themes` folder of
+# Veta's config directory, change `name` and the values, and it will show up
+# in Settings.
+
+name = "Veta Light"
+mode = "light"
+
+[font]
+# Any installed font family; leave out to use the default font.
+# family = "Inter"
+size = 14
+
+[colors]
+background = "#ffffff"
+text = "#1f2328"
+primary = "#2f6fde"
+success = "#2e9e5b"
+warning = "#c9861a"
+danger = "#d14343"
+
+# Optional: colors derived from the ones above when left out.
+surface = "#f3f4f6"       # ribbon, tab bar, status bar
+border = "#d9dce1"
+grid_header = "#eef0f3"
+grid_stripe = "#f8f9fb"
+selection = "#2f6fde"

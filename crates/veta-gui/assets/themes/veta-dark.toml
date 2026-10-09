@@ -1,0 +1,21 @@
+# Veta's default dark theme. See veta-light.toml for the format.
+
+name = "Veta Dark"
+mode = "dark"
+
+[font]
+size = 14
+
+[colors]
+background = "#1e1f22"
+text = "#e3e5e8"
+primary = "#5b9bff"
+success = "#4cc38a"
+warning = "#e0a640"
+danger = "#f06a6a"
+
+surface = "#2a2b2f"
+border = "#3b3d42"
+grid_header = "#26272b"
+grid_stripe = "#232428"
+selection = "#5b9bff"

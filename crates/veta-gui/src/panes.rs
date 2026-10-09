@@ -1,72 +1,24 @@
-//! View functions for the parts of the window around the grid.
+//! View functions for the parts of the window around the grid and ribbon.
 
-use iced::widget::{button, center, column, container, row, scrollable, space, text};
-use iced::{Alignment, Element, Font, Length, Theme, font};
+use std::path::PathBuf;
+
+use iced::widget::{button, center, column, container, row, scrollable, text};
+use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 use veta_core::display::{abbreviate, human_bytes};
 use veta_core::{Document, DocumentId, SourceMode};
 
-use crate::{Message, Tab};
+use crate::icon::{Icon, icon};
+use crate::theme::Tokens;
+use crate::{Message, Tab, Ui, bold};
 
 const SIDE_PANE_WIDTH: f32 = 300.0;
 
-fn bold() -> Font {
-    Font {
-        weight: font::Weight::Bold,
-        ..Font::DEFAULT
-    }
-}
-
-/// Placeholder for the ribbon (#31): ribbon tab names and the actions that
-/// exist so far.
-pub fn ribbon(has_document: bool, side_pane: bool) -> Element<'static, Message> {
-    let tabs = row(["Home", "Transform", "Add Column", "View"].map(|name| {
-        let label = text(name).size(13);
-        if name == "Home" {
-            label.font(bold()).into()
-        } else {
-            label.style(text::secondary).into()
-        }
-    }))
-    .spacing(18);
-
-    let actions = row![
-        button(text("Open…").size(13)).on_press(Message::OpenDialog),
-        button(text("Close").size(13))
-            .style(button::secondary)
-            .on_press_maybe(has_document.then_some(Message::CloseActiveTab)),
-        space::horizontal(),
-        button(
-            text(if side_pane {
-                "Hide details"
-            } else {
-                "Show details"
-            })
-            .size(13)
-        )
-        .style(button::secondary)
-        .on_press(Message::ToggleSidePane),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-
-    container(column![tabs, actions].spacing(8))
-        .padding([8, 12])
-        .width(Length::Fill)
-        .style(bar_style)
-        .into()
-}
-
-/// Background for the ribbon and the tab bar.
-fn bar_style(theme: &Theme) -> container::Style {
-    container::Style::default().background(theme.extended_palette().background.weak.color)
-}
-
-pub fn errors(errors: &[String]) -> Element<'_, Message> {
+pub fn errors(errors: &[String], ui: Ui) -> Element<'_, Message> {
     column(errors.iter().enumerate().map(|(i, e)| {
         container(
             row![
-                text(e).size(13).width(Length::Fill),
-                button(text("Dismiss").size(12))
+                text(e).size(ui.small()).width(Length::Fill),
+                button(text("Dismiss").size(ui.small()))
                     .style(button::text)
                     .on_press(Message::DismissError(i)),
             ]
@@ -80,25 +32,59 @@ pub fn errors(errors: &[String]) -> Element<'_, Message> {
     .into()
 }
 
-pub fn empty_state(opening: bool) -> Element<'static, Message> {
+pub fn empty_state(opening: bool, recent: &[PathBuf], ui: Ui) -> Element<'_, Message> {
+    let t = ui.tokens;
     let content: Element<'_, Message> = if opening {
-        text("Opening…").size(18).into()
+        text("Opening…").size(ui.heading()).into()
     } else {
-        column![
-            text("No file open").size(24),
-            text("Open a Parquet file or drop one on the window.").style(text::secondary),
-            button(text("Open…")).on_press(Message::OpenDialog),
+        let mut col = column![
+            icon(Icon::TableProperties, 48).color(t.muted_text),
+            text("No file open").size(ui.size * 1.7),
+            text("Open a Parquet file or drop one on the window.").color(t.muted_text),
+            button(
+                row![icon(Icon::FolderOpen, ui.size), text("Open…")]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+            )
+            .padding([6, 14])
+            .on_press(Message::OpenDialog),
         ]
         .spacing(12)
-        .align_x(Alignment::Center)
-        .into()
+        .align_x(Alignment::Center);
+
+        if !recent.is_empty() {
+            let mut list = column![text("Recent files").font(bold()).size(ui.small())].spacing(2);
+            for path in recent {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                let dir = path
+                    .parent()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                list = list.push(
+                    button(
+                        column![text(name), text(dir).size(ui.small()).color(t.muted_text),]
+                            .spacing(1),
+                    )
+                    .width(Length::Fill)
+                    .padding([4, 8])
+                    .style(move |_theme: &Theme, status| subtle_button(t, status))
+                    .on_press(Message::FilesPicked(vec![path.clone()])),
+                );
+            }
+            col = col.push(container(list).width(420).padding([16, 0]));
+        }
+        col.into()
     };
     center(content).into()
 }
 
 /// Read-only file details. Becomes the home of applied steps, statistics and
 /// metadata editing in later milestones.
-pub fn side_pane(doc: &Document) -> Element<'_, Message> {
+pub fn side_pane(doc: &Document, ui: Ui) -> Element<'_, Message> {
+    let t = ui.tokens;
     let mut fields: Vec<(&str, String)> = vec![
         ("Rows", doc.num_rows().to_string()),
         ("Columns", doc.num_columns().to_string()),
@@ -119,27 +105,27 @@ pub fn side_pane(doc: &Document) -> Element<'_, Message> {
     if let Some(created_by) = &doc.metadata().created_by {
         fields.push(("Created by", created_by.clone()));
     }
-    let mut items = column![text("File").size(15).font(bold())].spacing(6);
+    let mut items = column![text("File").size(ui.heading()).font(bold())].spacing(6);
     for (label, value) in fields {
         items = items.push(
             row![
-                text(label).size(13).width(110).style(text::secondary),
-                text(value).size(13),
+                text(label).size(ui.small()).width(110).color(t.muted_text),
+                text(value).size(ui.small()),
             ]
             .spacing(8),
         );
     }
 
     let metadata = &doc.metadata().key_value;
-    let mut meta = column![text("Metadata").size(15).font(bold())].spacing(6);
+    let mut meta = column![text("Metadata").size(ui.heading()).font(bold())].spacing(6);
     if metadata.is_empty() {
-        meta = meta.push(text("None").size(13).style(text::secondary));
+        meta = meta.push(text("None").size(ui.small()).color(t.muted_text));
     }
     for kv in metadata {
         meta = meta.push(
             column![
-                text(kv.key.clone()).size(13).font(bold()),
-                text(abbreviate(kv.value.as_deref().unwrap_or_default(), 40)).size(13),
+                text(kv.key.clone()).size(ui.small()).font(bold()),
+                text(abbreviate(kv.value.as_deref().unwrap_or_default(), 40)).size(ui.small()),
             ]
             .spacing(2),
         );
@@ -148,36 +134,40 @@ pub fn side_pane(doc: &Document) -> Element<'_, Message> {
     container(scrollable(column![items, meta].spacing(20).padding(12)))
         .width(SIDE_PANE_WIDTH)
         .height(Length::Fill)
+        .style(move |_theme: &Theme| container::Style::default().background(t.background))
         .into()
 }
 
 pub fn tab_bar(
     tabs: impl Iterator<Item = (DocumentId, String)>,
     active: Option<DocumentId>,
+    ui: Ui,
 ) -> Element<'static, Message> {
+    let t = ui.tokens;
     let mut bar = row![].spacing(2).align_y(Alignment::Center);
     for (id, title) in tabs {
         let is_active = active == Some(id);
         let tab = row![
-            button(text(title).size(13))
-                .style(button::text)
+            button(text(title).size(ui.small()))
+                .style(move |_theme: &Theme, status| subtle_button(t, status))
                 .padding([4, 8])
                 .on_press(Message::SelectTab(id)),
-            button(text("×").size(13))
-                .style(button::text)
+            button(icon(Icon::Close, ui.small()))
+                .style(move |_theme: &Theme, status| subtle_button(t, status))
                 .padding([4, 6])
                 .on_press(Message::CloseTab(id)),
         ]
         .align_y(Alignment::Center);
-        bar = bar.push(container(tab).style(move |theme: &Theme| {
+        bar = bar.push(container(tab).style(move |_theme: &Theme| {
             if is_active {
                 container::Style {
-                    background: Some(theme.extended_palette().background.base.color.into()),
-                    border: iced::Border {
-                        color: theme.extended_palette().primary.base.color,
+                    background: Some(t.background.into()),
+                    border: Border {
+                        color: t.border,
                         width: 1.0,
-                        radius: 2.0.into(),
+                        radius: iced::border::Radius::default().bottom(4.0),
                     },
+                    text_color: Some(t.primary),
                     ..container::Style::default()
                 }
             } else {
@@ -186,19 +176,23 @@ pub fn tab_bar(
         }));
     }
     bar = bar.push(
-        button(text("+").size(14))
-            .style(button::text)
+        button(icon(Icon::Plus, ui.size))
+            .style(move |_theme: &Theme, status| subtle_button(t, status))
             .padding([4, 10])
             .on_press(Message::OpenDialog),
     );
     container(bar)
-        .padding([2, 6])
+        .padding(iced::Padding::from([0, 6]).bottom(2))
         .width(Length::Fill)
-        .style(bar_style)
+        .style(move |_theme: &Theme| surface(t))
         .into()
 }
 
-pub fn status_bar(active: Option<(&Tab, &Document)>, opening: usize) -> Element<'static, Message> {
+pub fn status_bar(
+    active: Option<(&Tab, &Document)>,
+    opening: usize,
+    ui: Ui,
+) -> Element<'static, Message> {
     let mut parts: Vec<String> = Vec::new();
     if let Some((tab, doc)) = active {
         parts.push(format!("{} rows", doc.num_rows()));
@@ -227,8 +221,40 @@ pub fn status_bar(active: Option<(&Tab, &Document)>, opening: usize) -> Element<
     if opening > 0 {
         parts.push(format!("Opening {opening} file(s)…"));
     }
-    container(text(parts.join("   ·   ")).size(12))
-        .padding([4, 12])
-        .width(Length::Fill)
-        .into()
+    let t = ui.tokens;
+    container(
+        text(parts.join("   ·   "))
+            .size(ui.small())
+            .color(t.muted_text),
+    )
+    .padding([4, 12])
+    .width(Length::Fill)
+    .style(move |_theme: &Theme| surface(t))
+    .into()
+}
+
+fn surface(t: Tokens) -> container::Style {
+    container::Style::default()
+        .background(t.surface)
+        .color(t.text)
+}
+
+fn subtle_button(t: Tokens, status: button::Status) -> button::Style {
+    let alpha = match status {
+        button::Status::Pressed => 0.2,
+        button::Status::Hovered => 0.1,
+        _ => 0.0,
+    };
+    button::Style {
+        background: Some(Background::Color(Color {
+            a: alpha,
+            ..t.primary
+        })),
+        text_color: t.text,
+        border: Border {
+            radius: 4.0.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
 }
