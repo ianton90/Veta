@@ -6,5 +6,8 @@ mod metadata;
 mod workbook;
 
 pub use document::Document;
-pub use metadata::{FileMetadata, KeyValue, WriterSettings};
+pub use metadata::{
+    ColumnSettings, Compression, Encoding, FileInfo, FileMetadata, FormatVersion, KeyValue,
+    RowGroupInfo, StatisticsLevel, WriterSettings,
+};
 pub use workbook::{DocumentId, Workbook};

@@ -13,3 +13,6 @@ clap.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+veta-testkit.workspace = true

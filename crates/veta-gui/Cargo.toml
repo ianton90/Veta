@@ -10,6 +10,10 @@ repository.workspace = true
 [dependencies]
 veta-core.workspace = true
 iced.workspace = true
+rfd.workspace = true
+
+[dev-dependencies]
+veta-testkit.workspace = true
 
 [lints]
 workspace = true

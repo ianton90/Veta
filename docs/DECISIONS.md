@@ -16,3 +16,6 @@ Short log of project decisions. Newest last.
 | 10 | 2026-10-09 | Save preserves the source file's writer settings | Owner requirement; defaults only for new files. |
 | 11 | 2026-10-09 | Apache-2.0 license | Free to fork and use; attribution required. |
 | 12 | 2026-10-09 | Branches: `dv` development, `pr` release. No CI. | Owner's setup; checks run locally before pushing. |
+| 13 | 2026-10-09 | Enable arrow's `chrono-tz` feature | Needed to display timestamps with named time zones (e.g. `UTC`, `Europe/Madrid`). |
+| 14 | 2026-10-09 | Files are read in chunks of 64k rows within row groups, cached LRU under the memory budget (default 1 GiB) | Memory stays bounded even when a single row group is larger than the budget. |
+| 15 | 2026-10-09 | Grid is a custom iced widget drawing only visible cells | iced has no table widget; a custom widget keeps scrolling smooth on millions of rows. |

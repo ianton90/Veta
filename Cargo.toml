@@ -15,9 +15,10 @@ veta-gui = { path = "crates/veta-gui" }
 veta-cli = { path = "crates/veta-cli" }
 veta-testkit = { path = "crates/veta-testkit" }
 
-arrow = "60"
+arrow = { version = "60", features = ["chrono-tz"] }
 parquet = "60"
-iced = "0.14"
+iced = { version = "0.14", features = ["advanced"] }
+rfd = "0.17"
 clap = { version = "4.6", features = ["derive"] }
 
 [workspace.lints.rust]
