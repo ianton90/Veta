@@ -1,0 +1,34 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/ianton90/Veta"
+
+[workspace.dependencies]
+veta-core = { path = "crates/veta-core" }
+veta-gui = { path = "crates/veta-gui" }
+veta-cli = { path = "crates/veta-cli" }
+veta-testkit = { path = "crates/veta-testkit" }
+
+arrow = "60"
+parquet = "60"
+iced = "0.14"
+clap = { version = "4.6", features = ["derive"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,15 @@
+[package]
+name = "veta-cli"
+description = "Command-line interface for Veta."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+veta-core.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

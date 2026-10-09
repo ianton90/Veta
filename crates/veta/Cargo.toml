@@ -1,0 +1,15 @@
+[package]
+name = "veta"
+description = "Parquet viewer and editor. Opens the GUI with no arguments, runs the CLI with a subcommand."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+veta-gui.workspace = true
+veta-cli.workspace = true
+
+[lints]
+workspace = true

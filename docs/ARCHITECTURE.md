@@ -34,6 +34,7 @@ crates/
   veta-gui/    library: iced application (views + message → command mapping).
   veta-cli/    library: clap definitions + command runners.
   veta/        binary: no args → GUI, subcommand → CLI.
+  veta-testkit/ dev-only: Parquet fixture generators, temp dirs.
 ```
 
 `veta-core` never depends on `iced` or `clap`. Everything that the GUI can do
