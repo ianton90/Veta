@@ -23,6 +23,7 @@ pub enum Action {
     Redo,
     ChooseColumns,
     RemoveColumns,
+    AddColumn,
     DuplicateColumn,
     RenameColumn,
     KeepRows,
@@ -58,10 +59,7 @@ impl Action {
             Action::Save | Action::SaveAs => 26,
             Action::Import => 45,
             Action::Export => 46,
-            Action::ChooseColumns
-            | Action::RemoveColumns
-            | Action::DuplicateColumn
-            | Action::RenameColumn => 25,
+            Action::DuplicateColumn => 40,
             Action::KeepRows => 36,
             Action::SortAscending | Action::SortDescending => 37,
             Action::DataType => 35,
@@ -74,6 +72,10 @@ impl Action {
             Action::FileMetadata => 28,
             Action::WriterSettings => 27,
             Action::Open
+            | Action::AddColumn
+            | Action::ChooseColumns
+            | Action::RemoveColumns
+            | Action::RenameColumn
             | Action::InsertRows
             | Action::RemoveRows
             | Action::Undo
@@ -287,6 +289,7 @@ fn groups(tab: Tab) -> Vec<Group> {
             group(
                 "General",
                 vec![
+                    large(A::AddColumn, "New Column", Icon::Plus),
                     large(A::CustomColumn, "Custom Column", Icon::Function),
                     small(A::IndexColumn, "Index Column", Icon::ListOrdered),
                     small(A::DuplicateColumn, "Duplicate Column", Icon::Copy),
@@ -365,7 +368,11 @@ impl Context {
         match action {
             Action::Close => self.has_document,
             Action::Undo => self.can_undo,
-            Action::InsertRows | Action::RemoveRows => self.has_selection,
+            Action::InsertRows
+            | Action::RemoveRows
+            | Action::RemoveColumns
+            | Action::RenameColumn => self.has_selection,
+            Action::AddColumn | Action::ChooseColumns => self.has_document,
             Action::Redo => self.can_redo,
             _ => true,
         }

@@ -305,7 +305,12 @@ pub fn formula_bar<'a>(
 
 /// Right-click menu for cells, rows or columns. `rows` is how many rows are
 /// selected.
-pub fn context_menu<'a>(target: MenuTarget, rows: usize, ui: Ui) -> Element<'a, Message> {
+pub fn context_menu<'a>(
+    target: MenuTarget,
+    rows: usize,
+    columns: usize,
+    ui: Ui,
+) -> Element<'a, Message> {
     let t = ui.tokens;
     let rows_label = |verb: &str, rest: &str| {
         if rows == 1 {
@@ -349,6 +354,38 @@ pub fn context_menu<'a>(target: MenuTarget, rows: usize, ui: Ui) -> Element<'a, 
             "Ctrl+-",
             MenuItem::DeleteRows,
         )));
+    }
+    if let MenuTarget::Column(_) = target {
+        let remove = if columns == 1 {
+            "Remove column".to_owned()
+        } else {
+            format!("Remove {columns} columns")
+        };
+        items.extend([
+            Some((
+                Icon::Plus,
+                "Insert column left…".into(),
+                "",
+                MenuItem::InsertColumnLeft,
+            )),
+            Some((
+                Icon::Plus,
+                "Insert column right…".into(),
+                "",
+                MenuItem::InsertColumnRight,
+            )),
+            Some((Icon::Rename, "Rename…".into(), "", MenuItem::RenameColumn)),
+            None,
+            Some((Icon::Swap, "Move left".into(), "", MenuItem::MoveColumnLeft)),
+            Some((
+                Icon::Swap,
+                "Move right".into(),
+                "",
+                MenuItem::MoveColumnRight,
+            )),
+            None,
+            Some((Icon::Trash, remove, "", MenuItem::RemoveColumns)),
+        ]);
     }
 
     let mut list = column![].spacing(1);

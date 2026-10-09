@@ -5,6 +5,7 @@
 //! will be turned into core commands; see `docs/ARCHITECTURE.md`.
 
 mod config;
+mod dialogs;
 mod grid;
 mod icon;
 mod panes;
@@ -25,6 +26,7 @@ use veta_core::{Command, Document, DocumentId, OpenOptions, Workbook, controller
 use crate::config::Config;
 #[cfg(test)]
 use crate::config::ModePreference;
+use crate::dialogs::{ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage};
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav};
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
 use crate::settings::{Draft, Outcome, SettingsMessage};
@@ -182,6 +184,12 @@ enum MenuItem {
     InsertRowsAbove,
     InsertRowsBelow,
     DeleteRows,
+    InsertColumnLeft,
+    InsertColumnRight,
+    RenameColumn,
+    RemoveColumns,
+    MoveColumnLeft,
+    MoveColumnRight,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -202,6 +210,14 @@ struct Tab {
 enum Dialog {
     Settings(Draft),
     About,
+    Column {
+        document: DocumentId,
+        dialog: ColumnDialog,
+    },
+    Choose {
+        document: DocumentId,
+        dialog: ChooseColumns,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -222,6 +238,8 @@ enum Message {
     CommitEdit,
     Menu(MenuItem),
     CloseMenu,
+    ColumnDialog(ColumnMessage),
+    Choose(ChooseMessage),
     SystemMode(iced::theme::Mode),
     OpenDialog,
 }
@@ -349,6 +367,7 @@ impl App {
             Message::Grid(id, event) => match event {
                 GridEvent::StartEdit { initial } => return self.start_edit(id, initial),
                 GridEvent::InsertRows => self.insert_rows(id, false),
+                GridEvent::MoveColumn { from, to } => self.move_column(id, from, to),
                 GridEvent::DeleteRows => self.delete_rows(id),
                 GridEvent::ContextMenu { target, position } => {
                     self.commit_edit();
@@ -418,6 +437,64 @@ impl App {
                     MenuItem::InsertRowsAbove => self.insert_rows(id, false),
                     MenuItem::InsertRowsBelow => self.insert_rows(id, true),
                     MenuItem::DeleteRows => self.delete_rows(id),
+                    MenuItem::InsertColumnLeft | MenuItem::InsertColumnRight => {
+                        let columns = self.selected_columns(id);
+                        let at = match (item, columns) {
+                            (MenuItem::InsertColumnLeft, Some(c)) => c.start,
+                            (_, Some(c)) => c.end,
+                            (_, None) => 0,
+                        };
+                        return self.open_column_dialog(id, ColumnDialog::add(at));
+                    }
+                    MenuItem::RenameColumn => return self.rename_column(id),
+                    MenuItem::RemoveColumns => self.remove_columns(id),
+                    MenuItem::MoveColumnLeft | MenuItem::MoveColumnRight => {
+                        if let Some(c) = self.selected_columns(id) {
+                            let to = if item == MenuItem::MoveColumnLeft {
+                                c.start.checked_sub(1)
+                            } else {
+                                Some(c.start + 1)
+                            };
+                            if let Some(to) = to {
+                                self.move_column(id, c.start, to);
+                            }
+                        }
+                    }
+                }
+            }
+            Message::ColumnDialog(message) => {
+                if let Some(Dialog::Column { document, dialog }) = &mut self.dialog {
+                    let id = *document;
+                    let cancel = matches!(message, ColumnMessage::Cancel);
+                    if let Some(command) = dialog.update(message) {
+                        let at = match &command {
+                            Command::AddColumn { at, .. } => Some(*at),
+                            _ => None,
+                        };
+                        if self.execute(id, command) {
+                            self.dialog = None;
+                            if let Some(at) = at {
+                                self.select_columns(id, at..at + 1);
+                            }
+                        }
+                    } else if cancel {
+                        self.dialog = None;
+                    }
+                }
+            }
+            Message::Choose(message) => {
+                if let Some(Dialog::Choose { document, dialog }) = &mut self.dialog {
+                    let id = *document;
+                    match dialog.update(message.clone()) {
+                        Some(Some(command)) => {
+                            if self.execute(id, command) {
+                                self.dialog = None;
+                            }
+                        }
+                        Some(None) => self.dialog = None,
+                        None if matches!(message, ChooseMessage::Cancel) => self.dialog = None,
+                        None => {}
+                    }
                 }
             }
             Message::CloseMenu => self.menu = None,
@@ -498,6 +575,40 @@ impl App {
                     self.delete_rows(id);
                 }
             }
+            Action::AddColumn => {
+                if let Some(id) = self.active {
+                    let at = self
+                        .selected_columns(id)
+                        .map_or_else(|| self.column_count(id), |c| c.end);
+                    return self.open_column_dialog(id, ColumnDialog::add(at));
+                }
+            }
+            Action::RenameColumn => {
+                if let Some(id) = self.active {
+                    return self.rename_column(id);
+                }
+            }
+            Action::RemoveColumns => {
+                if let Some(id) = self.active {
+                    self.remove_columns(id);
+                }
+            }
+            Action::ChooseColumns => {
+                if let Some(id) = self.active
+                    && let Some(doc) = self.workbook.get(id)
+                {
+                    let names = doc
+                        .schema()
+                        .fields()
+                        .iter()
+                        .map(|f| f.name().clone())
+                        .collect::<Vec<_>>();
+                    self.dialog = Some(Dialog::Choose {
+                        document: id,
+                        dialog: ChooseColumns::new(names),
+                    });
+                }
+            }
             Action::ToggleDetails => self.show_side_pane = !self.show_side_pane,
             Action::Mode(mode) => {
                 self.config.appearance.mode = mode;
@@ -567,6 +678,80 @@ impl App {
             )
         {
             tab.grid.select_rows(at..at + count, doc);
+        }
+    }
+
+    fn selected_columns(&self, id: DocumentId) -> Option<std::ops::Range<usize>> {
+        self.tabs
+            .iter()
+            .find(|t| t.id == id)?
+            .grid
+            .selected_columns()
+    }
+
+    fn select_columns(&mut self, id: DocumentId, range: std::ops::Range<usize>) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
+            tab.grid.select_columns(range);
+        }
+    }
+
+    fn column_count(&self, id: DocumentId) -> usize {
+        self.workbook.get(id).map_or(0, Document::num_columns)
+    }
+
+    fn column_names(&self, id: DocumentId, range: std::ops::Range<usize>) -> Vec<String> {
+        let Some(doc) = self.workbook.get(id) else {
+            return Vec::new();
+        };
+        let schema = doc.schema();
+        schema.fields()
+            [range.start.min(schema.fields().len())..range.end.min(schema.fields().len())]
+            .iter()
+            .map(|f| f.name().clone())
+            .collect()
+    }
+
+    fn open_column_dialog(&mut self, id: DocumentId, dialog: ColumnDialog) -> Task<Message> {
+        self.edit = None;
+        self.dialog = Some(Dialog::Column {
+            document: id,
+            dialog,
+        });
+        Task::batch([
+            iced::widget::operation::focus(dialogs::NAME_ID),
+            iced::widget::operation::select_all(dialogs::NAME_ID),
+        ])
+    }
+
+    fn rename_column(&mut self, id: DocumentId) -> Task<Message> {
+        let Some(columns) = self.selected_columns(id) else {
+            return Task::none();
+        };
+        match self
+            .column_names(id, columns.start..columns.start + 1)
+            .pop()
+        {
+            Some(name) => self.open_column_dialog(id, ColumnDialog::rename(name)),
+            None => Task::none(),
+        }
+    }
+
+    fn remove_columns(&mut self, id: DocumentId) {
+        self.edit = None;
+        if let Some(columns) = self.selected_columns(id) {
+            let names = self.column_names(id, columns);
+            if !names.is_empty() {
+                self.execute(id, Command::RemoveColumns { names });
+            }
+        }
+    }
+
+    fn move_column(&mut self, id: DocumentId, from: usize, to: usize) {
+        self.commit_edit();
+        if let Some(name) = self.column_names(id, from..from + 1).pop()
+            && self.execute(id, Command::MoveColumn { name, to })
+        {
+            self.select_columns(id, to..to + 1);
         }
     }
 
@@ -763,6 +948,7 @@ impl App {
 
         if let Some(menu) = &self.menu {
             let rows = self.selected_rows(menu.document).map_or(1, |r| r.len());
+            let columns = self.selected_columns(menu.document).map_or(1, |c| c.len());
             return stack![
                 window,
                 mouse_area(
@@ -772,7 +958,7 @@ impl App {
                 )
                 .on_press(Message::CloseMenu)
                 .on_right_press(Message::CloseMenu),
-                pin(panes::context_menu(menu.target, rows, ui)).position(menu.position),
+                pin(panes::context_menu(menu.target, rows, columns, ui)).position(menu.position),
             ]
             .into();
         }
@@ -785,6 +971,8 @@ impl App {
                     .map(Message::Settings)
             }
             Dialog::About => settings::about(Message::CloseDialog, ui.tokens),
+            Dialog::Column { dialog, .. } => dialog.view(ui.tokens).map(Message::ColumnDialog),
+            Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
         };
         stack![
             window,
@@ -1015,6 +1203,91 @@ mod tests {
         let _ = app.update(Message::Action(Action::Undo));
         assert_eq!(rows(&app), 1000);
         assert!(!app.workbook.get(id).unwrap().is_modified());
+    }
+
+    #[test]
+    fn column_commands() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let names = |app: &App| -> Vec<String> {
+            let doc = app.workbook.get(id).unwrap();
+            doc.schema()
+                .fields()
+                .iter()
+                .map(|f| f.name().clone())
+                .collect()
+        };
+
+        // Insert a column right of "name" through the menu and dialog.
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 1,
+                extend: false,
+            },
+        ));
+        app.menu = Some(ContextMenu {
+            document: id,
+            target: MenuTarget::Column(1),
+            position: iced::Point::ORIGIN,
+        });
+        let _ = app.update(Message::Menu(MenuItem::InsertColumnRight));
+        let _ = app.update(Message::ColumnDialog(ColumnMessage::Name("note".into())));
+        let _ = app.update(Message::ColumnDialog(ColumnMessage::Submit));
+        assert!(app.dialog.is_none());
+        assert_eq!(names(&app), ["id", "name", "note", "score", "flag"]);
+        assert_eq!(app.selected_columns(id), Some(2..3));
+
+        // Rename with a clashing name keeps the dialog open.
+        let _ = app.update(Message::Action(Action::RenameColumn));
+        let _ = app.update(Message::ColumnDialog(ColumnMessage::Name("id".into())));
+        let _ = app.update(Message::ColumnDialog(ColumnMessage::Submit));
+        assert!(app.dialog.is_some());
+        let _ = app.update(Message::ColumnDialog(ColumnMessage::Name("memo".into())));
+        let _ = app.update(Message::ColumnDialog(ColumnMessage::Submit));
+        assert_eq!(names(&app), ["id", "name", "memo", "score", "flag"]);
+
+        // Drag "memo" to the front, then remove two columns.
+        let _ = app.update(Message::Grid(id, GridEvent::MoveColumn { from: 2, to: 0 }));
+        assert_eq!(names(&app), ["memo", "id", "name", "score", "flag"]);
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 3,
+                extend: true,
+            },
+        ));
+        assert_eq!(app.selected_columns(id), Some(0..4));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 3,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 4,
+                extend: true,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::RemoveColumns));
+        assert_eq!(names(&app), ["memo", "id", "name"]);
+
+        // Choose columns keeps only the checked ones.
+        let _ = app.update(Message::Action(Action::ChooseColumns));
+        let _ = app.update(Message::Choose(ChooseMessage::Toggle(0, false)));
+        let _ = app.update(Message::Choose(ChooseMessage::Apply));
+        assert_eq!(names(&app), ["id", "name"]);
+
+        while app.workbook.get(id).unwrap().history().can_undo() {
+            let _ = app.update(Message::Action(Action::Undo));
+        }
+        assert_eq!(names(&app), ["id", "name", "score", "flag"]);
     }
 
     #[test]

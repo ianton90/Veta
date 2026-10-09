@@ -229,7 +229,7 @@ fn section<'a, Message: 'a>(title: &'a str) -> Element<'a, Message> {
     text(title).size(15).font(crate::bold()).into()
 }
 
-fn card<'a, Message: 'a>(
+pub(crate) fn card<'a, Message: 'a>(
     content: Element<'a, Message>,
     tokens: Tokens,
     width: f32,

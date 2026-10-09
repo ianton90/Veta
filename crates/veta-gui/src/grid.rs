@@ -98,6 +98,16 @@ pub enum GridEvent {
     /// Insert as many rows as are selected, above the selection.
     InsertRows,
     DeleteRows,
+    /// A column header was clicked; `extend` (Shift) extends the selection.
+    SelectColumns {
+        column: usize,
+        extend: bool,
+    },
+    /// A column header was dragged to a new position (final index).
+    MoveColumn {
+        from: usize,
+        to: usize,
+    },
     /// Right-click; `position` is in window coordinates.
     ContextMenu {
         target: MenuTarget,
@@ -150,6 +160,8 @@ pub struct GridView {
     /// Whole-row selection as (anchor, end), inclusive, set by clicking row
     /// numbers.
     rows: Option<(usize, usize)>,
+    /// Whole-column selection as (anchor, end), inclusive.
+    cols: Option<(usize, usize)>,
     /// First row of `cells`.
     window_start: usize,
     cells: Vec<Vec<Option<String>>>,
@@ -179,6 +191,7 @@ impl GridView {
             scroll_x: 0.0,
             selected: None,
             rows: None,
+            cols: None,
             window_start: 0,
             cells: Vec::new(),
             error: None,
@@ -226,6 +239,29 @@ impl GridView {
         }
     }
 
+    /// Selected columns: the column selection, or the selected cell's column.
+    pub fn selected_columns(&self) -> Option<Range<usize>> {
+        match (self.cols, self.selected) {
+            (Some((a, b)), _) => Some(a.min(b)..a.max(b) + 1),
+            (None, Some((_, c))) => Some(c..c + 1),
+            (None, None) => None,
+        }
+    }
+
+    /// Selects whole columns `range` (e.g. after moving or adding one).
+    pub fn select_columns(&mut self, range: Range<usize>) {
+        if range.is_empty() || range.end > self.columns.len() {
+            return;
+        }
+        self.rows = None;
+        self.cols = Some((range.start, range.end - 1));
+        let row = self.selected.map_or(self.first_row, |(r, _)| r);
+        if self.num_rows > 0 {
+            self.selected = Some((row.min(self.num_rows - 1), range.start));
+        }
+        self.reveal(row.min(self.num_rows.saturating_sub(1)), range.start);
+    }
+
     /// Selects whole rows `range` (e.g. after inserting them).
     pub fn select_rows(&mut self, range: Range<usize>, document: &Document) {
         if range.is_empty() || range.end > self.num_rows {
@@ -233,6 +269,7 @@ impl GridView {
         }
         let column = self.selected.map_or(0, |(_, c)| c);
         self.rows = Some((range.start, range.end - 1));
+        self.cols = None;
         self.selected = Some((range.start, column));
         self.reveal(
             range.start,
@@ -274,6 +311,10 @@ impl GridView {
             (self.num_rows > 0 && !self.columns.is_empty())
                 .then(|| (r.min(self.num_rows - 1), c.min(self.columns.len() - 1)))
         });
+        let n = self.columns.len();
+        self.cols = self
+            .cols
+            .and_then(|(a, b)| (n > 0).then(|| (a.min(n - 1), b.min(n - 1))));
         self.rows = self.rows.and_then(|(a, b)| {
             (self.num_rows > 0).then(|| (a.min(self.num_rows - 1), b.min(self.num_rows - 1)))
         });
@@ -304,6 +345,7 @@ impl GridView {
                 if row < self.num_rows && column < self.columns.len() {
                     self.selected = Some((row, column));
                     self.rows = None;
+                    self.cols = None;
                     self.reveal(row, column);
                 }
             }
@@ -315,13 +357,32 @@ impl GridView {
                         _ => row,
                     };
                     let column = self.selected.map_or(0, |(_, c)| c);
+                    self.cols = None;
                     self.rows = Some((anchor, row));
                     self.selected = Some((row, column));
                     self.reveal(row, column);
                 }
             }
+            GridEvent::SelectColumns { column, extend } => {
+                if column < self.columns.len() {
+                    let anchor = match (extend, self.cols, self.selected) {
+                        (true, Some((anchor, _)), _) => anchor,
+                        (true, None, Some((_, c))) => c,
+                        _ => column,
+                    };
+                    let row = self.selected.map_or(self.first_row, |(r, _)| r);
+                    let row = row.min(self.num_rows.saturating_sub(1));
+                    self.rows = None;
+                    self.cols = Some((anchor, column));
+                    if self.num_rows > 0 {
+                        self.selected = Some((row, column));
+                    }
+                    self.reveal(row, column);
+                }
+            }
             GridEvent::Navigate(nav) => {
                 self.rows = None;
+                self.cols = None;
                 self.navigate(nav);
             }
             // Handled by the app, which turns them into commands.
@@ -329,6 +390,7 @@ impl GridView {
             | GridEvent::ClearCell
             | GridEvent::InsertRows
             | GridEvent::DeleteRows
+            | GridEvent::MoveColumn { .. }
             | GridEvent::ContextMenu { .. } => {}
             GridEvent::ColumnResized { column, width } => {
                 if let Some(c) = self.columns.get_mut(column) {
@@ -492,6 +554,8 @@ impl widget::operation::Focusable for State {
 /// Id of the grid widget, for moving keyboard focus to it.
 pub const GRID_ID: widget::Id = widget::Id::new("grid");
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// Pixels a header must be dragged before it starts moving.
+const DRAG_THRESHOLD: f32 = 6.0;
 
 #[derive(Debug, Default, Clone, Copy)]
 enum Drag {
@@ -501,6 +565,13 @@ enum Drag {
         column: usize,
         origin_x: f32,
         origin_width: f32,
+    },
+    /// Pressed on a column header; becomes a move once dragged far enough.
+    Header {
+        column: usize,
+        origin_x: f32,
+        x: f32,
+        moving: bool,
     },
     VerticalThumb {
         grab: f32,
@@ -643,6 +714,28 @@ impl<Message> Grid<'_, Message> {
         (row < self.view.num_rows).then_some(row)
     }
 
+    /// Gap (0 = before the first column, n = after the last) nearest to `x`,
+    /// for dropping a dragged column.
+    fn drop_slot(&self, regions: &Regions, x: f32) -> usize {
+        let mut left = regions.body.x - self.view.scroll_x;
+        for (i, c) in self.view.columns.iter().enumerate() {
+            if x < left + c.width / 2.0 {
+                return i;
+            }
+            left += c.width;
+        }
+        self.view.columns.len()
+    }
+
+    /// x of the gap `slot`, on screen.
+    fn slot_x(&self, regions: &Regions, slot: usize) -> f32 {
+        regions.body.x - self.view.scroll_x
+            + self.view.columns[..slot]
+                .iter()
+                .map(|c| c.width)
+                .sum::<f32>()
+    }
+
     /// Column under an x coordinate.
     fn column_at(&self, regions: &Regions, x: f32) -> Option<usize> {
         self.visible_columns(regions.body)
@@ -765,6 +858,19 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                         origin_x: position.x,
                         origin_width: view.columns[column].width,
                     };
+                } else if regions.header.contains(position) {
+                    if let Some(column) = self.column_at(&regions, position.x) {
+                        shell.publish((self.on_event)(GridEvent::SelectColumns {
+                            column,
+                            extend: state.modifiers.shift(),
+                        }));
+                        state.drag = Drag::Header {
+                            column,
+                            origin_x: position.x,
+                            x: position.x,
+                            moving: false,
+                        };
+                    }
                 } else if regions.v_track.contains(position) {
                     if let Some((offset, length)) = regions.v_thumb(view) {
                         let local = position.y - regions.v_track.y;
@@ -855,6 +961,20 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             }
             Event::Mouse(mouse::Event::CursorMoved { position }) => match state.drag {
                 Drag::None => {}
+                Drag::Header {
+                    column,
+                    origin_x,
+                    moving,
+                    ..
+                } => {
+                    state.drag = Drag::Header {
+                        column,
+                        origin_x,
+                        x: position.x,
+                        moving: moving || (position.x - origin_x).abs() > DRAG_THRESHOLD,
+                    };
+                    shell.request_redraw();
+                }
                 Drag::Column {
                     column,
                     origin_x,
@@ -897,6 +1017,19 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 }
             },
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if let Drag::Header {
+                    column,
+                    x,
+                    moving: true,
+                    ..
+                } = state.drag
+                {
+                    let slot = self.drop_slot(&regions, x);
+                    let to = if slot > column { slot - 1 } else { slot };
+                    if to != column {
+                        shell.publish((self.on_event)(GridEvent::MoveColumn { from: column, to }));
+                    }
+                }
                 state.drag = Drag::None;
             }
             Event::Keyboard(keyboard::Event::KeyPressed {
@@ -972,8 +1105,10 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         _renderer: &Renderer,
     ) -> mouse::Interaction {
         let state = tree.state.downcast_ref::<State>();
-        if matches!(state.drag, Drag::Column { .. }) {
-            return mouse::Interaction::ResizingHorizontally;
+        match state.drag {
+            Drag::Column { .. } => return mouse::Interaction::ResizingHorizontally,
+            Drag::Header { moving: true, .. } => return mouse::Interaction::Grabbing,
+            _ => {}
         }
         let regions = Regions::new(layout.bounds(), self.view);
         match cursor.position() {
@@ -987,7 +1122,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
 
     fn draw(
         &self,
-        _tree: &Tree,
+        tree: &Tree,
         renderer: &mut Renderer,
         _theme: &Theme,
         _style: &renderer::Style,
@@ -1121,6 +1256,36 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
 
         // Header.
         fill(renderer, regions.header, header_bg);
+        let selected_cols = if view.cols.is_some() {
+            view.selected_columns().unwrap_or(0..0)
+        } else {
+            0..0
+        };
+        for &(column, x, width) in &columns {
+            if selected_cols.contains(&column) {
+                let highlight = Color {
+                    a: 0.14,
+                    ..t.selection
+                };
+                let header = Rectangle {
+                    x,
+                    y: regions.header.y,
+                    width,
+                    height: m.header_height,
+                };
+                let body = Rectangle {
+                    x,
+                    y: regions.body.y,
+                    width,
+                    height: regions.body.height,
+                };
+                for rect in [header, body] {
+                    if let Some(clip) = rect.intersection(&regions.bounds) {
+                        fill(renderer, clip, highlight);
+                    }
+                }
+            }
+        }
         for &(column, x, width) in &columns {
             let c = &view.columns[column];
             let cell = Rectangle {
@@ -1244,6 +1409,24 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     height: SCROLLBAR - 4.0,
                 },
                 thumb_color,
+            );
+        }
+
+        let state = tree.state.downcast_ref::<State>();
+        if let Drag::Header {
+            x, moving: true, ..
+        } = state.drag
+        {
+            let line_x = self.slot_x(&regions, self.drop_slot(&regions, x));
+            fill(
+                renderer,
+                Rectangle {
+                    x: line_x - 1.0,
+                    y: regions.bounds.y,
+                    width: 3.0,
+                    height: m.header_height + regions.body.height,
+                },
+                t.selection,
             );
         }
 
