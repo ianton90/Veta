@@ -388,6 +388,15 @@ impl Pipeline {
         Ok(std::mem::replace(&mut self.steps[last], step))
     }
 
+    /// The last step's cell edits, if the last step edits cells. Callers must
+    /// only store values already validated for the column and row.
+    pub(crate) fn last_edits_mut(&mut self) -> Option<&mut CellEdits> {
+        match self.steps.last_mut() {
+            Some(Step::EditCells(edits)) => Some(edits),
+            _ => None,
+        }
+    }
+
     /// Reads the output rows in `range` (clamped to the row count).
     pub fn read(&self, range: Range<usize>) -> Result<RecordBatch> {
         let end = range.end.min(self.num_rows());

@@ -5,6 +5,7 @@ pub mod command;
 pub mod controller;
 pub mod display;
 pub mod error;
+pub mod history;
 pub mod io;
 pub mod model;
 pub mod source;

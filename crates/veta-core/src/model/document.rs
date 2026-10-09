@@ -7,6 +7,7 @@ use arrow::record_batch::RecordBatch;
 
 use super::{FileInfo, FileMetadata, WriterSettings};
 use crate::error::Result;
+use crate::history::History;
 use crate::io::{OpenOptions, open_parquet};
 use crate::source::{MemorySource, SourceMode};
 use crate::steps::{Pipeline, Step};
@@ -20,6 +21,7 @@ pub struct Document {
     pub(crate) info: Option<FileInfo>,
     pub(crate) metadata: FileMetadata,
     pub(crate) writer: WriterSettings,
+    pub(crate) history: History,
 }
 
 impl Default for Document {
@@ -30,6 +32,7 @@ impl Default for Document {
             info: None,
             metadata: FileMetadata::default(),
             writer: WriterSettings::default(),
+            history: History::new(),
         }
     }
 }
@@ -50,6 +53,7 @@ impl Document {
             info: Some(opened.info),
             metadata: opened.metadata,
             writer: opened.writer,
+            history: History::new(),
         })
     }
 
@@ -105,6 +109,15 @@ impl Document {
 
     pub fn writer_settings(&self) -> &WriterSettings {
         &self.writer
+    }
+
+    pub fn history(&self) -> &History {
+        &self.history
+    }
+
+    /// Whether there are changes since the document was opened or saved.
+    pub fn is_modified(&self) -> bool {
+        self.history.is_modified()
     }
 }
 
