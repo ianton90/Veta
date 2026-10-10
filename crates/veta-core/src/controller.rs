@@ -211,6 +211,8 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
             Ok((step.describe(), Change::PushStep(step)))
         }
         Command::Fill(fill) => Ok((fill.describe(), Change::PushStep(Step::Fill(fill)))),
+        Command::Split(split) => Ok((split.describe(), Change::PushStep(Step::Split(split)))),
+        Command::Merge(merge) => Ok((merge.describe(), Change::PushStep(Step::Merge(merge)))),
         Command::RemoveStep { index } => {
             let mut after = doc.steps().to_vec();
             if index >= after.len() {

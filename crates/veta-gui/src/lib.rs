@@ -22,9 +22,10 @@ use iced::{
     Color, Element, Font, Length, Pixels, Size, Subscription, Task, Theme, event, font, keyboard,
     window,
 };
+use veta_core::arrow::array::ArrayRef;
 use veta_core::steps::{
-    Cast, ComputeJob, Computed, Condition, Fill, Filter, FilterOp, Replace, Sort, SortKey, Status,
-    Step, TextOp,
+    Cast, ComputeJob, Computed, Condition, Fill, Filter, FilterOp, Merge, Replace, Sort, SortKey,
+    Split, Status, Step, TextOp,
 };
 use veta_core::{Command, Document, DocumentId, OpenOptions, Workbook, controller};
 
@@ -33,8 +34,9 @@ use crate::config::Config;
 use crate::config::ModePreference;
 use crate::dialogs::{
     CastDialog, CastMessage, ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage,
-    FilterDialog, FilterMessage, FormatDialog, FormatMessage, MetadataDialog, MetadataMessage,
-    ReplaceDialog, ReplaceMessage, SortDialog, SortMessage, WriterDialog, WriterMessage,
+    FilterDialog, FilterMessage, FormatDialog, FormatMessage, MergeDialog, MergeMessage,
+    MetadataDialog, MetadataMessage, ReplaceDialog, ReplaceMessage, SortDialog, SortMessage,
+    SplitDialog, SplitMessage, WriterDialog, WriterMessage,
 };
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav};
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
@@ -45,8 +47,8 @@ use crate::theme::{Mode, Tokens, VetaTheme};
 const FORMULA_ID: iced::widget::Id = iced::widget::Id::new("formula");
 /// Id of the text input drawn inside the cell being edited.
 const EDITOR_ID: iced::widget::Id = iced::widget::Id::new("cell-editor");
-/// Rows the change type dialog previews failures on.
-const CAST_SAMPLE_ROWS: usize = 1000;
+/// Rows dialogs sample (to preview cast failures, suggest split parts).
+const SAMPLE_ROWS: usize = 1000;
 
 /// Opens the main window with `files` and blocks until it is closed.
 pub fn run(files: Vec<PathBuf>) -> iced::Result {
@@ -245,6 +247,8 @@ enum MenuItem {
     FillDown,
     FillUp,
     FormatText,
+    SplitColumn,
+    MergeColumns,
     SortAscending,
     SortDescending,
     /// Keep rows whose value in this column equals the selected cell's.
@@ -282,6 +286,8 @@ fn step_dialog_supported(step: &Step) -> bool {
             | Step::Cast(_)
             | Step::Replace(_)
             | Step::FormatText { .. }
+            | Step::Split(_)
+            | Step::Merge(_)
     )
 }
 
@@ -321,6 +327,16 @@ enum Dialog {
     Format {
         document: DocumentId,
         dialog: FormatDialog,
+        replace: Option<usize>,
+    },
+    Split {
+        document: DocumentId,
+        dialog: SplitDialog,
+        replace: Option<usize>,
+    },
+    Merge {
+        document: DocumentId,
+        dialog: MergeDialog,
         replace: Option<usize>,
     },
     /// Editing the sort step at `index`.
@@ -380,6 +396,8 @@ enum Message {
     Cast(CastMessage),
     Replace(ReplaceMessage),
     Format(FormatMessage),
+    Split(SplitMessage),
+    Merge(MergeMessage),
     /// Progress (0–1) of the background pass with this key.
     ComputeProgress(DocumentId, Vec<u64>, f32),
     /// The background pass with this key finished.
@@ -707,6 +725,8 @@ impl App {
                         self.fill_selected(id, item == MenuItem::FillUp);
                     }
                     MenuItem::FormatText => self.open_format_dialog(id),
+                    MenuItem::SplitColumn => return self.open_split_dialog(id, None),
+                    MenuItem::MergeColumns => return self.open_merge_dialog(id, None),
                     MenuItem::SortAscending | MenuItem::SortDescending => {
                         self.sort_selected(id, item == MenuItem::SortDescending);
                     }
@@ -889,6 +909,50 @@ impl App {
                         }
                         (None, _) if cancel => self.dialog = None,
                         (None, _) => {}
+                    }
+                }
+            }
+            Message::Split(message) => {
+                if let Some(Dialog::Split {
+                    document,
+                    dialog,
+                    replace,
+                }) = &mut self.dialog
+                {
+                    let (id, replace) = (*document, *replace);
+                    let cancel = matches!(message, SplitMessage::Cancel);
+                    if let Some(split) = dialog.update(message) {
+                        let command = Command::Split(split.clone());
+                        if let Err(e) =
+                            self.add_or_replace(id, replace, Step::Split(split), command)
+                            && let Some(Dialog::Split { dialog, .. }) = &mut self.dialog
+                        {
+                            dialog.set_error(e);
+                        }
+                    } else if cancel {
+                        self.dialog = None;
+                    }
+                }
+            }
+            Message::Merge(message) => {
+                if let Some(Dialog::Merge {
+                    document,
+                    dialog,
+                    replace,
+                }) = &mut self.dialog
+                {
+                    let (id, replace) = (*document, *replace);
+                    let cancel = matches!(message, MergeMessage::Cancel);
+                    if let Some(merge) = dialog.update(message) {
+                        let command = Command::Merge(merge.clone());
+                        if let Err(e) =
+                            self.add_or_replace(id, replace, Step::Merge(merge), command)
+                            && let Some(Dialog::Merge { dialog, .. }) = &mut self.dialog
+                        {
+                            dialog.set_error(e);
+                        }
+                    } else if cancel {
+                        self.dialog = None;
                     }
                 }
             }
@@ -1088,6 +1152,8 @@ impl App {
                 | Action::ReplaceValues
                 | Action::FillDown
                 | Action::FormatText
+                | Action::SplitColumn
+                | Action::MergeColumns
         );
         if changes_data
             && let Some(id) = self.active
@@ -1167,6 +1233,16 @@ impl App {
             Action::FormatText => {
                 if let Some(id) = self.active {
                     self.open_format_dialog(id);
+                }
+            }
+            Action::SplitColumn => {
+                if let Some(id) = self.active {
+                    return self.open_split_dialog(id, None);
+                }
+            }
+            Action::MergeColumns => {
+                if let Some(id) = self.active {
+                    return self.open_merge_dialog(id, None);
                 }
             }
             Action::DataType => {
@@ -1339,6 +1415,8 @@ impl App {
                 return Task::none();
             }
             Step::Replace(r) => return self.open_replace_dialog(id, Some((index, r.clone()))),
+            Step::Split(s) => return self.open_split_dialog(id, Some((index, s.clone()))),
+            Step::Merge(m) => return self.open_merge_dialog(id, Some((index, m.clone()))),
             Step::FormatText { columns, op } => {
                 self.edit = None;
                 self.dialog = Some(Dialog::Format {
@@ -1581,6 +1659,86 @@ impl App {
         });
     }
 
+    /// Closes the dialog and adds `command`'s step, or replaces step
+    /// `replace` with `step`. An error adding it is returned to show in the
+    /// dialog, which then stays open.
+    fn add_or_replace(
+        &mut self,
+        id: DocumentId,
+        replace: Option<usize>,
+        step: Step,
+        command: Command,
+    ) -> Result<(), String> {
+        if let Some(index) = replace {
+            self.dialog = None;
+            self.change_steps(id, index, Command::ReplaceStep { index, step });
+            return Ok(());
+        }
+        let Some(doc) = self.workbook.get_mut(id) else {
+            return Ok(());
+        };
+        controller::execute(doc, command).map_err(|e| e.to_string())?;
+        self.dialog = None;
+        self.refresh(id);
+        Ok(())
+    }
+
+    /// Opens the split dialog on the selected column, or on the split step
+    /// at `index`.
+    fn open_split_dialog(&mut self, id: DocumentId, step: Option<(usize, Split)>) -> Task<Message> {
+        let column = match &step {
+            Some((_, s)) => Some(s.column.clone()),
+            None => self.selected_column_names(id).into_iter().next(),
+        };
+        let Some(column) = column else {
+            self.errors.push("Select a column to split.".into());
+            return Task::none();
+        };
+        let Some(sample) = self.sample(id, step.as_ref().map(|(i, _)| *i), &column) else {
+            return Task::none();
+        };
+        self.edit = None;
+        self.dialog = Some(Dialog::Split {
+            document: id,
+            dialog: SplitDialog::new(column, sample, step.as_ref().map(|(_, s)| s)),
+            replace: step.map(|(i, _)| i),
+        });
+        iced::widget::operation::focus(dialogs::NAME_ID)
+    }
+
+    /// Opens the merge dialog on the selected columns, or on the merge step
+    /// at `index`.
+    fn open_merge_dialog(&mut self, id: DocumentId, step: Option<(usize, Merge)>) -> Task<Message> {
+        let columns = match &step {
+            Some((_, m)) => m.columns.clone(),
+            None => self.selected_column_names(id),
+        };
+        if columns.len() < 2 {
+            self.errors
+                .push("Select two or more columns to merge (Shift+click the headers).".into());
+            return Task::none();
+        }
+        self.edit = None;
+        self.dialog = Some(Dialog::Merge {
+            document: id,
+            dialog: MergeDialog::new(columns, step.as_ref().map(|(_, m)| m)),
+            replace: step.map(|(i, _)| i),
+        });
+        Task::batch([
+            iced::widget::operation::focus(dialogs::NAME_ID),
+            iced::widget::operation::select_all(dialogs::NAME_ID),
+        ])
+    }
+
+    /// The first rows of `column` after `level` steps (all evaluated steps
+    /// when `None`).
+    fn sample(&self, id: DocumentId, level: Option<usize>, column: &str) -> Option<ArrayRef> {
+        let doc = self.workbook.get(id)?;
+        let level = level.unwrap_or(doc.evaluated_steps());
+        let batch = doc.read_at(level, 0..SAMPLE_ROWS).ok()?;
+        batch.column_by_name(column).cloned()
+    }
+
     /// Names of the selected columns, or of the selected cell's column.
     fn selected_column_names(&self, id: DocumentId) -> Vec<String> {
         let range = self.selected_columns(id).or_else(|| {
@@ -1680,11 +1838,7 @@ impl App {
                 .push("Select a column to change its type.".into());
             return;
         };
-        let sample = doc
-            .read_at(level, 0..CAST_SAMPLE_ROWS)
-            .ok()
-            .and_then(|batch| batch.column_by_name(&column).cloned());
-        let Some(sample) = sample else {
+        let Some(sample) = self.sample(id, Some(level), &column) else {
             return;
         };
         self.edit = None;
@@ -2154,6 +2308,8 @@ impl App {
             Dialog::Cast { dialog, .. } => dialog.view(ui.tokens).map(Message::Cast),
             Dialog::Replace { dialog, .. } => dialog.view(ui.tokens).map(Message::Replace),
             Dialog::Format { dialog, .. } => dialog.view(ui.tokens).map(Message::Format),
+            Dialog::Split { dialog, .. } => dialog.view(ui.tokens).map(Message::Split),
+            Dialog::Merge { dialog, .. } => dialog.view(ui.tokens).map(Message::Merge),
             Dialog::ConfirmStep { .. } => settings::confirm_step(ui.tokens),
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
             Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
@@ -2923,6 +3079,75 @@ mod tests {
         finish_compute(&mut app, id);
         assert_eq!(cell(&app, 0, 2).as_deref(), Some("2.0"));
         assert_eq!(app.workbook.get(id).unwrap().steps().len(), 3);
+    }
+
+    #[test]
+    fn split_and_merge_columns() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let names = |app: &App| {
+            let schema = app.workbook.get(id).unwrap().schema();
+            schema
+                .fields()
+                .iter()
+                .map(|f| f.name().clone())
+                .collect::<Vec<_>>()
+        };
+
+        // Merge id and name with "-".
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 0,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::MergeColumns));
+        assert!(app.dialog.is_none(), "one column can't be merged");
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 1,
+                extend: true,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::MergeColumns));
+        let _ = app.update(Message::Merge(MergeMessage::Separator("-".into())));
+        let _ = app.update(Message::Merge(MergeMessage::Name("score".into())));
+        let _ = app.update(Message::Merge(MergeMessage::Apply));
+        assert!(
+            matches!(app.dialog, Some(Dialog::Merge { .. })),
+            "a clashing name keeps the dialog open"
+        );
+        let _ = app.update(Message::Merge(MergeMessage::Name("key".into())));
+        let _ = app.update(Message::Merge(MergeMessage::Apply));
+        assert!(app.dialog.is_none());
+        assert_eq!(names(&app), ["key", "score", "flag"]);
+
+        // Split it back; the dialog suggests 2 parts.
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 0,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::SplitColumn));
+        let _ = app.update(Message::Split(SplitMessage::Delimiter("-".into())));
+        let _ = app.update(Message::Split(SplitMessage::Apply));
+        assert_eq!(names(&app), ["key.1", "key.2", "score", "flag"]);
+
+        // Edit the split: by position.
+        let _ = app.update(Message::EditStep(1));
+        let _ = app.update(Message::Split(SplitMessage::Mode(
+            dialogs::SplitMode::Positions,
+        )));
+        let _ = app.update(Message::Split(SplitMessage::Positions("1, 2".into())));
+        let _ = app.update(Message::Split(SplitMessage::Apply));
+        assert_eq!(names(&app), ["key.1", "key.2", "key.3", "score", "flag"]);
     }
 
     #[test]

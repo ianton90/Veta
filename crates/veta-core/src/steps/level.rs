@@ -147,6 +147,14 @@ impl Level {
                 cast.output_fields(&self.schema)?,
                 self.num_rows,
             )),
+            Step::Split(split) => Ok(with_fields(
+                split.output_fields(&self.schema)?,
+                self.num_rows,
+            )),
+            Step::Merge(merge) => Ok(with_fields(
+                merge.output_fields(&self.schema)?,
+                self.num_rows,
+            )),
             Step::Replace(replace) => {
                 replace.validate(&self.schema)?;
                 Ok(self.clone())

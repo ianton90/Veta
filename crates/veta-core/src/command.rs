@@ -8,7 +8,7 @@ use std::ops::Range;
 use arrow::datatypes::DataType;
 
 use crate::model::{KeyValue, WriterSettings};
-use crate::steps::{Cast, Fill, Filter, Replace, Sort, Step, TextOp};
+use crate::steps::{Cast, Fill, Filter, Merge, Replace, Sort, Split, Step, TextOp};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -74,6 +74,8 @@ pub enum Command {
     },
     /// Fills nulls from the row above (or below).
     Fill(Fill),
+    Split(Split),
+    Merge(Merge),
     /// Removes the step at `index`. Later steps may become broken.
     RemoveStep {
         index: usize,

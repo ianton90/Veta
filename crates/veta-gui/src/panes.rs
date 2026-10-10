@@ -648,6 +648,18 @@ pub fn context_menu<'a>(
                 MenuItem::FormatText,
             )),
             Some((
+                Icon::Split,
+                "Split column…".into(),
+                "",
+                MenuItem::SplitColumn,
+            )),
+            Some((
+                Icon::Merge,
+                "Merge columns…".into(),
+                "",
+                MenuItem::MergeColumns,
+            )),
+            Some((
                 Icon::SortAsc,
                 "Sort ascending".into(),
                 "",

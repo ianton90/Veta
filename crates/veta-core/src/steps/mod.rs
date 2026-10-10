@@ -18,6 +18,7 @@ mod level;
 mod pipeline;
 mod rows;
 mod sort;
+mod split;
 mod text;
 
 use std::ops::Range;
@@ -35,6 +36,7 @@ pub use filter::{Condition, Filter, FilterOp};
 pub use pipeline::{Pipeline, Status};
 pub use rows::normalize_ranges;
 pub use sort::{Sort, SortKey};
+pub use split::{Merge, Split, SplitBy, count_parts};
 pub use text::{Replace, TextOp};
 
 /// One transformation of the data.
@@ -82,6 +84,8 @@ pub enum Step {
     },
     /// Fills nulls from neighbouring rows.
     Fill(Fill),
+    Split(Split),
+    Merge(Merge),
 }
 
 impl Step {
@@ -136,6 +140,8 @@ impl Step {
                 _ => format!("{} {} columns", op.verb(), columns.len()),
             },
             Step::Fill(fill) => fill.describe(),
+            Step::Split(split) => split.describe(),
+            Step::Merge(merge) => merge.describe(),
         }
     }
 }
