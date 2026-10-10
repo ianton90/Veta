@@ -11,7 +11,7 @@ use crate::error::Result;
 use crate::history::History;
 use crate::io::{OpenOptions, SaveJob, SaveResult, open_parquet, same_file};
 use crate::source::{MemorySource, SourceMode};
-use crate::steps::{Pipeline, Status, Step};
+use crate::steps::{ComputeJob, Computed, Pipeline, Status, Step};
 
 /// One open file (or a new, unsaved one): its source data, the steps applied
 /// to it, and file-level settings. See `docs/ARCHITECTURE.md`.
@@ -117,6 +117,35 @@ impl Document {
 
     pub fn num_rows_at(&self, steps: usize) -> Option<usize> {
         self.pipeline.num_rows_at(steps)
+    }
+
+    /// The full pass to run next, if a step is waiting to be computed. Run
+    /// it (possibly on another thread) and pass the result to
+    /// [`Document::install`].
+    pub fn compute_job(&self) -> Option<ComputeJob> {
+        self.pipeline.compute_job()
+    }
+
+    /// Stores a computed result. Returns `false` if the steps changed since
+    /// the job was created.
+    pub fn install(&mut self, computed: Computed) -> bool {
+        self.pipeline.install(computed)
+    }
+
+    /// Identifies the pending full pass, if any; see
+    /// [`Pipeline::compute_key`](crate::steps::Pipeline::compute_key).
+    pub fn compute_key(&self) -> Option<Vec<u64>> {
+        self.pipeline.compute_key()
+    }
+
+    /// Marks the pending step broken after its pass failed.
+    pub fn fail_compute(&mut self, key: &[u64], error: String) -> bool {
+        self.pipeline.fail(key, error)
+    }
+
+    /// Runs every pending full pass on this thread.
+    pub fn compute_all(&mut self) -> Result<()> {
+        self.pipeline.compute_all(&mut |_| true)
     }
 
     /// Number of steps whose output is available.

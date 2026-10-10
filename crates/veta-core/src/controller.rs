@@ -3,18 +3,12 @@
 //! Every command is validated and turned into a reversible change, applied,
 //! and recorded in the document's undo history.
 
-use std::sync::Arc;
-
-use arrow::array::{ArrayRef, StringArray, new_null_array};
-use arrow::compute::{CastOptions, cast_with_options};
-use arrow::datatypes::DataType;
-
 use crate::command::Command;
-use crate::display::type_name;
 use crate::error::{Error, Result};
 use crate::history::Change;
 use crate::model::{Document, KeyValue};
 use crate::steps::{Step, normalize_ranges};
+use crate::values::parse_value;
 
 /// Validates `command` and applies it to `document`, recording it for undo.
 ///
@@ -206,6 +200,7 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
             format!("Move column {name}"),
             Change::PushStep(Step::MoveColumn { name, to }),
         )),
+        Command::Filter(filter) => Ok((filter.describe(), Change::PushStep(Step::Filter(filter)))),
         Command::RemoveStep { index } => {
             let mut after = doc.steps().to_vec();
             if index >= after.len() {
@@ -281,37 +276,12 @@ fn rows(n: usize) -> String {
     }
 }
 
-fn is_text(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-    )
-}
-
-/// Parses user input as a one-element array of `data_type`.
-fn parse_value(text: Option<&str>, data_type: &DataType) -> Result<ArrayRef> {
-    let text = match text {
-        None => return Ok(new_null_array(data_type, 1)),
-        Some(t) if t.trim().is_empty() && !is_text(data_type) => {
-            return Ok(new_null_array(data_type, 1));
-        }
-        Some(t) if is_text(data_type) => t,
-        Some(t) => t.trim(),
-    };
-    let input: ArrayRef = Arc::new(StringArray::from(vec![text]));
-    let options = CastOptions {
-        safe: false,
-        ..CastOptions::default()
-    };
-    cast_with_options(&input, data_type, &options)
-        .map_err(|_| invalid(format!("{text:?} is not a valid {}", type_name(data_type))))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::OpenOptions;
     use crate::display::format_batch;
+    use arrow::datatypes::DataType;
     use veta_testkit::{TempDir, fixtures};
 
     fn set(key: &str, value: &str) -> Command {
@@ -636,6 +606,44 @@ mod tests {
             crate::steps::Status::Broken { step: 2, .. }
         ));
         assert!(execute(&mut doc, Command::RemoveStep { index: 9 }).is_err());
+    }
+
+    #[test]
+    fn filter_command_and_save_with_pending_step() {
+        use crate::steps::{Condition, Filter, FilterOp, Status};
+        let dir = TempDir::new();
+        let mut doc = mixed(&dir);
+        let filter = Filter {
+            conditions: vec![Condition {
+                column: "name".into(),
+                op: FilterOp::Equals,
+                value: "BO".into(),
+                case_sensitive: false,
+            }],
+            match_all: true,
+        };
+        execute(&mut doc, Command::Filter(filter)).unwrap();
+        assert_eq!(doc.status(), &Status::Computing { step: 0 });
+        // Saving computes the pending step.
+        let out = dir.join("out.parquet");
+        doc.save(Some(out.clone())).unwrap();
+        let saved = Document::open(&out, OpenOptions::default()).unwrap();
+        assert!(saved.num_rows() > 0 && saved.num_rows() < 1000);
+        doc.compute_all().unwrap();
+        assert_eq!(doc.num_rows(), saved.num_rows());
+        undo(&mut doc);
+        assert_eq!(doc.num_rows(), 1000);
+
+        let bad = Filter {
+            conditions: vec![Condition {
+                column: "score".into(),
+                op: FilterOp::Less,
+                value: "abc".into(),
+                case_sensitive: false,
+            }],
+            match_all: true,
+        };
+        assert!(execute(&mut doc, Command::Filter(bad)).is_err());
     }
 
     #[test]

@@ -272,7 +272,9 @@ impl SaveJob {
 
     /// Writes the file: to a temporary file next to the target, then renamed
     /// over it, so a failed save never leaves a half-written file.
-    pub fn run(self) -> Result<SaveResult> {
+    pub fn run(mut self) -> Result<SaveResult> {
+        // Steps still waiting for a full pass are computed here.
+        self.pipeline.compute_all(&mut |_| true)?;
         let dir = match self.target.parent() {
             Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
             _ => PathBuf::from("."),

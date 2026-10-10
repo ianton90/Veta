@@ -14,6 +14,7 @@ mod settings;
 mod theme;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use iced::widget::{center, column, container, mouse_area, opaque, pin, row, rule, stack};
@@ -21,15 +22,15 @@ use iced::{
     Color, Element, Font, Length, Pixels, Size, Subscription, Task, Theme, event, font, keyboard,
     window,
 };
-use veta_core::steps::{Status, Step};
+use veta_core::steps::{ComputeJob, Computed, Condition, Filter, FilterOp, Status, Step};
 use veta_core::{Command, Document, DocumentId, OpenOptions, Workbook, controller};
 
 use crate::config::Config;
 #[cfg(test)]
 use crate::config::ModePreference;
 use crate::dialogs::{
-    ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage, MetadataDialog, MetadataMessage,
-    WriterDialog, WriterMessage,
+    ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage, FilterDialog, FilterMessage,
+    MetadataDialog, MetadataMessage, WriterDialog, WriterMessage,
 };
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav};
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
@@ -179,6 +180,19 @@ struct App {
     saving: Option<DocumentId>,
     /// Tabs being closed, waiting for "save changes?" answers.
     closing: Option<Closing>,
+    /// The full pass running in the background, if any.
+    computing: Option<Computing>,
+}
+
+/// A step's full pass running on a worker thread.
+#[derive(Debug)]
+struct Computing {
+    document: DocumentId,
+    /// The job's key; it is stale once the document's key differs.
+    key: Vec<u64>,
+    step: usize,
+    progress: f32,
+    cancel: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -219,6 +233,11 @@ enum MenuItem {
     RemoveColumns,
     MoveColumnLeft,
     MoveColumnRight,
+    FilterColumn,
+    /// Keep rows whose value in this column equals the selected cell's.
+    KeepValue,
+    /// Remove rows whose value in this column equals the selected cell's.
+    ExcludeValue,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -241,7 +260,10 @@ enum SideTab {
 
 /// Whether the step settings dialog exists for this kind of step.
 fn step_dialog_supported(step: &Step) -> bool {
-    matches!(step, Step::RenameColumn { .. } | Step::AddColumn { .. })
+    matches!(
+        step,
+        Step::RenameColumn { .. } | Step::AddColumn { .. } | Step::Filter(_)
+    )
 }
 
 #[derive(Debug)]
@@ -257,6 +279,12 @@ enum Dialog {
     Column {
         document: DocumentId,
         dialog: ColumnDialog,
+        /// Editing the step at this index instead of adding a new one.
+        replace: Option<usize>,
+    },
+    Filter {
+        document: DocumentId,
+        dialog: FilterDialog,
         /// Editing the step at this index instead of adding a new one.
         replace: Option<usize>,
     },
@@ -306,6 +334,13 @@ enum Message {
     Menu(MenuItem),
     CloseMenu,
     ColumnDialog(ColumnMessage),
+    Filter(FilterMessage),
+    /// Progress (0–1) of the background pass with this key.
+    ComputeProgress(DocumentId, Vec<u64>, f32),
+    /// The background pass with this key finished.
+    ComputeDone(DocumentId, Vec<u64>, Result<Slot<Computed>, String>),
+    /// Stop the background pass and undo the change that started it.
+    CancelCompute,
     SideTab(SideTab),
     /// Show the data after this many steps (past the last: all steps).
     PreviewStep(DocumentId, usize),
@@ -366,6 +401,7 @@ impl App {
             menu: None,
             saving: None,
             closing: None,
+            computing: None,
         };
         let open = app.open(files);
         let system = iced::system::theme().map(Message::SystemMode);
@@ -433,10 +469,17 @@ impl App {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.handle(message);
+        Task::batch([task, self.schedule_compute()])
+    }
+
+    fn handle(&mut self, message: Message) -> Task<Message> {
         if self.saving.is_some()
             && !matches!(
                 message,
                 Message::Saved(..)
+                    | Message::ComputeProgress(..)
+                    | Message::ComputeDone(..)
                     | Message::SystemMode(_)
                     | Message::Grid(_, GridEvent::Resized { .. } | GridEvent::Scroll { .. })
             )
@@ -612,6 +655,10 @@ impl App {
                     }
                     MenuItem::RenameColumn => return self.rename_column(id),
                     MenuItem::RemoveColumns => self.remove_columns(id),
+                    MenuItem::FilterColumn => self.open_filter_dialog(id),
+                    MenuItem::KeepValue | MenuItem::ExcludeValue => {
+                        self.quick_filter(id, item == MenuItem::KeepValue);
+                    }
                     MenuItem::MoveColumnLeft | MenuItem::MoveColumnRight => {
                         if let Some(c) = self.selected_columns(id) {
                             let to = if item == MenuItem::MoveColumnLeft {
@@ -670,6 +717,80 @@ impl App {
                         }
                     } else if cancel {
                         self.dialog = None;
+                    }
+                }
+            }
+            Message::Filter(message) => {
+                if let Some(Dialog::Filter {
+                    document,
+                    dialog,
+                    replace,
+                }) = &mut self.dialog
+                {
+                    let id = *document;
+                    let replace = *replace;
+                    let cancel = matches!(message, FilterMessage::Cancel);
+                    match (dialog.update(message), replace) {
+                        (Some(filter), Some(index)) => {
+                            self.dialog = None;
+                            let step = Step::Filter(filter);
+                            self.change_steps(id, index, Command::ReplaceStep { index, step });
+                        }
+                        (Some(filter), None) => {
+                            let result = self
+                                .workbook
+                                .get_mut(id)
+                                .map(|doc| controller::execute(doc, Command::Filter(filter)));
+                            match result {
+                                Some(Ok(())) => {
+                                    self.dialog = None;
+                                    self.refresh(id);
+                                }
+                                Some(Err(e)) => dialog.set_error(e.to_string()),
+                                None => {}
+                            }
+                        }
+                        (None, _) if cancel => self.dialog = None,
+                        (None, _) => {}
+                    }
+                }
+            }
+            Message::ComputeProgress(id, key, progress) => {
+                if let Some(c) = &mut self.computing
+                    && c.document == id
+                    && c.key == key
+                {
+                    c.progress = progress;
+                }
+            }
+            Message::ComputeDone(id, key, result) => {
+                if self
+                    .computing
+                    .as_ref()
+                    .is_some_and(|c| c.document == id && c.key == key)
+                {
+                    self.computing = None;
+                }
+                let Some(doc) = self.workbook.get_mut(id) else {
+                    return Task::none();
+                };
+                let changed = match result.map(|slot| slot.take()) {
+                    Ok(Some(computed)) => doc.install(computed),
+                    Ok(None) => false,
+                    Err(e) => doc.fail_compute(&key, e),
+                };
+                if changed {
+                    self.refresh(id);
+                }
+            }
+            Message::CancelCompute => {
+                if let Some(c) = self.computing.take() {
+                    c.cancel.store(true, Ordering::Relaxed);
+                    if let Some(doc) = self.workbook.get_mut(c.document) {
+                        if !controller::undo(doc) {
+                            doc.fail_compute(&c.key, "Cancelled".into());
+                        }
+                        self.refresh(c.document);
                     }
                 }
             }
@@ -805,6 +926,7 @@ impl App {
                 | Action::RenameColumn
                 | Action::RemoveColumns
                 | Action::ChooseColumns
+                | Action::KeepRows
         );
         if changes_data
             && let Some(id) = self.active
@@ -864,6 +986,11 @@ impl App {
             Action::RemoveRows => {
                 if let Some(id) = self.active {
                     self.delete_rows(id);
+                }
+            }
+            Action::KeepRows => {
+                if let Some(id) = self.active {
+                    self.open_filter_dialog(id);
                 }
             }
             Action::AddColumn => {
@@ -1021,6 +1148,21 @@ impl App {
                 data_type,
                 at,
             } => ColumnDialog::add(*at).with_name(name).with_type(data_type),
+            Step::Filter(filter) => {
+                let columns = self
+                    .workbook
+                    .get(id)
+                    .and_then(|d| d.schema_at(index))
+                    .map(|schema| schema.fields().iter().map(|f| f.name().clone()).collect())
+                    .unwrap_or_default();
+                self.edit = None;
+                self.dialog = Some(Dialog::Filter {
+                    document: id,
+                    dialog: FilterDialog::edit(columns, filter),
+                    replace: Some(index),
+                });
+                return Task::none();
+            }
             _ => return Task::none(),
         };
         let task = self.open_column_dialog(id, dialog);
@@ -1209,6 +1351,111 @@ impl App {
             .collect()
     }
 
+    /// Opens the filter dialog on the selected column.
+    fn open_filter_dialog(&mut self, id: DocumentId) {
+        let Some(doc) = self.workbook.get(id) else {
+            return;
+        };
+        let columns: Vec<String> = doc
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        let selected = self
+            .selected_columns(id)
+            .and_then(|c| columns.get(c.start).cloned());
+        self.edit = None;
+        self.dialog = Some(Dialog::Filter {
+            document: id,
+            dialog: FilterDialog::new(columns, selected),
+            replace: None,
+        });
+    }
+
+    /// Keeps (or removes) the rows whose value in the selected cell's
+    /// column equals that cell's.
+    fn quick_filter(&mut self, id: DocumentId, keep: bool) {
+        let Some((_, column)) = self.selected_cell(id) else {
+            return;
+        };
+        let Some(value) = self.cell_value(id) else {
+            return;
+        };
+        let op = match (&value, keep) {
+            (Some(_), true) => FilterOp::Equals,
+            (Some(_), false) => FilterOp::NotEquals,
+            (None, true) => FilterOp::IsNull,
+            (None, false) => FilterOp::IsNotNull,
+        };
+        let filter = Filter {
+            conditions: vec![Condition {
+                column,
+                op,
+                value: value.unwrap_or_default(),
+                case_sensitive: true,
+            }],
+            match_all: true,
+        };
+        self.execute(id, Command::Filter(filter));
+    }
+
+    /// Starts the next pending full pass if none is running, and stops a
+    /// running one whose result would no longer apply.
+    fn schedule_compute(&mut self) -> Task<Message> {
+        if let Some(c) = &self.computing {
+            let current = self
+                .workbook
+                .get(c.document)
+                .and_then(Document::compute_key);
+            if current.as_ref() != Some(&c.key) {
+                c.cancel.store(true, Ordering::Relaxed);
+                self.computing = None;
+            }
+        }
+        if self.computing.is_some() {
+            return Task::none();
+        }
+        // The active document first.
+        let mut order: Vec<DocumentId> = self.tabs.iter().map(|t| t.id).collect();
+        order.sort_by_key(|id| Some(*id) != self.active);
+        for id in order {
+            if let Some(job) = self.workbook.get(id).and_then(Document::compute_job) {
+                return self.start_compute(id, job);
+            }
+        }
+        Task::none()
+    }
+
+    fn start_compute(&mut self, id: DocumentId, job: ComputeJob) -> Task<Message> {
+        let key = job.key().to_vec();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.computing = Some(Computing {
+            document: id,
+            key: key.clone(),
+            step: job.step(),
+            progress: 0.0,
+            cancel: cancel.clone(),
+        });
+        let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
+        std::thread::spawn(move || {
+            let mut reported = 0.0;
+            let result = job.run(&mut |progress| {
+                if progress - reported >= 0.01 {
+                    reported = progress;
+                    let _ =
+                        sender.unbounded_send(Message::ComputeProgress(id, key.clone(), progress));
+                }
+                !cancel.load(Ordering::Relaxed)
+            });
+            if !cancel.load(Ordering::Relaxed) {
+                let result = result.map(Slot::new).map_err(|e| e.to_string());
+                let _ = sender.unbounded_send(Message::ComputeDone(id, key, result));
+            }
+        });
+        Task::run(receiver, |message| message)
+    }
+
     fn open_column_dialog(&mut self, id: DocumentId, dialog: ColumnDialog) -> Task<Message> {
         self.edit = None;
         self.dialog = Some(Dialog::Column {
@@ -1290,14 +1537,19 @@ impl App {
 
     /// Text of the selected cell (empty for null).
     fn cell_text(&self, id: DocumentId) -> Option<String> {
+        Some(self.cell_value(id)?.unwrap_or_default())
+    }
+
+    /// Text of the selected cell (`None` inside for null).
+    fn cell_value(&self, id: DocumentId) -> Option<Option<String>> {
         let tab = self.tabs.iter().find(|t| t.id == id)?;
         let (row, column) = tab.grid.selected()?;
         match tab.grid.value(row, column) {
-            Some(value) => Some(value.unwrap_or_default().to_owned()),
+            Some(value) => Some(value.map(str::to_owned)),
             None => {
                 let batch = self.workbook.get(id)?.read(row..row + 1).ok()?;
                 let cells = veta_core::display::format_batch(&batch).ok()?;
-                Some(cells.first()?.get(column)?.clone().unwrap_or_default())
+                Some(cells.first()?.get(column)?.clone())
             }
         }
     }
@@ -1439,6 +1691,14 @@ impl App {
                 });
                 let grid =
                     grid::grid(&tab.grid, ui.tokens, move |e| Message::Grid(id, e)).editor(editor);
+                let grid: Element<'_, Message> =
+                    match self.computing.as_ref().filter(|c| c.document == id) {
+                        Some(c) => {
+                            stack![grid, opaque(panes::computing(doc, c.step, c.progress, ui))]
+                                .into()
+                        }
+                        None => grid.into(),
+                    };
                 let grid = column![
                     panes::formula_bar(tab, doc, edit, ui),
                     divider(ui.tokens, false),
@@ -1547,6 +1807,7 @@ impl App {
             }
             Dialog::About => settings::about(Message::CloseDialog, ui.tokens),
             Dialog::Column { dialog, .. } => dialog.view(ui.tokens).map(Message::ColumnDialog),
+            Dialog::Filter { dialog, .. } => dialog.view(ui.tokens).map(Message::Filter),
             Dialog::ConfirmStep { .. } => settings::confirm_step(ui.tokens),
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
             Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
@@ -2088,6 +2349,101 @@ mod tests {
         let _ = app.update(Message::RemoveStep(1));
         assert!(app.dialog.is_none());
         assert_eq!(doc(&app), 1);
+    }
+
+    /// Runs the pending pass of document `id` here, as the worker would.
+    fn finish_compute(app: &mut App, id: DocumentId) {
+        let job = app.workbook.get(id).unwrap().compute_job().unwrap();
+        let key = job.key().to_vec();
+        let result = job
+            .run(&mut |_| true)
+            .map(Slot::new)
+            .map_err(|e| e.to_string());
+        let _ = app.update(Message::ComputeDone(id, key, result));
+    }
+
+    #[test]
+    fn filter_dialog_background_pass_and_cancel() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let n = fixtures::MIXED_SETTINGS_ROWS;
+        let status = |app: &App| app.workbook.get(id).unwrap().status().clone();
+
+        // Keep Rows opens on the selected column.
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 1,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::KeepRows));
+        assert!(matches!(app.dialog, Some(Dialog::Filter { .. })));
+        let _ = app.update(Message::Filter(FilterMessage::Op(0, FilterOp::Greater)));
+        let _ = app.update(Message::Filter(FilterMessage::Column(0, "score".into())));
+        let _ = app.update(Message::Filter(FilterMessage::Value(0, "abc".into())));
+        let _ = app.update(Message::Filter(FilterMessage::Apply));
+        assert!(
+            matches!(app.dialog, Some(Dialog::Filter { .. })),
+            "an invalid value keeps the dialog open"
+        );
+        let _ = app.update(Message::Filter(FilterMessage::Column(0, "name".into())));
+        let _ = app.update(Message::Filter(FilterMessage::Op(0, FilterOp::Equals)));
+        let _ = app.update(Message::Filter(FilterMessage::Value(0, "ANA".into())));
+        let _ = app.update(Message::Filter(FilterMessage::Apply));
+        assert!(app.dialog.is_none());
+        assert_eq!(status(&app), Status::Computing { step: 0 });
+        assert!(app.computing.is_some(), "a background pass started");
+
+        finish_compute(&mut app, id);
+        assert!(app.computing.is_none());
+        assert_eq!(status(&app), Status::Ready);
+        let expected = (0..n).filter(|i| i % 5 == 0 && i % 7 != 0).count();
+        assert_eq!(app.workbook.get(id).unwrap().num_rows(), expected);
+
+        // Quick filter from a cell, then cancel: the step is undone.
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 3 }));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::ContextMenu {
+                target: MenuTarget::Cell,
+                position: iced::Point::ORIGIN,
+            },
+        ));
+        let _ = app.update(Message::Menu(MenuItem::ExcludeValue));
+        assert_eq!(app.workbook.get(id).unwrap().steps().len(), 2);
+        assert!(app.computing.is_some());
+        let _ = app.update(Message::CancelCompute);
+        assert!(app.computing.is_none());
+        assert_eq!(app.workbook.get(id).unwrap().steps().len(), 1);
+        assert_eq!(status(&app), Status::Ready);
+
+        // Undo while computing drops the running pass.
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::ContextMenu {
+                target: MenuTarget::Cell,
+                position: iced::Point::ORIGIN,
+            },
+        ));
+        let _ = app.update(Message::Menu(MenuItem::KeepValue));
+        let stale = app.computing.as_ref().unwrap().key.clone();
+        let _ = app.update(Message::Action(Action::Undo));
+        assert!(app.computing.is_none());
+        let _ = app.update(Message::ComputeDone(id, stale, Err("late".into())));
+        assert_eq!(status(&app), Status::Ready);
+
+        // Editing the filter step opens the dialog on it.
+        let _ = app.update(Message::EditStep(0));
+        let _ = app.update(Message::Filter(FilterMessage::Value(0, "bo".into())));
+        let _ = app.update(Message::Filter(FilterMessage::Apply));
+        assert_eq!(status(&app), Status::Computing { step: 0 });
+        finish_compute(&mut app, id);
+        let expected = (0..n).filter(|i| i % 5 == 1 && i % 7 != 0).count();
+        assert_eq!(app.workbook.get(id).unwrap().num_rows(), expected);
     }
 
     #[test]

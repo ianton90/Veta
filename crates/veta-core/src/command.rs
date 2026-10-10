@@ -8,7 +8,7 @@ use std::ops::Range;
 use arrow::datatypes::DataType;
 
 use crate::model::{KeyValue, WriterSettings};
-use crate::steps::Step;
+use crate::steps::{Filter, Step};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -60,6 +60,8 @@ pub enum Command {
     },
     /// Replaces the settings used when saving.
     SetWriterSettings(WriterSettings),
+    /// Keeps the rows that match the filter.
+    Filter(Filter),
     /// Removes the step at `index`. Later steps may become broken.
     RemoveStep {
         index: usize,

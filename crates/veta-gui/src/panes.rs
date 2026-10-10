@@ -2,7 +2,9 @@
 
 use std::path::PathBuf;
 
-use iced::widget::{button, center, column, container, row, rule, scrollable, text, text_input};
+use iced::widget::{
+    button, center, column, container, progress_bar, row, rule, scrollable, text, text_input,
+};
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 use veta_core::display::{abbreviate, human_bytes};
 use veta_core::{Document, DocumentId, SourceMode};
@@ -504,6 +506,48 @@ pub fn formula_bar<'a>(
 
 /// Right-click menu for cells, rows or columns. `rows` is how many rows are
 /// selected.
+/// Covers the grid while a step's full pass runs.
+pub fn computing<'a>(doc: &Document, step: usize, progress: f32, ui: Ui) -> Element<'a, Message> {
+    let t = ui.tokens;
+    let label = doc
+        .steps()
+        .get(step)
+        .map_or_else(String::new, |s| format!("{}. {}", step + 1, s.describe()));
+    let card = container(
+        column![
+            text("Computing…").size(ui.heading()).font(bold()),
+            text(label).size(ui.small()).color(t.muted_text),
+            progress_bar(0.0..=1.0, progress).girth(8),
+            row![
+                text(format!("{:.0}%", progress * 100.0)).size(ui.small()),
+                iced::widget::Space::new().width(Length::Fill),
+                button(text("Cancel").size(ui.small()))
+                    .style(button::secondary)
+                    .on_press(Message::CancelCompute),
+            ]
+            .align_y(Alignment::Center),
+        ]
+        .spacing(10)
+        .width(360),
+    )
+    .padding(20)
+    .style(move |_theme: &Theme| {
+        container::Style::default()
+            .background(t.background)
+            .color(t.text)
+            .border(Border {
+                color: t.border,
+                width: 1.0,
+                radius: 8.0.into(),
+            })
+    });
+    center(card)
+        .style(|_theme: &Theme| {
+            container::Style::default().background(Color::from_rgba(0.0, 0.0, 0.0, 0.2))
+        })
+        .into()
+}
+
 pub fn context_menu<'a>(
     target: MenuTarget,
     rows: usize,
@@ -531,6 +575,19 @@ pub fn context_menu<'a>(
             "Set to null".into(),
             "Delete",
             MenuItem::ClearCell,
+        )));
+        items.push(None);
+        items.push(Some((
+            Icon::Filter,
+            "Keep rows with this value".into(),
+            "",
+            MenuItem::KeepValue,
+        )));
+        items.push(Some((
+            Icon::Filter,
+            "Remove rows with this value".into(),
+            "",
+            MenuItem::ExcludeValue,
         )));
         items.push(None);
     }
@@ -574,6 +631,7 @@ pub fn context_menu<'a>(
                 MenuItem::InsertColumnRight,
             )),
             Some((Icon::Rename, "Rename…".into(), "", MenuItem::RenameColumn)),
+            Some((Icon::Filter, "Filter…".into(), "", MenuItem::FilterColumn)),
             None,
             Some((Icon::Swap, "Move left".into(), "", MenuItem::MoveColumnLeft)),
             Some((

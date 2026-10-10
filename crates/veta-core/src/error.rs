@@ -17,6 +17,8 @@ pub enum Error {
     /// A command was rejected by the controller before changing anything.
     InvalidCommand(String),
     DocumentNotFound(DocumentId),
+    /// A long-running computation was cancelled.
+    Cancelled,
 }
 
 impl fmt::Display for Error {
@@ -35,6 +37,7 @@ impl fmt::Display for Error {
                 }
             }
             Error::DocumentNotFound(id) => write!(f, "document {id} not found"),
+            Error::Cancelled => f.write_str("cancelled"),
         }
     }
 }
@@ -45,7 +48,7 @@ impl std::error::Error for Error {
             Error::Io(e) => Some(e),
             Error::Parquet(e) => Some(e),
             Error::Arrow(e) => Some(e),
-            Error::InvalidCommand(_) | Error::DocumentNotFound(_) => None,
+            Error::InvalidCommand(_) | Error::DocumentNotFound(_) | Error::Cancelled => None,
         }
     }
 }

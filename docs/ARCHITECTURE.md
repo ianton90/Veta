@@ -173,3 +173,14 @@ last evaluated step. Changing a step in the middle (`RemoveStep`, `MoveStep`,
 later steps that no longer apply are marked broken. Adding steps and saving
 need status `Ready`. The GUI warns before changing a step when later steps
 refer to rows by position (cell edits, row insert/delete).
+
+## Full passes
+
+A step needing a full pass leaves the pipeline `Computing`. `compute_job()`
+detaches a `ComputeJob` (a pipeline clone) that runs on a worker thread,
+reading its input in 64k-row batches and reporting progress; its result is a
+cache (kept row ranges for filters; a materialized source for sort/fill) that
+`install()` stores if the steps are unchanged (checked by step ids, the job's
+`key`). The GUI runs one job at a time after every update, drops a job whose
+key went stale, and cancelling undoes the change that started it. Saving
+computes pending steps itself.

@@ -6,6 +6,7 @@ use arrow::compute::concat_batches;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 
+use super::compute::{Cache, ComputeJob, Computed};
 use super::edits::CellEdits;
 use super::level::Level;
 use super::rows::kept_ranges;
@@ -39,6 +40,8 @@ pub struct Pipeline {
     /// result still matches the steps it was computed for.
     ids: Vec<u64>,
     next_id: u64,
+    /// Computed results of full-pass steps, by step index.
+    caches: Vec<Option<Arc<Cache>>>,
     /// `levels[0]` is the source; `levels[i + 1]` is the output of
     /// `steps[i]`, for the steps that are evaluated.
     levels: Vec<Level>,
@@ -56,6 +59,7 @@ impl Pipeline {
             steps: Vec::new(),
             ids: Vec::new(),
             next_id: 0,
+            caches: Vec::new(),
             levels: vec![level],
             status: Status::Ready,
         }
@@ -126,11 +130,19 @@ impl Pipeline {
     /// allowed when every step is evaluated.
     pub fn push(&mut self, step: Step) -> Result<()> {
         self.require_ready()?;
-        let level = self.last().next(&step)?;
         let id = self.new_id();
+        if step.needs_full_pass() {
+            self.last().check(&step)?;
+            self.status = Status::Computing {
+                step: self.steps.len(),
+            };
+        } else {
+            let level = self.last().next(&step)?;
+            self.levels.push(level);
+        }
         self.steps.push(step);
         self.ids.push(id);
-        self.levels.push(level);
+        self.caches.push(None);
         Ok(())
     }
 
@@ -138,6 +150,7 @@ impl Pipeline {
     pub fn pop(&mut self) -> Option<Step> {
         let step = self.steps.pop()?;
         self.ids.pop();
+        self.caches.pop();
         let n = self.steps.len();
         self.levels.truncate(n + 1);
         self.rebuild_from(self.levels.len() - 1);
@@ -153,6 +166,8 @@ impl Pipeline {
             let id = self.new_id();
             self.ids.push(id);
         }
+        self.caches.truncate(keep);
+        self.caches.resize(steps.len(), None);
         self.steps = steps;
         self.levels.truncate((keep + 1).min(self.levels.len()));
         self.rebuild_from(self.levels.len() - 1);
@@ -164,7 +179,21 @@ impl Pipeline {
         self.levels.truncate(from + 1);
         self.status = Status::Ready;
         for (i, step) in self.steps.iter().enumerate().skip(from) {
-            match self.levels[i].next(step) {
+            let result = if step.needs_full_pass() {
+                match &self.caches[i] {
+                    Some(cache) => Ok(self.levels[i].after_pass(cache)),
+                    None => match self.levels[i].check(step) {
+                        Ok(()) => {
+                            self.status = Status::Computing { step: i };
+                            return;
+                        }
+                        Err(e) => Err(e),
+                    },
+                }
+            } else {
+                self.levels[i].next(step)
+            };
+            match result {
                 Ok(level) => self.levels.push(level),
                 Err(e) => {
                     self.status = Status::Broken {
@@ -175,6 +204,63 @@ impl Pipeline {
                 }
             }
         }
+    }
+
+    /// The full pass to run next, if a step is waiting to be computed.
+    pub fn compute_job(&self) -> Option<ComputeJob> {
+        let Status::Computing { step } = self.status else {
+            return None;
+        };
+        Some(ComputeJob {
+            pipeline: self.clone(),
+            step,
+            ids: self.ids[..=step].to_vec(),
+        })
+    }
+
+    /// Identifies the pending full pass: the ids of the steps up to and
+    /// including it. Changes whenever a different job would be needed.
+    pub fn compute_key(&self) -> Option<Vec<u64>> {
+        let Status::Computing { step } = self.status else {
+            return None;
+        };
+        Some(self.ids[..=step].to_vec())
+    }
+
+    /// Marks the pending step broken after its pass failed. Returns `false`
+    /// (and does nothing) if `key` is stale.
+    pub fn fail(&mut self, key: &[u64], error: String) -> bool {
+        if self.compute_key().as_deref() != Some(key) {
+            return false;
+        }
+        self.status = Status::Broken {
+            step: key.len() - 1,
+            error,
+        };
+        true
+    }
+
+    /// Stores a computed result and evaluates the following steps. Returns
+    /// `false` (and does nothing) if the steps changed since the job was
+    /// created.
+    pub fn install(&mut self, computed: Computed) -> bool {
+        let current = matches!(self.status, Status::Computing { step } if step == computed.step)
+            && self.ids.get(..=computed.step) == Some(computed.ids.as_slice());
+        if !current {
+            return false;
+        }
+        self.caches[computed.step] = Some(computed.cache);
+        self.rebuild_from(computed.step);
+        true
+    }
+
+    /// Runs every pending full pass on this thread.
+    pub fn compute_all(&mut self, progress: &mut dyn FnMut(f32) -> bool) -> Result<()> {
+        while let Some(job) = self.compute_job() {
+            let computed = job.run(progress)?;
+            self.install(computed);
+        }
+        Ok(())
     }
 
     /// The last step's cell edits, if the last step edits cells. Callers must
@@ -212,6 +298,19 @@ impl Pipeline {
         }
         let schema = self.levels[level].schema.clone();
         let previous = level - 1;
+        if let Some(cache) = &self.caches[previous] {
+            return match cache.as_ref() {
+                Cache::Rows(rows) => {
+                    let parts = rows
+                        .map(range)
+                        .into_iter()
+                        .map(|r| self.read_level(previous, r))
+                        .collect::<Result<Vec<_>>>()?;
+                    concat(&schema, parts)
+                }
+                Cache::Data(source) => source.read(range),
+            };
+        }
         match &self.steps[previous] {
             Step::EditCells(edits) => {
                 edits.apply(&self.read_level(previous, range.clone())?, range.start)
@@ -250,6 +349,8 @@ impl Pipeline {
                 );
                 with_schema(schema, columns, batch.num_rows())
             }
+            // Full-pass steps are read through their cache above.
+            Step::Filter(_) => Err(invalid("this step must be computed first".into())),
             Step::RemoveColumns { .. } | Step::RenameColumn { .. } | Step::MoveColumn { .. } => {
                 // Pick the previous columns by name in the new order; renames
                 // map the new name back to the old one.

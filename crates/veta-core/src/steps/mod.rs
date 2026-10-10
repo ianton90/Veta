@@ -8,7 +8,9 @@
 //! Steps refer to columns by name and to rows by their index in the previous
 //! step's output.
 
+mod compute;
 mod edits;
+mod filter;
 mod level;
 mod pipeline;
 mod rows;
@@ -20,7 +22,9 @@ use arrow::datatypes::DataType;
 use crate::display::type_name;
 use crate::error::Error;
 
+pub use compute::{ComputeJob, Computed};
 pub use edits::CellEdits;
+pub use filter::{Condition, Filter, FilterOp};
 pub use pipeline::{Pipeline, Status};
 pub use rows::normalize_ranges;
 
@@ -56,9 +60,17 @@ pub enum Step {
         name: String,
         to: usize,
     },
+    /// Keeps the rows that match.
+    Filter(Filter),
 }
 
 impl Step {
+    /// Whether evaluating the step needs a full pass over its input (done in
+    /// the background, then cached).
+    pub fn needs_full_pass(&self) -> bool {
+        matches!(self, Step::Filter(_))
+    }
+
     /// Whether the step refers to rows by position, so changing an earlier
     /// step can make it apply to different rows.
     pub fn is_positional(&self) -> bool {
@@ -95,6 +107,7 @@ impl Step {
             },
             Step::RenameColumn { from, to } => format!("Renamed {from} to {to}"),
             Step::MoveColumn { name, .. } => format!("Moved column {name}"),
+            Step::Filter(filter) => filter.describe(),
         }
     }
 }

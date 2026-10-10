@@ -1,3 +1,4 @@
+use super::filter::{Condition, Filter, FilterOp};
 use super::rows::kept_ranges;
 use super::*;
 use crate::source::DataSource;
@@ -272,4 +273,120 @@ fn normalize() {
         normalize_ranges(vec![5..6, 0..2, 1..3, 7..7, 6..8]),
         vec![0..3, 5..8]
     );
+}
+
+fn keep_ids_above(n: i64) -> Step {
+    Step::Filter(Filter {
+        conditions: vec![Condition {
+            column: "id".into(),
+            op: FilterOp::Greater,
+            value: n.to_string(),
+            case_sensitive: false,
+        }],
+        match_all: true,
+    })
+}
+
+#[test]
+fn filter_is_computed_then_read_through_its_cache() {
+    let mut p = Pipeline::new(source(200_000));
+    p.push(keep_ids_above(149_990)).unwrap();
+    assert_eq!(p.status(), &Status::Computing { step: 0 });
+    assert_eq!(p.evaluated(), 0);
+    assert!(p.push(Step::InsertRows { at: 0, count: 1 }).is_err());
+
+    let mut seen = Vec::new();
+    let job = p.compute_job().unwrap();
+    let computed = job
+        .run(&mut |f| {
+            seen.push(f);
+            true
+        })
+        .unwrap();
+    assert!(seen.len() >= 3 && seen.last() == Some(&1.0));
+    assert!(p.install(computed));
+    assert_eq!(p.status(), &Status::Ready);
+    assert_eq!(p.num_rows(), 50_009);
+    assert_eq!(ids(&p.read(0..2).unwrap()), [Some(149_991), Some(149_992)]);
+
+    // Steps after a filter work on its output.
+    p.push(Step::DeleteRows { rows: vec![0..1] }).unwrap();
+    assert_eq!(ids(&p.read(0..1).unwrap()), [Some(149_992)]);
+}
+
+#[test]
+fn stale_or_cancelled_results_are_dropped() {
+    let mut p = Pipeline::new(source(1_000));
+    p.push(keep_ids_above(10)).unwrap();
+    let job = p.compute_job().unwrap();
+    assert!(matches!(
+        job.clone().run(&mut |_| false),
+        Err(crate::Error::Cancelled)
+    ));
+
+    let old_key = job.key().to_vec();
+    assert_eq!(p.compute_key().as_deref(), Some(old_key.as_slice()));
+    let computed = job.run(&mut |_| true).unwrap();
+    // The filter changed meanwhile: the old result no longer applies.
+    p.set_steps(vec![keep_ids_above(500)], 0);
+    assert!(!p.install(computed));
+    assert_eq!(p.status(), &Status::Computing { step: 0 });
+    assert_ne!(p.compute_key(), Some(old_key.clone()));
+    assert!(!p.fail(&old_key, "boom".into()));
+    p.compute_all(&mut |_| true).unwrap();
+    assert_eq!(p.num_rows(), 499);
+}
+
+#[test]
+fn changing_a_step_before_a_filter_recomputes_it() {
+    let mut p = Pipeline::new(source(100));
+    p.push(Step::RenameColumn {
+        from: "name".into(),
+        to: "label".into(),
+    })
+    .unwrap();
+    p.push(keep_ids_above(89)).unwrap();
+    p.compute_all(&mut |_| true).unwrap();
+    assert_eq!(p.num_rows(), 10);
+
+    let mut steps = p.steps().to_vec();
+    steps.insert(
+        0,
+        Step::DeleteRows {
+            rows: vec![95..100],
+        },
+    );
+    p.set_steps(steps, 0);
+    assert_eq!(p.status(), &Status::Computing { step: 2 });
+    p.compute_all(&mut |_| true).unwrap();
+    assert_eq!(p.num_rows(), 5);
+
+    // A filter on a removed column is broken, not computed.
+    let steps = vec![
+        Step::RemoveColumns {
+            names: vec!["id".into()],
+        },
+        keep_ids_above(1),
+    ];
+    p.set_steps(steps, 0);
+    assert!(matches!(p.status(), Status::Broken { step: 1, .. }));
+}
+
+#[test]
+fn a_failed_pass_breaks_its_step() {
+    let mut p = Pipeline::new(source(10));
+    p.push(keep_ids_above(3)).unwrap();
+    let key = p.compute_key().unwrap();
+    assert!(p.fail(&key, "disk full".into()));
+    assert_eq!(
+        p.status(),
+        &Status::Broken {
+            step: 0,
+            error: "disk full".into()
+        }
+    );
+    assert_eq!(p.compute_key(), None);
+    // Re-evaluating (e.g. after undo/redo) retries it.
+    p.set_steps(p.steps().to_vec(), 0);
+    assert_eq!(p.status(), &Status::Computing { step: 0 });
 }

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 
+use super::compute::Cache;
 use super::{Step, invalid};
 use crate::error::Result;
 
@@ -21,6 +22,28 @@ impl Level {
 
     pub(super) fn field(&self, column: &str) -> Result<&Field> {
         Ok(self.schema.field(self.index(column)?))
+    }
+
+    /// Checks a full-pass step against this level before computing it.
+    pub(super) fn check(&self, step: &Step) -> Result<()> {
+        match step {
+            Step::Filter(filter) => filter.validate(&self.schema),
+            _ => Ok(()),
+        }
+    }
+
+    /// The level after a full-pass step, from its computed result.
+    pub(super) fn after_pass(&self, cache: &Cache) -> Level {
+        match cache {
+            Cache::Rows(rows) => Level {
+                schema: self.schema.clone(),
+                num_rows: rows.total(),
+            },
+            Cache::Data(source) => Level {
+                schema: source.schema(),
+                num_rows: source.num_rows(),
+            },
+        }
     }
 
     /// Validates `step` against this level and returns the level after it.
@@ -118,6 +141,7 @@ impl Level {
                 fields[index] = fields[index].clone().with_name(to);
                 Ok(with_fields(fields, self.num_rows))
             }
+            Step::Filter(_) => Err(invalid("this step must be computed first".into())),
             Step::MoveColumn { name, to } => {
                 let index = self.index(name)?;
                 if *to >= fields.len() {
