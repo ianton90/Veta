@@ -201,6 +201,7 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
             Change::PushStep(Step::MoveColumn { name, to }),
         )),
         Command::Filter(filter) => Ok((filter.describe(), Change::PushStep(Step::Filter(filter)))),
+        Command::Sort(sort) => Ok((sort.describe(), Change::PushStep(Step::Sort(sort)))),
         Command::RemoveStep { index } => {
             let mut after = doc.steps().to_vec();
             if index >= after.len() {
@@ -644,6 +645,49 @@ mod tests {
             match_all: true,
         };
         assert!(execute(&mut doc, Command::Filter(bad)).is_err());
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn sort_command_in_memory_and_paged() {
+        use crate::steps::{Sort, SortKey, Status};
+        let dir = TempDir::new();
+        let path = dir.join("mixed.parquet");
+        fixtures::mixed_settings(&path);
+        let sort = Sort {
+            keys: vec![
+                SortKey {
+                    column: "flag".into(),
+                    descending: false,
+                },
+                SortKey {
+                    column: "score".into(),
+                    descending: true,
+                },
+            ],
+        };
+        let mut results = Vec::new();
+        for options in [OpenOptions::default(), OpenOptions::paged()] {
+            let mut doc = Document::open(&path, options).unwrap();
+            execute(&mut doc, Command::Sort(sort.clone())).unwrap();
+            assert_eq!(doc.status(), &Status::Computing { step: 0 });
+            doc.compute_all().unwrap();
+            assert_eq!(doc.num_rows(), 1000);
+            // false first; within it, scores high to low with nulls last.
+            assert_eq!(cell(&doc, 0, "flag").as_deref(), Some("false"));
+            assert_eq!(cell(&doc, 0, "score").as_deref(), Some("499.5"));
+            assert_eq!(cell(&doc, 499, "flag").as_deref(), Some("false"));
+            assert_eq!(cell(&doc, 499, "score"), None);
+            assert_eq!(cell(&doc, 500, "flag").as_deref(), Some("true"));
+            // Later steps work on the sorted rows.
+            execute(&mut doc, Command::DeleteRows { rows: vec![0..1] }).unwrap();
+            assert_eq!(cell(&doc, 0, "score").as_deref(), Some("498.5"));
+            let out = dir.join("sorted.parquet");
+            doc.save(Some(out.clone())).unwrap();
+            let saved = Document::open(&out, OpenOptions::default()).unwrap();
+            results.push(format_batch(&saved.read(0..999).unwrap()).unwrap());
+        }
+        assert_eq!(results[0], results[1]);
     }
 
     #[test]

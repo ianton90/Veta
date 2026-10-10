@@ -5,9 +5,10 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use super::sort::{sort_external, sort_in_memory};
 use super::{Pipeline, Step, invalid};
 use crate::error::{Error, Result};
-use crate::source::DataSource;
+use crate::source::{DataSource, MemorySource, SourceMode};
 
 /// Rows read per batch during a full pass.
 pub(super) const PASS_ROWS: usize = 64 * 1024;
@@ -18,7 +19,6 @@ pub(crate) enum Cache {
     /// The input rows that survive, in order (filters).
     Rows(RowMap),
     /// The step's whole output (sort, fill).
-    #[allow(dead_code)] // Used by sort and fill.
     Data(Arc<dyn DataSource>),
 }
 
@@ -132,6 +132,24 @@ impl ComputeJob {
                     }
                 }
                 Cache::Rows(rows)
+            }
+            Step::Sort(sort) => {
+                let schema = self
+                    .pipeline
+                    .schema_at(self.step)
+                    .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+                let read = |range| self.pipeline.read_at(self.step, range);
+                let source: Arc<dyn DataSource> = match self.pipeline.source().mode() {
+                    SourceMode::InMemory => {
+                        let batch =
+                            sort_in_memory(sort, &schema, input_rows, &read, PASS_ROWS, progress)?;
+                        Arc::new(MemorySource::new(schema, vec![batch])?)
+                    }
+                    SourceMode::Paged => Arc::new(sort_external(
+                        sort, &schema, input_rows, &read, PASS_ROWS, None, progress,
+                    )?),
+                };
+                Cache::Data(source)
             }
             other => {
                 return Err(invalid(format!(

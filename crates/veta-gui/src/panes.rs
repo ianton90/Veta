@@ -632,6 +632,18 @@ pub fn context_menu<'a>(
             )),
             Some((Icon::Rename, "Rename…".into(), "", MenuItem::RenameColumn)),
             Some((Icon::Filter, "Filter…".into(), "", MenuItem::FilterColumn)),
+            Some((
+                Icon::SortAsc,
+                "Sort ascending".into(),
+                "",
+                MenuItem::SortAscending,
+            )),
+            Some((
+                Icon::SortDesc,
+                "Sort descending".into(),
+                "",
+                MenuItem::SortDescending,
+            )),
             None,
             Some((Icon::Swap, "Move left".into(), "", MenuItem::MoveColumnLeft)),
             Some((

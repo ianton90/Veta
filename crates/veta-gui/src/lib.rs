@@ -22,7 +22,9 @@ use iced::{
     Color, Element, Font, Length, Pixels, Size, Subscription, Task, Theme, event, font, keyboard,
     window,
 };
-use veta_core::steps::{ComputeJob, Computed, Condition, Filter, FilterOp, Status, Step};
+use veta_core::steps::{
+    ComputeJob, Computed, Condition, Filter, FilterOp, Sort, SortKey, Status, Step,
+};
 use veta_core::{Command, Document, DocumentId, OpenOptions, Workbook, controller};
 
 use crate::config::Config;
@@ -30,7 +32,7 @@ use crate::config::Config;
 use crate::config::ModePreference;
 use crate::dialogs::{
     ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage, FilterDialog, FilterMessage,
-    MetadataDialog, MetadataMessage, WriterDialog, WriterMessage,
+    MetadataDialog, MetadataMessage, SortDialog, SortMessage, WriterDialog, WriterMessage,
 };
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav};
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
@@ -234,6 +236,8 @@ enum MenuItem {
     MoveColumnLeft,
     MoveColumnRight,
     FilterColumn,
+    SortAscending,
+    SortDescending,
     /// Keep rows whose value in this column equals the selected cell's.
     KeepValue,
     /// Remove rows whose value in this column equals the selected cell's.
@@ -262,7 +266,7 @@ enum SideTab {
 fn step_dialog_supported(step: &Step) -> bool {
     matches!(
         step,
-        Step::RenameColumn { .. } | Step::AddColumn { .. } | Step::Filter(_)
+        Step::RenameColumn { .. } | Step::AddColumn { .. } | Step::Filter(_) | Step::Sort(_)
     )
 }
 
@@ -287,6 +291,12 @@ enum Dialog {
         dialog: FilterDialog,
         /// Editing the step at this index instead of adding a new one.
         replace: Option<usize>,
+    },
+    /// Editing the sort step at `index`.
+    Sort {
+        document: DocumentId,
+        dialog: SortDialog,
+        index: usize,
     },
     /// "Later steps refer to rows by position" before changing a step.
     ConfirmStep {
@@ -335,6 +345,7 @@ enum Message {
     CloseMenu,
     ColumnDialog(ColumnMessage),
     Filter(FilterMessage),
+    Sort(SortMessage),
     /// Progress (0–1) of the background pass with this key.
     ComputeProgress(DocumentId, Vec<u64>, f32),
     /// The background pass with this key finished.
@@ -656,6 +667,9 @@ impl App {
                     MenuItem::RenameColumn => return self.rename_column(id),
                     MenuItem::RemoveColumns => self.remove_columns(id),
                     MenuItem::FilterColumn => self.open_filter_dialog(id),
+                    MenuItem::SortAscending | MenuItem::SortDescending => {
+                        self.sort_selected(id, item == MenuItem::SortDescending);
+                    }
                     MenuItem::KeepValue | MenuItem::ExcludeValue => {
                         self.quick_filter(id, item == MenuItem::KeepValue);
                     }
@@ -752,6 +766,24 @@ impl App {
                         }
                         (None, _) if cancel => self.dialog = None,
                         (None, _) => {}
+                    }
+                }
+            }
+            Message::Sort(message) => {
+                if let Some(Dialog::Sort {
+                    document,
+                    dialog,
+                    index,
+                }) = &mut self.dialog
+                {
+                    let (id, index) = (*document, *index);
+                    let cancel = matches!(message, SortMessage::Cancel);
+                    if let Some(sort) = dialog.update(message) {
+                        self.dialog = None;
+                        let step = Step::Sort(sort);
+                        self.change_steps(id, index, Command::ReplaceStep { index, step });
+                    } else if cancel {
+                        self.dialog = None;
                     }
                 }
             }
@@ -927,6 +959,8 @@ impl App {
                 | Action::RemoveColumns
                 | Action::ChooseColumns
                 | Action::KeepRows
+                | Action::SortAscending
+                | Action::SortDescending
         );
         if changes_data
             && let Some(id) = self.active
@@ -991,6 +1025,11 @@ impl App {
             Action::KeepRows => {
                 if let Some(id) = self.active {
                     self.open_filter_dialog(id);
+                }
+            }
+            Action::SortAscending | Action::SortDescending => {
+                if let Some(id) = self.active {
+                    self.sort_selected(id, action == Action::SortDescending);
                 }
             }
             Action::AddColumn => {
@@ -1148,7 +1187,7 @@ impl App {
                 data_type,
                 at,
             } => ColumnDialog::add(*at).with_name(name).with_type(data_type),
-            Step::Filter(filter) => {
+            Step::Filter(_) | Step::Sort(_) => {
                 let columns = self
                     .workbook
                     .get(id)
@@ -1156,10 +1195,18 @@ impl App {
                     .map(|schema| schema.fields().iter().map(|f| f.name().clone()).collect())
                     .unwrap_or_default();
                 self.edit = None;
-                self.dialog = Some(Dialog::Filter {
-                    document: id,
-                    dialog: FilterDialog::edit(columns, filter),
-                    replace: Some(index),
+                self.dialog = Some(match &step {
+                    Step::Filter(filter) => Dialog::Filter {
+                        document: id,
+                        dialog: FilterDialog::edit(columns, filter),
+                        replace: Some(index),
+                    },
+                    Step::Sort(sort) => Dialog::Sort {
+                        document: id,
+                        dialog: SortDialog::new(columns, sort),
+                        index,
+                    },
+                    _ => return Task::none(),
                 });
                 return Task::none();
             }
@@ -1371,6 +1418,26 @@ impl App {
             dialog: FilterDialog::new(columns, selected),
             replace: None,
         });
+    }
+
+    /// Sorts by the selected column.
+    fn sort_selected(&mut self, id: DocumentId, descending: bool) {
+        let column = self.selected_columns(id).map(|c| c.start).or_else(|| {
+            self.tabs
+                .iter()
+                .find(|t| t.id == id)?
+                .grid
+                .selected()
+                .map(|s| s.1)
+        });
+        let Some(column) = column.and_then(|c| self.column_names(id, c..c + 1).pop()) else {
+            self.errors.push("Select a column to sort by.".into());
+            return;
+        };
+        let sort = Sort {
+            keys: vec![SortKey { column, descending }],
+        };
+        self.execute(id, Command::Sort(sort));
     }
 
     /// Keeps (or removes) the rows whose value in the selected cell's
@@ -1808,6 +1875,7 @@ impl App {
             Dialog::About => settings::about(Message::CloseDialog, ui.tokens),
             Dialog::Column { dialog, .. } => dialog.view(ui.tokens).map(Message::ColumnDialog),
             Dialog::Filter { dialog, .. } => dialog.view(ui.tokens).map(Message::Filter),
+            Dialog::Sort { dialog, .. } => dialog.view(ui.tokens).map(Message::Sort),
             Dialog::ConfirmStep { .. } => settings::confirm_step(ui.tokens),
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
             Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
@@ -2444,6 +2512,45 @@ mod tests {
         finish_compute(&mut app, id);
         let expected = (0..n).filter(|i| i % 5 == 1 && i % 7 != 0).count();
         assert_eq!(app.workbook.get(id).unwrap().num_rows(), expected);
+    }
+
+    #[test]
+    fn sort_from_ribbon_and_edit_step() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let id_at = |app: &App, row: usize| {
+            let doc = app.workbook.get(id).unwrap();
+            veta_core::display::format_batch(&doc.read(row..row + 1).unwrap()).unwrap()[0][0]
+                .clone()
+        };
+
+        let _ = app.update(Message::Action(Action::SortDescending));
+        assert!(app.workbook.get(id).unwrap().steps().is_empty());
+        assert_eq!(app.errors.len(), 1, "nothing selected");
+
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 0 }));
+        let _ = app.update(Message::Action(Action::SortDescending));
+        finish_compute(&mut app, id);
+        assert_eq!(id_at(&app, 0).as_deref(), Some("999"));
+
+        // Edit it into a two-key sort: flag, then id ascending.
+        let _ = app.update(Message::EditStep(0));
+        assert!(matches!(app.dialog, Some(Dialog::Sort { .. })));
+        let _ = app.update(Message::Sort(SortMessage::Direction(
+            0,
+            dialogs::Direction::Ascending,
+        )));
+        let _ = app.update(Message::Sort(SortMessage::Add));
+        let _ = app.update(Message::Sort(SortMessage::Column(0, "flag".into())));
+        let _ = app.update(Message::Sort(SortMessage::Column(1, "id".into())));
+        let _ = app.update(Message::Sort(SortMessage::Apply));
+        assert!(app.dialog.is_none());
+        finish_compute(&mut app, id);
+        assert_eq!(id_at(&app, 0).as_deref(), Some("1"));
+        assert_eq!(id_at(&app, 500).as_deref(), Some("0"));
     }
 
     #[test]

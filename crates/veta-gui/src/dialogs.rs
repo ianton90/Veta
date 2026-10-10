@@ -1,12 +1,12 @@
-//! Dialogs for column commands (add, rename, choose columns), filters and
-//! writer settings.
+//! Dialogs for column commands (add, rename, choose columns), filters, sorts
+//! and writer settings.
 
 use iced::widget::{Space, button, checkbox, column, pick_list, row, scrollable, text, text_input};
 use iced::{Alignment, Element, Length};
 use veta_core::arrow::datatypes::{DataType, TimeUnit};
 use veta_core::io::ARROW_SCHEMA_KEY;
 use veta_core::model::KeyValue;
-use veta_core::steps::{Condition, Filter, FilterOp};
+use veta_core::steps::{Condition, Filter, FilterOp, Sort, SortKey};
 use veta_core::{
     ColumnSettings, Command, Compression, Encoding, FormatVersion, StatisticsLevel, WriterSettings,
 };
@@ -426,6 +426,133 @@ impl FilterDialog {
         }
         body = body.push(buttons("OK", FilterMessage::Cancel, FilterMessage::Apply));
         card(body.into(), tokens, 720.0)
+    }
+}
+
+/// Sort by one or more columns.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SortDialog {
+    columns: Vec<String>,
+    keys: Vec<SortKey>,
+}
+
+/// Sort direction, for the pick list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Ascending,
+    Descending,
+}
+
+impl std::fmt::Display for Direction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Ascending => "ascending",
+            Self::Descending => "descending",
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum SortMessage {
+    Column(usize, String),
+    Direction(usize, Direction),
+    Add,
+    Remove(usize),
+    Apply,
+    Cancel,
+}
+
+impl SortDialog {
+    pub fn new(columns: Vec<String>, sort: &Sort) -> Self {
+        Self {
+            columns,
+            keys: sort.keys.clone(),
+        }
+    }
+
+    /// Handles a message. Returns the sort to apply on submit.
+    pub fn update(&mut self, message: SortMessage) -> Option<Sort> {
+        match message {
+            SortMessage::Column(i, column) => {
+                if let Some(key) = self.keys.get_mut(i) {
+                    key.column = column;
+                }
+            }
+            SortMessage::Direction(i, direction) => {
+                if let Some(key) = self.keys.get_mut(i) {
+                    key.descending = direction == Direction::Descending;
+                }
+            }
+            SortMessage::Add => {
+                let column = self
+                    .columns
+                    .iter()
+                    .find(|c| !self.keys.iter().any(|k| &k.column == *c))
+                    .or(self.columns.first())
+                    .cloned()
+                    .unwrap_or_default();
+                self.keys.push(SortKey {
+                    column,
+                    descending: false,
+                });
+            }
+            SortMessage::Remove(i) => {
+                if self.keys.len() > 1 && i < self.keys.len() {
+                    self.keys.remove(i);
+                }
+            }
+            SortMessage::Cancel => {}
+            SortMessage::Apply => {
+                return Some(Sort {
+                    keys: self.keys.clone(),
+                });
+            }
+        }
+        None
+    }
+
+    pub fn view(&self, tokens: Tokens) -> Element<'_, SortMessage> {
+        let mut list = column![].spacing(8);
+        for (i, key) in self.keys.iter().enumerate() {
+            let direction = if key.descending {
+                Direction::Descending
+            } else {
+                Direction::Ascending
+            };
+            let mut remove = button(text("✕")).style(button::text);
+            if self.keys.len() > 1 {
+                remove = remove.on_press(SortMessage::Remove(i));
+            }
+            list = list.push(
+                row![
+                    text(if i == 0 { "Sort by" } else { "then by" }).width(60),
+                    pick_list(self.columns.clone(), Some(key.column.clone()), move |c| {
+                        SortMessage::Column(i, c)
+                    })
+                    .width(Length::Fill),
+                    pick_list(
+                        [Direction::Ascending, Direction::Descending],
+                        Some(direction),
+                        move |d| SortMessage::Direction(i, d)
+                    )
+                    .width(130),
+                    remove,
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
+        }
+        let body = column![
+            text("Sort rows").size(20),
+            list,
+            button(text("+ Add column"))
+                .style(button::text)
+                .on_press(SortMessage::Add),
+            text("Nulls come last. Rows that tie keep their order.").color(tokens.muted_text),
+            buttons("OK", SortMessage::Cancel, SortMessage::Apply),
+        ]
+        .spacing(14);
+        card(body.into(), tokens, 480.0)
     }
 }
 

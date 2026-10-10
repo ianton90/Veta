@@ -28,6 +28,7 @@ impl Level {
     pub(super) fn check(&self, step: &Step) -> Result<()> {
         match step {
             Step::Filter(filter) => filter.validate(&self.schema),
+            Step::Sort(sort) => sort.validate(&self.schema),
             _ => Ok(()),
         }
     }
@@ -141,7 +142,9 @@ impl Level {
                 fields[index] = fields[index].clone().with_name(to);
                 Ok(with_fields(fields, self.num_rows))
             }
-            Step::Filter(_) => Err(invalid("this step must be computed first".into())),
+            Step::Filter(_) | Step::Sort(_) => {
+                Err(invalid("this step must be computed first".into()))
+            }
             Step::MoveColumn { name, to } => {
                 let index = self.index(name)?;
                 if *to >= fields.len() {

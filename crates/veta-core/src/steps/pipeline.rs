@@ -350,7 +350,9 @@ impl Pipeline {
                 with_schema(schema, columns, batch.num_rows())
             }
             // Full-pass steps are read through their cache above.
-            Step::Filter(_) => Err(invalid("this step must be computed first".into())),
+            Step::Filter(_) | Step::Sort(_) => {
+                Err(invalid("this step must be computed first".into()))
+            }
             Step::RemoveColumns { .. } | Step::RenameColumn { .. } | Step::MoveColumn { .. } => {
                 // Pick the previous columns by name in the new order; renames
                 // map the new name back to the old one.

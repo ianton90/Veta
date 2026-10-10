@@ -8,12 +8,14 @@
 //! Steps refer to columns by name and to rows by their index in the previous
 //! step's output.
 
+mod checkpoint;
 mod compute;
 mod edits;
 mod filter;
 mod level;
 mod pipeline;
 mod rows;
+mod sort;
 
 use std::ops::Range;
 
@@ -27,6 +29,7 @@ pub use edits::CellEdits;
 pub use filter::{Condition, Filter, FilterOp};
 pub use pipeline::{Pipeline, Status};
 pub use rows::normalize_ranges;
+pub use sort::{Sort, SortKey};
 
 /// One transformation of the data.
 #[derive(Debug, Clone, PartialEq)]
@@ -62,13 +65,14 @@ pub enum Step {
     },
     /// Keeps the rows that match.
     Filter(Filter),
+    Sort(Sort),
 }
 
 impl Step {
     /// Whether evaluating the step needs a full pass over its input (done in
     /// the background, then cached).
     pub fn needs_full_pass(&self) -> bool {
-        matches!(self, Step::Filter(_))
+        matches!(self, Step::Filter(_) | Step::Sort(_))
     }
 
     /// Whether the step refers to rows by position, so changing an earlier
@@ -108,6 +112,7 @@ impl Step {
             Step::RenameColumn { from, to } => format!("Renamed {from} to {to}"),
             Step::MoveColumn { name, .. } => format!("Moved column {name}"),
             Step::Filter(filter) => filter.describe(),
+            Step::Sort(sort) => sort.describe(),
         }
     }
 }
