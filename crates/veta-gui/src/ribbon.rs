@@ -66,9 +66,9 @@ impl Action {
             Action::SplitColumn | Action::MergeColumns => 39,
             Action::Statistics => 42,
             Action::Standard | Action::DateTime | Action::CustomColumn | Action::IndexColumn => 40,
-            Action::AppliedSteps => 34,
             Action::StatisticsPane => 43,
             Action::Open
+            | Action::AppliedSteps
             | Action::FileMetadata
             | Action::WriterSettings
             | Action::Save

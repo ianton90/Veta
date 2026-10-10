@@ -206,6 +206,54 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
             format!("Move column {name}"),
             Change::PushStep(Step::MoveColumn { name, to }),
         )),
+        Command::RemoveStep { index } => {
+            let mut after = doc.steps().to_vec();
+            if index >= after.len() {
+                return Err(invalid(format!("there is no step {}", index + 1)));
+            }
+            let removed = after.remove(index);
+            Ok((
+                format!("Remove step: {}", removed.describe()),
+                Change::Steps {
+                    before: doc.steps().to_vec(),
+                    after,
+                    keep: index,
+                },
+            ))
+        }
+        Command::MoveStep { from, to } => {
+            let mut after = doc.steps().to_vec();
+            if from >= after.len() || to >= after.len() {
+                return Err(invalid("step position out of range".into()));
+            }
+            let step = after.remove(from);
+            let label = format!("Move step: {}", step.describe());
+            after.insert(to, step);
+            Ok((
+                label,
+                Change::Steps {
+                    before: doc.steps().to_vec(),
+                    after,
+                    keep: from.min(to),
+                },
+            ))
+        }
+        Command::ReplaceStep { index, step } => {
+            let mut after = doc.steps().to_vec();
+            let Some(slot) = after.get_mut(index) else {
+                return Err(invalid(format!("there is no step {}", index + 1)));
+            };
+            let label = format!("Edit step: {}", step.describe());
+            *slot = step;
+            Ok((
+                label,
+                Change::Steps {
+                    before: doc.steps().to_vec(),
+                    after,
+                    keep: index,
+                },
+            ))
+        }
         Command::SetWriterSettings(settings) => {
             if settings.max_row_group_rows == 0 {
                 return Err(invalid("row group size must be at least 1".into()));
@@ -529,6 +577,65 @@ mod tests {
             doc.writer_settings().max_row_group_rows,
             fixtures::MIXED_SETTINGS_ROW_GROUP
         );
+    }
+
+    #[test]
+    fn step_commands_and_broken_steps() {
+        let dir = TempDir::new();
+        let mut doc = mixed(&dir);
+        let rename = |to: &str| Command::RenameColumn {
+            from: "name".into(),
+            to: to.into(),
+        };
+        execute(&mut doc, rename("label")).unwrap();
+        execute(
+            &mut doc,
+            Command::MoveColumn {
+                name: "label".into(),
+                to: 0,
+            },
+        )
+        .unwrap();
+        execute(&mut doc, Command::InsertRows { at: 0, count: 1 }).unwrap();
+
+        // Removing the rename breaks the move that refers to "label".
+        execute(&mut doc, Command::RemoveStep { index: 0 }).unwrap();
+        assert!(matches!(
+            doc.status(),
+            crate::steps::Status::Broken { step: 0, .. }
+        ));
+        assert_eq!(doc.steps().len(), 2);
+        assert!(doc.save_job(None).is_err(), "can't save while broken");
+        assert!(
+            execute(&mut doc, Command::InsertRows { at: 0, count: 1 }).is_err(),
+            "can't add steps while broken"
+        );
+        undo(&mut doc);
+        assert_eq!(doc.status(), &crate::steps::Status::Ready);
+        assert_eq!(doc.schema().field(0).name(), "label");
+
+        // Move the insert before the rename, then edit the rename.
+        execute(&mut doc, Command::MoveStep { from: 2, to: 0 }).unwrap();
+        assert!(matches!(doc.steps()[0], Step::InsertRows { .. }));
+        let Step::RenameColumn { from, .. } = doc.steps()[1].clone() else {
+            panic!("expected rename");
+        };
+        execute(
+            &mut doc,
+            Command::ReplaceStep {
+                index: 1,
+                step: Step::RenameColumn {
+                    from,
+                    to: "title".into(),
+                },
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            doc.status(),
+            crate::steps::Status::Broken { step: 2, .. }
+        ));
+        assert!(execute(&mut doc, Command::RemoveStep { index: 9 }).is_err());
     }
 
     #[test]

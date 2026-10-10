@@ -11,7 +11,7 @@ use crate::error::Result;
 use crate::history::History;
 use crate::io::{OpenOptions, SaveJob, SaveResult, open_parquet, same_file};
 use crate::source::{MemorySource, SourceMode};
-use crate::steps::{Pipeline, Step};
+use crate::steps::{Pipeline, Status, Step};
 
 /// One open file (or a new, unsaved one): its source data, the steps applied
 /// to it, and file-level settings. See `docs/ARCHITECTURE.md`.
@@ -101,6 +101,29 @@ impl Document {
         self.pipeline.steps()
     }
 
+    /// Whether the steps' output is available, being computed, or broken.
+    pub fn status(&self) -> &Status {
+        self.pipeline.status()
+    }
+
+    /// Reads rows after the first `steps` steps (0 = the source data).
+    pub fn read_at(&self, steps: usize, range: Range<usize>) -> Result<RecordBatch> {
+        self.pipeline.read_at(steps, range)
+    }
+
+    pub fn schema_at(&self, steps: usize) -> Option<SchemaRef> {
+        self.pipeline.schema_at(steps)
+    }
+
+    pub fn num_rows_at(&self, steps: usize) -> Option<usize> {
+        self.pipeline.num_rows_at(steps)
+    }
+
+    /// Number of steps whose output is available.
+    pub fn evaluated_steps(&self) -> usize {
+        self.pipeline.evaluated()
+    }
+
     pub fn source_mode(&self) -> SourceMode {
         self.pipeline.source().mode()
     }
@@ -134,6 +157,12 @@ impl Document {
                 ));
             }
         };
+        if let Status::Broken { step, error } = self.status() {
+            return Err(Error::InvalidCommand(format!(
+                "step {} has an error: {error}",
+                step + 1
+            )));
+        }
         if self.num_columns() == 0 {
             return Err(Error::InvalidCommand(
                 "a file needs at least one column".into(),

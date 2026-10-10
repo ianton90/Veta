@@ -93,6 +93,23 @@ impl ColumnDialog {
         }
     }
 
+    /// Starts with `name` in the name field.
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_owned();
+        self
+    }
+
+    /// Starts with the choice matching `data_type`, if it is one offered.
+    pub fn with_type(mut self, data_type: &DataType) -> Self {
+        if let Some(choice) = TypeChoice::ALL
+            .into_iter()
+            .find(|c| &c.data_type() == data_type)
+        {
+            self.choice = choice;
+        }
+        self
+    }
+
     pub fn rename(from: String) -> Self {
         Self {
             name: from.clone(),

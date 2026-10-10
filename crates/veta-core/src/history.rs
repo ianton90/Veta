@@ -15,6 +15,13 @@ use crate::steps::{CellEdits, Step};
 pub(crate) enum Change {
     /// Appends a step.
     PushStep(Step),
+    /// Replaces the whole step list; the first `keep` steps are the same in
+    /// both.
+    Steps {
+        before: Vec<Step>,
+        after: Vec<Step>,
+        keep: usize,
+    },
     /// Sets one cell. When `new_step` is true the edit starts a new
     /// edit-cells step; otherwise it goes into the last step, replacing
     /// `before` (the value this cell had in that step, if any).
@@ -41,6 +48,10 @@ impl Change {
     pub(crate) fn apply(&self, doc: &mut Document) -> Result<()> {
         match self {
             Change::PushStep(step) => doc.pipeline.push(step.clone()),
+            Change::Steps { after, keep, .. } => {
+                doc.pipeline.set_steps(after.clone(), *keep);
+                Ok(())
+            }
             Change::EditCell {
                 column,
                 row,
@@ -86,6 +97,7 @@ impl Change {
             Change::PushStep(_) => {
                 doc.pipeline.pop();
             }
+            Change::Steps { before, keep, .. } => doc.pipeline.set_steps(before.clone(), *keep),
             Change::EditCell {
                 column,
                 row,

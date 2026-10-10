@@ -21,6 +21,7 @@ use iced::{
     Color, Element, Font, Length, Pixels, Size, Subscription, Task, Theme, event, font, keyboard,
     window,
 };
+use veta_core::steps::{Status, Step};
 use veta_core::{Command, Document, DocumentId, OpenOptions, Workbook, controller};
 
 use crate::config::Config;
@@ -158,6 +159,7 @@ struct App {
     tabs: Vec<Tab>,
     active: Option<DocumentId>,
     show_side_pane: bool,
+    side_tab: SideTab,
     /// Files currently being opened in the background.
     opening: Vec<PathBuf>,
     errors: Vec<String>,
@@ -229,6 +231,19 @@ struct Edit {
     error: Option<String>,
 }
 
+/// What the side pane shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum SideTab {
+    #[default]
+    Steps,
+    File,
+}
+
+/// Whether the step settings dialog exists for this kind of step.
+fn step_dialog_supported(step: &Step) -> bool {
+    matches!(step, Step::RenameColumn { .. } | Step::AddColumn { .. })
+}
+
 #[derive(Debug)]
 struct Tab {
     id: DocumentId,
@@ -242,6 +257,13 @@ enum Dialog {
     Column {
         document: DocumentId,
         dialog: ColumnDialog,
+        /// Editing the step at this index instead of adding a new one.
+        replace: Option<usize>,
+    },
+    /// "Later steps refer to rows by position" before changing a step.
+    ConfirmStep {
+        document: DocumentId,
+        command: Command,
     },
     Choose {
         document: DocumentId,
@@ -284,6 +306,13 @@ enum Message {
     Menu(MenuItem),
     CloseMenu,
     ColumnDialog(ColumnMessage),
+    SideTab(SideTab),
+    /// Show the data after this many steps (past the last: all steps).
+    PreviewStep(DocumentId, usize),
+    RemoveStep(usize),
+    MoveStep(usize, usize),
+    EditStep(usize),
+    ConfirmStep(bool),
     Choose(ChooseMessage),
     Writer(WriterMessage),
     Metadata(MetadataMessage),
@@ -322,6 +351,7 @@ impl App {
             tabs: Vec::new(),
             active: None,
             show_side_pane: true,
+            side_tab: SideTab::default(),
             opening: Vec::new(),
             errors: startup.errors,
             ribbon: Ribbon::default(),
@@ -471,6 +501,22 @@ impl App {
                 return self.request_close(all, true);
             }
             Message::CloseAnswer(answer) => return self.answer_close(answer),
+            Message::Grid(id, event)
+                if !self.editable(id)
+                    && matches!(
+                        event,
+                        GridEvent::StartEdit { .. }
+                            | GridEvent::ClearCell
+                            | GridEvent::InsertRows
+                            | GridEvent::DeleteRows
+                            | GridEvent::MoveColumn { .. }
+                            | GridEvent::ContextMenu { .. }
+                    ) =>
+            {
+                if !matches!(event, GridEvent::StartEdit { .. }) {
+                    self.not_editable(id);
+                }
+            }
             Message::Grid(id, event) => match event {
                 GridEvent::StartEdit { initial } => return self.start_edit(id, initial),
                 GridEvent::EditMove(nav) => {
@@ -526,7 +572,9 @@ impl App {
                 }
                 None => {
                     // Typing straight into the formula bar starts an edit.
-                    if let Some(id) = self.active {
+                    if let Some(id) = self.active
+                        && self.editable(id)
+                    {
                         let task = self.start_edit(id, Some(text));
                         return task;
                     }
@@ -579,10 +627,37 @@ impl App {
                 }
             }
             Message::ColumnDialog(message) => {
-                if let Some(Dialog::Column { document, dialog }) = &mut self.dialog {
+                if let Some(Dialog::Column {
+                    document,
+                    dialog,
+                    replace,
+                }) = &mut self.dialog
+                {
                     let id = *document;
                     let cancel = matches!(message, ColumnMessage::Cancel);
-                    if let Some(command) = dialog.update(message) {
+                    let replace = *replace;
+                    if let (Some(index), Some(command)) = (replace, dialog.update(message.clone()))
+                    {
+                        let step = match command {
+                            Command::AddColumn {
+                                name,
+                                data_type,
+                                at,
+                            } => Step::AddColumn {
+                                name,
+                                data_type,
+                                at,
+                            },
+                            Command::RenameColumn { from, to } => Step::RenameColumn { from, to },
+                            _ => return Task::none(),
+                        };
+                        self.dialog = None;
+                        self.change_steps(id, index, Command::ReplaceStep { index, step });
+                    } else if replace.is_some() {
+                        if cancel {
+                            self.dialog = None;
+                        }
+                    } else if let Some(command) = dialog.update(message) {
                         let at = match &command {
                             Command::AddColumn { at, .. } => Some(*at),
                             _ => None,
@@ -596,6 +671,39 @@ impl App {
                     } else if cancel {
                         self.dialog = None;
                     }
+                }
+            }
+            Message::SideTab(side) => self.side_tab = side,
+            Message::PreviewStep(id, level) => {
+                self.commit_edit_or_drop();
+                if let (Some(doc), Some(tab)) = (
+                    self.workbook.get(id),
+                    self.tabs.iter_mut().find(|t| t.id == id),
+                ) {
+                    let preview = (level < doc.evaluated_steps()).then_some(level);
+                    tab.grid.set_preview(preview, doc);
+                }
+            }
+            Message::RemoveStep(index) => {
+                if let Some(id) = self.active {
+                    self.change_steps(id, index, Command::RemoveStep { index });
+                }
+            }
+            Message::MoveStep(from, to) => {
+                if let Some(id) = self.active {
+                    self.change_steps(id, from.min(to), Command::MoveStep { from, to });
+                }
+            }
+            Message::EditStep(index) => {
+                if let Some(id) = self.active {
+                    return self.edit_step(id, index);
+                }
+            }
+            Message::ConfirmStep(yes) => {
+                if let Some(Dialog::ConfirmStep { document, command }) = self.dialog.take()
+                    && yes
+                {
+                    self.execute(document, command);
                 }
             }
             Message::Writer(message) => {
@@ -689,6 +797,22 @@ impl App {
     }
 
     fn perform(&mut self, action: Action) -> Task<Message> {
+        let changes_data = matches!(
+            action,
+            Action::InsertRows
+                | Action::RemoveRows
+                | Action::AddColumn
+                | Action::RenameColumn
+                | Action::RemoveColumns
+                | Action::ChooseColumns
+        );
+        if changes_data
+            && let Some(id) = self.active
+            && !self.editable(id)
+        {
+            self.not_editable(id);
+            return Task::none();
+        }
         match action {
             Action::Open => {
                 return Task::perform(pick_files(), |files| {
@@ -803,6 +927,10 @@ impl App {
                 }
             }
             Action::ToggleDetails => self.show_side_pane = !self.show_side_pane,
+            Action::AppliedSteps => {
+                self.show_side_pane = true;
+                self.side_tab = SideTab::Steps;
+            }
             Action::Mode(mode) => {
                 self.config.appearance.mode = mode;
                 self.save_config();
@@ -833,12 +961,89 @@ impl App {
         }
     }
 
+    /// Re-reads a document's grid after a change, showing all steps.
     fn refresh(&mut self, id: DocumentId) {
         if let (Some(doc), Some(tab)) = (
             self.workbook.get(id),
             self.tabs.iter_mut().find(|t| t.id == id),
         ) {
-            tab.grid.refresh(doc);
+            tab.grid.set_preview(None, doc);
+        }
+    }
+
+    /// Whether the document can be changed: all steps shown and evaluated.
+    fn editable(&self, id: DocumentId) -> bool {
+        let previewing = self
+            .tabs
+            .iter()
+            .find(|t| t.id == id)
+            .is_some_and(|t| t.grid.preview().is_some());
+        let ready = self
+            .workbook
+            .get(id)
+            .is_some_and(|d| d.status() == &Status::Ready);
+        !previewing && ready
+    }
+
+    /// Explains why a change can't be made right now.
+    fn not_editable(&mut self, id: DocumentId) {
+        let message = match self.workbook.get(id).map(Document::status) {
+            Some(Status::Broken { step, .. }) => {
+                format!(
+                    "Step {} has an error. Fix or remove it to make changes.",
+                    step + 1
+                )
+            }
+            Some(Status::Computing { step }) => {
+                format!("Step {} is still being computed.", step + 1)
+            }
+            _ => "You're viewing an earlier step. Select the last step to make changes.".into(),
+        };
+        if !self.errors.contains(&message) {
+            self.errors.push(message);
+        }
+    }
+
+    /// Opens the settings dialog of the step at `index`.
+    fn edit_step(&mut self, id: DocumentId, index: usize) -> Task<Message> {
+        let Some(step) = self
+            .workbook
+            .get(id)
+            .and_then(|d| d.steps().get(index))
+            .cloned()
+        else {
+            return Task::none();
+        };
+        let dialog = match &step {
+            Step::RenameColumn { from, to } => ColumnDialog::rename(from.clone()).with_name(to),
+            Step::AddColumn {
+                name,
+                data_type,
+                at,
+            } => ColumnDialog::add(*at).with_name(name).with_type(data_type),
+            _ => return Task::none(),
+        };
+        let task = self.open_column_dialog(id, dialog);
+        if let Some(Dialog::Column { replace, .. }) = &mut self.dialog {
+            *replace = Some(index);
+        }
+        task
+    }
+
+    /// Runs a step-list command, first asking if later steps refer to rows
+    /// by position (they may then apply to different rows).
+    fn change_steps(&mut self, id: DocumentId, from: usize, command: Command) {
+        let positional_after = self
+            .workbook
+            .get(id)
+            .is_some_and(|d| d.steps().iter().skip(from + 1).any(Step::is_positional));
+        if positional_after {
+            self.dialog = Some(Dialog::ConfirmStep {
+                document: id,
+                command,
+            });
+        } else {
+            self.execute(id, command);
         }
     }
 
@@ -1009,6 +1214,7 @@ impl App {
         self.dialog = Some(Dialog::Column {
             document: id,
             dialog,
+            replace: None,
         });
         Task::batch([
             iced::widget::operation::focus(dialogs::NAME_ID),
@@ -1239,7 +1445,12 @@ impl App {
                     container(grid).width(Length::Fill).height(Length::Fill),
                 ];
                 if self.show_side_pane {
-                    row![grid, divider(ui.tokens, true), panes::side_pane(doc, ui)].into()
+                    row![
+                        grid,
+                        divider(ui.tokens, true),
+                        panes::side_pane(tab, doc, self.side_tab, ui)
+                    ]
+                    .into()
                 } else {
                     grid.into()
                 }
@@ -1336,6 +1547,7 @@ impl App {
             }
             Dialog::About => settings::about(Message::CloseDialog, ui.tokens),
             Dialog::Column { dialog, .. } => dialog.view(ui.tokens).map(Message::ColumnDialog),
+            Dialog::ConfirmStep { .. } => settings::confirm_step(ui.tokens),
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
             Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
             Dialog::Metadata { dialog, .. } => dialog.view(ui.tokens).map(Message::Metadata),
@@ -1820,6 +2032,62 @@ mod tests {
         );
         let _ = app.update(Message::CloseAnswer(CloseAnswer::Discard));
         assert!(app.dialog.is_none() && app.closing.is_none(), "exits");
+    }
+
+    #[test]
+    fn applied_steps_preview_edit_and_warnings() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let doc = |app: &App| app.workbook.get(id).unwrap().steps().len();
+
+        // Rename "name" → "label", then delete row 1.
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 1,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::RenameColumn));
+        let _ = app.update(Message::ColumnDialog(ColumnMessage::Name("label".into())));
+        let _ = app.update(Message::ColumnDialog(ColumnMessage::Submit));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectRows {
+                row: 0,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::RemoveRows));
+        assert_eq!(doc(&app), 2);
+
+        // Preview the source: read-only.
+        let _ = app.update(Message::PreviewStep(id, 0));
+        assert_eq!(app.tabs[0].grid.preview(), Some(0));
+        assert_eq!(app.tabs[0].grid.value(0, 0), Some(Some("0")));
+        let _ = app.update(Message::Action(Action::RemoveRows));
+        assert_eq!(doc(&app), 2, "changes are disabled while previewing");
+        assert_eq!(app.errors.len(), 1);
+        let _ = app.update(Message::PreviewStep(id, usize::MAX));
+        assert_eq!(app.tabs[0].grid.preview(), None);
+
+        // Editing the rename asks first, because a later step deletes rows
+        // by position.
+        let _ = app.update(Message::EditStep(0));
+        let _ = app.update(Message::ColumnDialog(ColumnMessage::Name("title".into())));
+        let _ = app.update(Message::ColumnDialog(ColumnMessage::Submit));
+        assert!(matches!(app.dialog, Some(Dialog::ConfirmStep { .. })));
+        let _ = app.update(Message::ConfirmStep(true));
+        let schema = app.workbook.get(id).unwrap().schema();
+        assert_eq!(schema.field(1).name(), "title");
+
+        // Removing the last step doesn't ask.
+        let _ = app.update(Message::RemoveStep(1));
+        assert!(app.dialog.is_none());
+        assert_eq!(doc(&app), 1);
     }
 
     #[test]

@@ -155,6 +155,8 @@ struct Column {
 #[derive(Debug, Clone)]
 pub struct GridView {
     metrics: Metrics,
+    /// Show the data after this many steps instead of after all of them.
+    at: Option<usize>,
     columns: Vec<Column>,
     num_rows: usize,
     first_row: usize,
@@ -176,7 +178,9 @@ pub struct GridView {
 
 impl GridView {
     pub fn new(document: &Document, text_size: f32) -> Self {
-        let schema = document.schema();
+        let schema = document
+            .schema_at(document.evaluated_steps())
+            .unwrap_or_else(|| document.schema());
         let columns = schema
             .fields()
             .iter()
@@ -188,6 +192,7 @@ impl GridView {
             })
             .collect();
         let mut view = Self {
+            at: None,
             metrics: Metrics::new(text_size),
             columns,
             num_rows: document.num_rows(),
@@ -234,6 +239,23 @@ impl GridView {
 
     pub fn selected(&self) -> Option<(usize, usize)> {
         self.selected
+    }
+
+    /// Number of steps shown, if previewing an earlier step.
+    pub fn preview(&self) -> Option<usize> {
+        self.at
+    }
+
+    /// Shows the data after `at` steps (`None`: after all evaluated steps).
+    pub fn set_preview(&mut self, at: Option<usize>, document: &Document) {
+        self.at = at;
+        self.refresh(document);
+    }
+
+    /// The step count whose output is shown.
+    fn level(&self, document: &Document) -> usize {
+        let evaluated = document.evaluated_steps();
+        self.at.map_or(evaluated, |at| at.min(evaluated))
     }
 
     /// Selected rows: the row selection, or the selected cell's row.
@@ -293,7 +315,10 @@ impl GridView {
     /// of columns that still exist), row count, selection and visible rows.
     pub fn refresh(&mut self, document: &Document) {
         let old: Vec<Column> = std::mem::take(&mut self.columns);
-        let schema = document.schema();
+        let level = self.level(document);
+        let schema = document
+            .schema_at(level)
+            .unwrap_or_else(|| document.schema());
         let mut fresh = Vec::new();
         self.columns = schema
             .fields()
@@ -312,7 +337,7 @@ impl GridView {
                 }
             })
             .collect();
-        self.num_rows = document.num_rows();
+        self.num_rows = document.num_rows_at(level).unwrap_or(0);
         self.selected = self.selected.and_then(|(r, c)| {
             (self.num_rows > 0 && !self.columns.is_empty())
                 .then(|| (r.min(self.num_rows - 1), c.min(self.columns.len() - 1)))
@@ -486,7 +511,7 @@ impl GridView {
         let start = self.first_row.saturating_sub(self.visible_rows);
         let end = (self.first_row + 2 * self.visible_rows + 1).min(self.num_rows);
         match document
-            .read(start..end)
+            .read_at(self.level(document), start..end)
             .and_then(|batch| format_batch(&batch))
         {
             Ok(cells) => {

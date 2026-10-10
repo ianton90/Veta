@@ -162,3 +162,14 @@ write in place unless `-o FILE` is given. Planned: `stats`, `apply`,
   fixtures generated in tests (no binary fixtures committed unless needed).
 - `veta-cli`: end-to-end tests running subcommands on temp files.
 - `veta-gui`: logic tests on `update`; visual checks are manual.
+
+## Step status
+
+Steps are evaluated in order until one fails or needs a full pass over its
+input (filter, sort, fill). The pipeline's status is `Ready`, `Computing
+{ step }` or `Broken { step, error }`; the document shows the output of the
+last evaluated step. Changing a step in the middle (`RemoveStep`, `MoveStep`,
+`ReplaceStep`) keeps the evaluated steps before it and re-evaluates the rest;
+later steps that no longer apply are marked broken. Adding steps and saving
+need status `Ready`. The GUI warns before changing a step when later steps
+refer to rows by position (cell edits, row insert/delete).

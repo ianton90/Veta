@@ -10,7 +10,8 @@ use veta_core::{Document, DocumentId, SourceMode};
 use crate::grid::MenuTarget;
 use crate::icon::{Icon, icon};
 use crate::theme::Tokens;
-use crate::{Edit, FORMULA_ID, MenuItem, Message, Tab, Ui, bold};
+use crate::{Edit, FORMULA_ID, MenuItem, Message, SideTab, Tab, Ui, bold};
+use veta_core::steps::Status;
 
 const SIDE_PANE_WIDTH: f32 = 300.0;
 
@@ -82,9 +83,158 @@ pub fn empty_state(opening: bool, recent: &[PathBuf], ui: Ui) -> Element<'_, Mes
     center(content).into()
 }
 
-/// Read-only file details. Becomes the home of applied steps, statistics and
-/// metadata editing in later milestones.
-pub fn side_pane(doc: &Document, ui: Ui) -> Element<'_, Message> {
+/// The side pane: applied steps or file details.
+pub fn side_pane<'a>(
+    tab: &'a Tab,
+    doc: &'a Document,
+    side: SideTab,
+    ui: Ui,
+) -> Element<'a, Message> {
+    let t = ui.tokens;
+    let tab_button = |label: &'static str, target: SideTab| {
+        let selected = side == target;
+        button(text(label).size(ui.small()))
+            .padding([4, 10])
+            .style(move |_theme: &Theme, status| {
+                let mut style = subtle_button(t, status);
+                if selected {
+                    style.text_color = t.primary;
+                    style.border = Border {
+                        color: t.primary,
+                        width: 0.0,
+                        radius: 4.0.into(),
+                    };
+                    style.background = Some(Background::Color(Color {
+                        a: 0.1,
+                        ..t.primary
+                    }));
+                }
+                style
+            })
+            .on_press(Message::SideTab(target))
+    };
+    let tabs = row![
+        tab_button("Applied steps", SideTab::Steps),
+        tab_button("File", SideTab::File)
+    ]
+    .spacing(4);
+    let body = match side {
+        SideTab::Steps => steps_pane(tab, doc, ui),
+        SideTab::File => file_details(doc, ui),
+    };
+    container(column![container(tabs).padding([8, 12]), body])
+        .width(SIDE_PANE_WIDTH)
+        .height(Length::Fill)
+        .style(move |_theme: &Theme| container::Style::default().background(t.background))
+        .into()
+}
+
+/// The applied steps list. Selecting a step shows the data after it.
+fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element<'a, Message> {
+    let t = ui.tokens;
+    let steps = doc.steps();
+    let evaluated = doc.evaluated_steps();
+    let shown = tab.grid.preview().unwrap_or(evaluated).min(evaluated);
+    let red = Color::from_rgb8(0xd1, 0x43, 0x43);
+
+    let item = |index: Option<usize>, label: String, note: Option<(String, Color)>| {
+        // `index` is the step position; None is the source.
+        let level = index.map_or(0, |i| i + 1);
+        let selected = level == shown;
+        let available = level <= evaluated;
+        let color = if available { t.text } else { t.muted_text };
+        let mut text_col = column![text(label).size(ui.small()).color(color)].spacing(2);
+        if let Some((note, note_color)) = note {
+            text_col = text_col.push(text(note).size(ui.small() - 1.0).color(note_color));
+        }
+        let mut select = button(text_col.width(Length::Fill))
+            .width(Length::Fill)
+            .padding([5, 8])
+            .style(move |_theme: &Theme, status| {
+                let mut style = subtle_button(t, status);
+                if selected {
+                    style.background = Some(Background::Color(Color {
+                        a: 0.14,
+                        ..t.selection
+                    }));
+                }
+                style
+            });
+        if available {
+            select = select.on_press(Message::PreviewStep(tab.id, level));
+        }
+        let mut line = row![select].spacing(2).align_y(Alignment::Center);
+        if let Some(i) = index {
+            let small = |glyph: Icon, message: Option<Message>, tip: &'static str| {
+                let color = if message.is_some() {
+                    t.muted_text
+                } else {
+                    Color { a: 0.2, ..t.text }
+                };
+                let mut b = button(icon(glyph, ui.small()).color(color))
+                    .padding([4, 5])
+                    .style(move |_theme: &Theme, status| subtle_button(t, status));
+                if let Some(message) = message {
+                    b = b.on_press(message);
+                }
+                iced::widget::tooltip(
+                    b,
+                    text(tip).size(ui.small() - 1.0),
+                    iced::widget::tooltip::Position::Top,
+                )
+            };
+            let editable = crate::step_dialog_supported(&steps[i]);
+            line = line
+                .push(small(
+                    Icon::ChevronUp,
+                    i.checked_sub(1).map(|up| Message::MoveStep(i, up)),
+                    "Move up",
+                ))
+                .push(small(
+                    Icon::ChevronDown,
+                    (i + 1 < steps.len()).then_some(Message::MoveStep(i, i + 1)),
+                    "Move down",
+                ))
+                .push(small(
+                    Icon::Rename,
+                    editable.then_some(Message::EditStep(i)),
+                    "Edit",
+                ))
+                .push(small(Icon::Trash, Some(Message::RemoveStep(i)), "Remove"));
+        }
+        line.into()
+    };
+
+    let mut list: Vec<Element<'a, Message>> = vec![item(None, "Source".into(), None)];
+    for (i, step) in steps.iter().enumerate() {
+        let note = match doc.status() {
+            Status::Broken { step, error } if *step == i => Some((error.clone(), red)),
+            Status::Broken { step, .. } if i > *step => {
+                Some(("Not evaluated".into(), t.muted_text))
+            }
+            Status::Computing { step } if *step == i => Some(("Computing…".into(), t.primary)),
+            Status::Computing { step } if i > *step => Some(("Waiting".into(), t.muted_text)),
+            _ => None,
+        };
+        list.push(item(
+            Some(i),
+            format!("{}. {}", i + 1, step.describe()),
+            note,
+        ));
+    }
+    let mut content = column(list).spacing(2).padding([0, 8]);
+    if steps.is_empty() {
+        content = content.push(
+            text("Changes you make appear here as steps.")
+                .size(ui.small())
+                .color(t.muted_text),
+        );
+    }
+    scrollable(content).height(Length::Fill).into()
+}
+
+/// Read-only file details and metadata.
+fn file_details(doc: &Document, ui: Ui) -> Element<'_, Message> {
     let t = ui.tokens;
     let mut fields: Vec<(&str, String)> = vec![
         ("Rows", doc.num_rows().to_string()),
@@ -148,10 +298,8 @@ pub fn side_pane(doc: &Document, ui: Ui) -> Element<'_, Message> {
         );
     }
 
-    container(scrollable(column![items, meta].spacing(20).padding(12)))
-        .width(SIDE_PANE_WIDTH)
+    scrollable(column![items, meta].spacing(20).padding(12))
         .height(Length::Fill)
-        .style(move |_theme: &Theme| container::Style::default().background(t.background))
         .into()
 }
 
@@ -238,6 +386,11 @@ pub fn status_bar(
             }
             .into(),
         );
+        match doc.status() {
+            Status::Broken { step, .. } => parts.push(format!("Step {} has an error", step + 1)),
+            Status::Computing { step } => parts.push(format!("Computing step {}…", step + 1)),
+            Status::Ready => {}
+        }
         if let Some(e) = tab.grid.error() {
             parts.push(format!("Read error: {e}"));
         }
@@ -265,6 +418,34 @@ pub fn formula_bar<'a>(
     ui: Ui,
 ) -> Element<'a, Message> {
     let t = ui.tokens;
+    if let Some(at) = tab.grid.preview() {
+        let total = doc.steps().len();
+        let what = if at == 0 {
+            "the source data".to_owned()
+        } else {
+            format!("the data after step {at} of {total}")
+        };
+        return container(
+            row![
+                icon(Icon::Info, ui.size).color(t.primary),
+                text(format!("Showing {what}. Changes are disabled.")).size(ui.small()),
+                button(text("Show all steps").size(ui.small()))
+                    .padding([3, 10])
+                    .on_press(Message::PreviewStep(tab.id, usize::MAX)),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        )
+        .padding([4, 8])
+        .width(Length::Fill)
+        .style(move |_theme: &Theme| {
+            container::Style::default().background(Color {
+                a: 0.1,
+                ..t.primary
+            })
+        })
+        .into();
+    }
     let selected = tab.grid.selected();
     let label = match selected {
         Some((row, column)) => {

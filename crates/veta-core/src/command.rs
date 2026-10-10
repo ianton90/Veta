@@ -8,8 +8,9 @@ use std::ops::Range;
 use arrow::datatypes::DataType;
 
 use crate::model::{KeyValue, WriterSettings};
+use crate::steps::Step;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     /// Sets a key/value metadata entry, replacing the value if the key exists.
     SetMetadata {
@@ -59,4 +60,18 @@ pub enum Command {
     },
     /// Replaces the settings used when saving.
     SetWriterSettings(WriterSettings),
+    /// Removes the step at `index`. Later steps may become broken.
+    RemoveStep {
+        index: usize,
+    },
+    /// Moves the step at `from` to position `to`.
+    MoveStep {
+        from: usize,
+        to: usize,
+    },
+    /// Replaces the step at `index` (e.g. after editing its settings).
+    ReplaceStep {
+        index: usize,
+        step: Step,
+    },
 }

@@ -225,6 +225,29 @@ pub fn about<'a, Message: Clone + 'a>(close: Message, tokens: Tokens) -> Element
     card(body.into(), tokens, 380.0)
 }
 
+/// Asked before changing a step when later steps refer to rows by position.
+pub fn confirm_step<'a>(tokens: Tokens) -> Element<'a, crate::Message> {
+    use crate::Message;
+    let body = column![
+        text("Change this step?").size(20),
+        text(
+            "Later steps edit, insert or delete rows by their position. After this \
+             change they may apply to different rows."
+        )
+        .color(tokens.muted_text),
+        row![
+            iced::widget::Space::new().width(Length::Fill),
+            button(text("Cancel"))
+                .style(button::secondary)
+                .on_press(Message::ConfirmStep(false)),
+            button(text("Change it")).on_press(Message::ConfirmStep(true)),
+        ]
+        .spacing(8),
+    ]
+    .spacing(14);
+    card(body.into(), tokens, 460.0)
+}
+
 /// "Save changes to X?" when closing a modified document.
 pub fn confirm_close<'a>(name: String, tokens: Tokens) -> Element<'a, crate::Message> {
     use crate::{CloseAnswer, Message};
