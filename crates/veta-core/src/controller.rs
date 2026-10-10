@@ -203,6 +203,14 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
         Command::Filter(filter) => Ok((filter.describe(), Change::PushStep(Step::Filter(filter)))),
         Command::Sort(sort) => Ok((sort.describe(), Change::PushStep(Step::Sort(sort)))),
         Command::Cast(cast) => Ok((cast.describe(), Change::PushStep(Step::Cast(cast)))),
+        Command::Replace(replace) => {
+            Ok((replace.describe(), Change::PushStep(Step::Replace(replace))))
+        }
+        Command::FormatText { columns, op } => {
+            let step = Step::FormatText { columns, op };
+            Ok((step.describe(), Change::PushStep(step)))
+        }
+        Command::Fill(fill) => Ok((fill.describe(), Change::PushStep(Step::Fill(fill)))),
         Command::RemoveStep { index } => {
             let mut after = doc.steps().to_vec();
             if index >= after.len() {
@@ -757,6 +765,72 @@ mod tests {
         execute(&mut doc, Command::Cast(cast)).unwrap();
         assert!(doc.read(0..10).is_err(), "failing values stop reading");
         assert!(doc.save(Some(dir.join("fail.parquet"))).is_err());
+    }
+
+    #[test]
+    fn replace_format_and_fill_commands() {
+        use crate::steps::{Fill, Replace, Status, TextOp};
+        let dir = TempDir::new();
+        let path = dir.join("mixed.parquet");
+        fixtures::mixed_settings(&path);
+        for options in [OpenOptions::default(), OpenOptions::paged()] {
+            let mut doc = Document::open(&path, options).unwrap();
+            execute(
+                &mut doc,
+                Command::Replace(Replace {
+                    column: "name".into(),
+                    find: Some("o".into()),
+                    with: Some("0".into()),
+                    whole_cell: false,
+                }),
+            )
+            .unwrap();
+            assert_eq!(cell(&doc, 1, "name").as_deref(), Some("b0"));
+            execute(
+                &mut doc,
+                Command::FormatText {
+                    columns: vec!["name".into()],
+                    op: TextOp::Upper,
+                },
+            )
+            .unwrap();
+            assert_eq!(cell(&doc, 2, "name").as_deref(), Some("CY"));
+            execute(
+                &mut doc,
+                Command::Fill(Fill {
+                    columns: vec!["name".into(), "score".into()],
+                    up: false,
+                }),
+            )
+            .unwrap();
+            assert_eq!(doc.status(), &Status::Computing { step: 2 });
+            doc.compute_all().unwrap();
+            // Row 7's name and row 11's score were null.
+            assert_eq!(cell(&doc, 7, "name").as_deref(), Some("B0"));
+            assert_eq!(cell(&doc, 11, "score").as_deref(), Some("5.0"));
+            assert_eq!(cell(&doc, 0, "name"), None, "nothing above row 0");
+            execute(
+                &mut doc,
+                Command::Replace(Replace {
+                    column: "score".into(),
+                    find: None,
+                    with: Some("-1".into()),
+                    whole_cell: true,
+                }),
+            )
+            .unwrap();
+            assert_eq!(cell(&doc, 0, "score").as_deref(), Some("-1.0"));
+            assert!(
+                execute(
+                    &mut doc,
+                    Command::FormatText {
+                        columns: vec!["score".into()],
+                        op: TextOp::Trim,
+                    },
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

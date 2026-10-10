@@ -29,6 +29,7 @@ impl Level {
         match step {
             Step::Filter(filter) => filter.validate(&self.schema),
             Step::Sort(sort) => sort.validate(&self.schema),
+            Step::Fill(fill) => fill.validate(&self.schema),
             _ => Ok(()),
         }
     }
@@ -146,7 +147,15 @@ impl Level {
                 cast.output_fields(&self.schema)?,
                 self.num_rows,
             )),
-            Step::Filter(_) | Step::Sort(_) => {
+            Step::Replace(replace) => {
+                replace.validate(&self.schema)?;
+                Ok(self.clone())
+            }
+            Step::FormatText { columns, op } => {
+                op.validate(&self.schema, columns)?;
+                Ok(self.clone())
+            }
+            Step::Filter(_) | Step::Sort(_) | Step::Fill(_) => {
                 Err(invalid("this step must be computed first".into()))
             }
             Step::MoveColumn { name, to } => {

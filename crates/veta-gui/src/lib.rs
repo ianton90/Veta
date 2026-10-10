@@ -23,7 +23,8 @@ use iced::{
     window,
 };
 use veta_core::steps::{
-    Cast, ComputeJob, Computed, Condition, Filter, FilterOp, Sort, SortKey, Status, Step,
+    Cast, ComputeJob, Computed, Condition, Fill, Filter, FilterOp, Replace, Sort, SortKey, Status,
+    Step, TextOp,
 };
 use veta_core::{Command, Document, DocumentId, OpenOptions, Workbook, controller};
 
@@ -32,8 +33,8 @@ use crate::config::Config;
 use crate::config::ModePreference;
 use crate::dialogs::{
     CastDialog, CastMessage, ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage,
-    FilterDialog, FilterMessage, MetadataDialog, MetadataMessage, SortDialog, SortMessage,
-    WriterDialog, WriterMessage,
+    FilterDialog, FilterMessage, FormatDialog, FormatMessage, MetadataDialog, MetadataMessage,
+    ReplaceDialog, ReplaceMessage, SortDialog, SortMessage, WriterDialog, WriterMessage,
 };
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav};
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
@@ -240,6 +241,10 @@ enum MenuItem {
     MoveColumnRight,
     FilterColumn,
     ChangeType,
+    ReplaceValues,
+    FillDown,
+    FillUp,
+    FormatText,
     SortAscending,
     SortDescending,
     /// Keep rows whose value in this column equals the selected cell's.
@@ -275,6 +280,8 @@ fn step_dialog_supported(step: &Step) -> bool {
             | Step::Filter(_)
             | Step::Sort(_)
             | Step::Cast(_)
+            | Step::Replace(_)
+            | Step::FormatText { .. }
     )
 }
 
@@ -304,6 +311,16 @@ enum Dialog {
         document: DocumentId,
         dialog: CastDialog,
         /// Editing the step at this index instead of adding a new one.
+        replace: Option<usize>,
+    },
+    Replace {
+        document: DocumentId,
+        dialog: ReplaceDialog,
+        replace: Option<usize>,
+    },
+    Format {
+        document: DocumentId,
+        dialog: FormatDialog,
         replace: Option<usize>,
     },
     /// Editing the sort step at `index`.
@@ -361,6 +378,8 @@ enum Message {
     Filter(FilterMessage),
     Sort(SortMessage),
     Cast(CastMessage),
+    Replace(ReplaceMessage),
+    Format(FormatMessage),
     /// Progress (0–1) of the background pass with this key.
     ComputeProgress(DocumentId, Vec<u64>, f32),
     /// The background pass with this key finished.
@@ -683,6 +702,11 @@ impl App {
                     MenuItem::RemoveColumns => self.remove_columns(id),
                     MenuItem::FilterColumn => self.open_filter_dialog(id),
                     MenuItem::ChangeType => self.open_cast_dialog(id, None),
+                    MenuItem::ReplaceValues => return self.open_replace_dialog(id, None),
+                    MenuItem::FillDown | MenuItem::FillUp => {
+                        self.fill_selected(id, item == MenuItem::FillUp);
+                    }
+                    MenuItem::FormatText => self.open_format_dialog(id),
                     MenuItem::SortAscending | MenuItem::SortDescending => {
                         self.sort_selected(id, item == MenuItem::SortDescending);
                     }
@@ -804,6 +828,64 @@ impl App {
                             if self.execute(id, Command::Cast(cast)) {
                                 self.dialog = None;
                             }
+                        }
+                        (None, _) if cancel => self.dialog = None,
+                        (None, _) => {}
+                    }
+                }
+            }
+            Message::Replace(message) => {
+                if let Some(Dialog::Replace {
+                    document,
+                    dialog,
+                    replace,
+                }) = &mut self.dialog
+                {
+                    let (id, replace) = (*document, *replace);
+                    let cancel = matches!(message, ReplaceMessage::Cancel);
+                    match (dialog.update(message), replace) {
+                        (Some(r), Some(index)) => {
+                            self.dialog = None;
+                            let step = Step::Replace(r);
+                            self.change_steps(id, index, Command::ReplaceStep { index, step });
+                        }
+                        (Some(r), None) => {
+                            let result = self
+                                .workbook
+                                .get_mut(id)
+                                .map(|doc| controller::execute(doc, Command::Replace(r)));
+                            match result {
+                                Some(Ok(())) => {
+                                    self.dialog = None;
+                                    self.refresh(id);
+                                }
+                                Some(Err(e)) => dialog.set_error(e.to_string()),
+                                None => {}
+                            }
+                        }
+                        (None, _) if cancel => self.dialog = None,
+                        (None, _) => {}
+                    }
+                }
+            }
+            Message::Format(message) => {
+                if let Some(Dialog::Format {
+                    document,
+                    dialog,
+                    replace,
+                }) = &mut self.dialog
+                {
+                    let (id, replace) = (*document, *replace);
+                    let cancel = matches!(message, FormatMessage::Cancel);
+                    match (dialog.update(message), replace) {
+                        (Some((columns, op)), Some(index)) => {
+                            self.dialog = None;
+                            let step = Step::FormatText { columns, op };
+                            self.change_steps(id, index, Command::ReplaceStep { index, step });
+                        }
+                        (Some((columns, op)), None) => {
+                            self.dialog = None;
+                            self.execute(id, Command::FormatText { columns, op });
                         }
                         (None, _) if cancel => self.dialog = None,
                         (None, _) => {}
@@ -1003,6 +1085,9 @@ impl App {
                 | Action::SortAscending
                 | Action::SortDescending
                 | Action::DataType
+                | Action::ReplaceValues
+                | Action::FillDown
+                | Action::FormatText
         );
         if changes_data
             && let Some(id) = self.active
@@ -1067,6 +1152,21 @@ impl App {
             Action::KeepRows => {
                 if let Some(id) = self.active {
                     self.open_filter_dialog(id);
+                }
+            }
+            Action::ReplaceValues => {
+                if let Some(id) = self.active {
+                    return self.open_replace_dialog(id, None);
+                }
+            }
+            Action::FillDown => {
+                if let Some(id) = self.active {
+                    self.fill_selected(id, false);
+                }
+            }
+            Action::FormatText => {
+                if let Some(id) = self.active {
+                    self.open_format_dialog(id);
                 }
             }
             Action::DataType => {
@@ -1236,6 +1336,16 @@ impl App {
             } => ColumnDialog::add(*at).with_name(name).with_type(data_type),
             Step::Cast(cast) => {
                 self.open_cast_dialog(id, Some((index, cast.clone())));
+                return Task::none();
+            }
+            Step::Replace(r) => return self.open_replace_dialog(id, Some((index, r.clone()))),
+            Step::FormatText { columns, op } => {
+                self.edit = None;
+                self.dialog = Some(Dialog::Format {
+                    document: id,
+                    dialog: FormatDialog::new(columns.clone(), *op),
+                    replace: Some(index),
+                });
                 return Task::none();
             }
             Step::Filter(_) | Step::Sort(_) => {
@@ -1469,6 +1579,79 @@ impl App {
             dialog: FilterDialog::new(columns, selected),
             replace: None,
         });
+    }
+
+    /// Names of the selected columns, or of the selected cell's column.
+    fn selected_column_names(&self, id: DocumentId) -> Vec<String> {
+        let range = self.selected_columns(id).or_else(|| {
+            let (_, c) = self.tabs.iter().find(|t| t.id == id)?.grid.selected()?;
+            Some(c..c + 1)
+        });
+        range.map_or_else(Vec::new, |r| self.column_names(id, r))
+    }
+
+    /// Opens the replace values dialog on the selected column, or on the
+    /// replace step at `index`.
+    fn open_replace_dialog(
+        &mut self,
+        id: DocumentId,
+        step: Option<(usize, Replace)>,
+    ) -> Task<Message> {
+        let column = match &step {
+            Some((_, r)) => Some(r.column.clone()),
+            None => self.selected_column_names(id).into_iter().next(),
+        };
+        let Some(column) = column else {
+            self.errors
+                .push("Select a column to replace values in.".into());
+            return Task::none();
+        };
+        let level = step.as_ref().map(|(i, _)| *i);
+        let text_column = self
+            .workbook
+            .get(id)
+            .and_then(|d| match level {
+                Some(i) => d.schema_at(i),
+                None => Some(d.schema()),
+            })
+            .and_then(|s| {
+                let field = s.field_with_name(&column).ok()?;
+                Some(veta_core::values::is_text(field.data_type()))
+            })
+            .unwrap_or(true);
+        self.edit = None;
+        self.dialog = Some(Dialog::Replace {
+            document: id,
+            dialog: ReplaceDialog::new(column, text_column, step.as_ref().map(|(_, r)| r)),
+            replace: level,
+        });
+        iced::widget::operation::focus(dialogs::NAME_ID)
+    }
+
+    /// Opens the format text dialog on the selected columns.
+    fn open_format_dialog(&mut self, id: DocumentId) {
+        let columns = self.selected_column_names(id);
+        if columns.is_empty() {
+            self.errors
+                .push("Select the text columns to format.".into());
+            return;
+        }
+        self.edit = None;
+        self.dialog = Some(Dialog::Format {
+            document: id,
+            dialog: FormatDialog::new(columns, TextOp::Trim),
+            replace: None,
+        });
+    }
+
+    /// Fills nulls in the selected columns.
+    fn fill_selected(&mut self, id: DocumentId, up: bool) {
+        let columns = self.selected_column_names(id);
+        if columns.is_empty() {
+            self.errors.push("Select the columns to fill.".into());
+            return;
+        }
+        self.execute(id, Command::Fill(Fill { columns, up }));
     }
 
     /// Opens the change type dialog on the selected column, or on the cast
@@ -1969,6 +2152,8 @@ impl App {
             Dialog::Filter { dialog, .. } => dialog.view(ui.tokens).map(Message::Filter),
             Dialog::Sort { dialog, .. } => dialog.view(ui.tokens).map(Message::Sort),
             Dialog::Cast { dialog, .. } => dialog.view(ui.tokens).map(Message::Cast),
+            Dialog::Replace { dialog, .. } => dialog.view(ui.tokens).map(Message::Replace),
+            Dialog::Format { dialog, .. } => dialog.view(ui.tokens).map(Message::Format),
             Dialog::ConfirmStep { .. } => settings::confirm_step(ui.tokens),
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
             Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
@@ -2684,6 +2869,60 @@ mod tests {
         let _ = app.update(Message::Cast(CastMessage::Apply));
         assert_eq!(app.workbook.get(id).unwrap().steps().len(), 1);
         assert_eq!(schema(&app).field(2).name(), "score");
+    }
+
+    #[test]
+    fn replace_fill_and_format() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let cell = |app: &App, row: usize, column: usize| {
+            let doc = app.workbook.get(id).unwrap();
+            veta_core::display::format_batch(&doc.read(row..row + 1).unwrap()).unwrap()[0][column]
+                .clone()
+        };
+        let select_column = |app: &mut App, column: usize| {
+            let _ = app.update(Message::Grid(
+                id,
+                GridEvent::SelectColumns {
+                    column,
+                    extend: false,
+                },
+            ));
+        };
+
+        // Replace in score: an invalid number keeps the dialog open.
+        select_column(&mut app, 2);
+        let _ = app.update(Message::Action(Action::ReplaceValues));
+        let _ = app.update(Message::Replace(ReplaceMessage::Find("x".into())));
+        let _ = app.update(Message::Replace(ReplaceMessage::With("1".into())));
+        let _ = app.update(Message::Replace(ReplaceMessage::Apply));
+        assert!(matches!(app.dialog, Some(Dialog::Replace { .. })));
+        let _ = app.update(Message::Replace(ReplaceMessage::FindNull(true)));
+        let _ = app.update(Message::Replace(ReplaceMessage::Apply));
+        assert!(app.dialog.is_none());
+        assert_eq!(cell(&app, 0, 2).as_deref(), Some("1.0"));
+
+        // Fill down names; uppercase them.
+        select_column(&mut app, 1);
+        let _ = app.update(Message::Action(Action::FillDown));
+        finish_compute(&mut app, id);
+        assert_eq!(cell(&app, 7, 1).as_deref(), Some("bo"));
+        let _ = app.update(Message::Action(Action::FormatText));
+        let _ = app.update(Message::Format(FormatMessage::Op(TextOp::Upper)));
+        let _ = app.update(Message::Format(FormatMessage::Apply));
+        assert_eq!(cell(&app, 7, 1).as_deref(), Some("BO"));
+
+        // Edit the replace step: later steps aren't positional, no warning.
+        let _ = app.update(Message::EditStep(0));
+        let _ = app.update(Message::Replace(ReplaceMessage::With("2".into())));
+        let _ = app.update(Message::Replace(ReplaceMessage::Apply));
+        assert!(app.dialog.is_none());
+        finish_compute(&mut app, id);
+        assert_eq!(cell(&app, 0, 2).as_deref(), Some("2.0"));
+        assert_eq!(app.workbook.get(id).unwrap().steps().len(), 3);
     }
 
     #[test]

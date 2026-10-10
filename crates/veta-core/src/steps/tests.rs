@@ -1,3 +1,4 @@
+use super::fill::Fill;
 use super::filter::{Condition, Filter, FilterOp};
 use super::rows::kept_ranges;
 use super::*;
@@ -389,4 +390,45 @@ fn a_failed_pass_breaks_its_step() {
     // Re-evaluating (e.g. after undo/redo) retries it.
     p.set_steps(p.steps().to_vec(), 0);
     assert_eq!(p.status(), &Status::Computing { step: 0 });
+}
+
+#[test]
+fn fill_carries_values_across_batches() {
+    let n = 200_000usize;
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(Int64Array::from_iter(
+            (0..n).map(|i| (i % 70_000 == 5).then_some(i as i64)),
+        ))],
+    )
+    .unwrap();
+    let source: Arc<dyn DataSource> = Arc::new(MemorySource::new(schema, vec![batch]).unwrap());
+    for up in [false, true] {
+        let mut p = Pipeline::new(source.clone());
+        p.push(Step::Fill(Fill {
+            columns: vec!["id".into()],
+            up,
+        }))
+        .unwrap();
+        assert_eq!(p.status(), &Status::Computing { step: 0 });
+        p.compute_all(&mut |_| true).unwrap();
+        let expect = |r: usize| -> Option<i64> {
+            let anchors = [5usize, 70_005, 140_005];
+            if up {
+                anchors.iter().find(|&&a| a >= r).map(|&a| a as i64)
+            } else {
+                anchors.iter().rev().find(|&&a| a <= r).map(|&a| a as i64)
+            }
+        };
+        for r in [
+            0, 4, 5, 6, 65_535, 65_536, 70_004, 70_005, 131_072, 140_006, 199_999,
+        ] {
+            assert_eq!(
+                ids(&p.read(r..r + 1).unwrap()),
+                [expect(r)],
+                "row {r}, up {up}"
+            );
+        }
+    }
 }

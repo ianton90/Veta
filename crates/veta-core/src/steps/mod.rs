@@ -12,11 +12,13 @@ mod cast;
 mod checkpoint;
 mod compute;
 mod edits;
+mod fill;
 mod filter;
 mod level;
 mod pipeline;
 mod rows;
 mod sort;
+mod text;
 
 use std::ops::Range;
 
@@ -28,10 +30,12 @@ use crate::error::Error;
 pub use cast::{Cast, CastOptions, CastPreview, FORMAT_CODES, OnError};
 pub use compute::{ComputeJob, Computed};
 pub use edits::CellEdits;
+pub use fill::Fill;
 pub use filter::{Condition, Filter, FilterOp};
 pub use pipeline::{Pipeline, Status};
 pub use rows::normalize_ranges;
 pub use sort::{Sort, SortKey};
+pub use text::{Replace, TextOp};
 
 /// One transformation of the data.
 #[derive(Debug, Clone, PartialEq)]
@@ -70,13 +74,21 @@ pub enum Step {
     Sort(Sort),
     /// Changes a column's type.
     Cast(Cast),
+    Replace(Replace),
+    /// Trims or changes the case of text columns.
+    FormatText {
+        columns: Vec<String>,
+        op: TextOp,
+    },
+    /// Fills nulls from neighbouring rows.
+    Fill(Fill),
 }
 
 impl Step {
     /// Whether evaluating the step needs a full pass over its input (done in
     /// the background, then cached).
     pub fn needs_full_pass(&self) -> bool {
-        matches!(self, Step::Filter(_) | Step::Sort(_))
+        matches!(self, Step::Filter(_) | Step::Sort(_) | Step::Fill(_))
     }
 
     /// Whether the step refers to rows by position, so changing an earlier
@@ -118,6 +130,12 @@ impl Step {
             Step::Filter(filter) => filter.describe(),
             Step::Sort(sort) => sort.describe(),
             Step::Cast(cast) => cast.describe(),
+            Step::Replace(replace) => replace.describe(),
+            Step::FormatText { columns, op } => match columns.as_slice() {
+                [one] => format!("{} {one}", op.verb()),
+                _ => format!("{} {} columns", op.verb(), columns.len()),
+            },
+            Step::Fill(fill) => fill.describe(),
         }
     }
 }

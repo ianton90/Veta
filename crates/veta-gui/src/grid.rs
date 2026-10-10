@@ -1099,7 +1099,16 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                         MenuTarget::Rows
                     })
                 } else if regions.header.contains(position) {
-                    self.column_at(&regions, position.x).map(MenuTarget::Column)
+                    self.column_at(&regions, position.x).map(|column| {
+                        let selected = view.selected_columns().is_some_and(|c| c.contains(&column));
+                        if !selected {
+                            shell.publish((self.on_event)(GridEvent::SelectColumns {
+                                column,
+                                extend: false,
+                            }));
+                        }
+                        MenuTarget::Column(column)
+                    })
                 } else {
                     None
                 };

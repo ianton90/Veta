@@ -5,6 +5,11 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use arrow::array::ArrayRef;
+use arrow::record_batch::RecordBatch;
+
+use super::checkpoint::{Checkpoint, TempFile, write_parquet};
+use super::fill::{Fill, carry_out, fill};
 use super::sort::{sort_external, sort_in_memory};
 use super::{Pipeline, Step, invalid};
 use crate::error::{Error, Result};
@@ -151,6 +156,7 @@ impl ComputeJob {
                 };
                 Cache::Data(source)
             }
+            Step::Fill(f) => Cache::Data(self.fill(f, input_rows, progress)?),
             other => {
                 return Err(invalid(format!(
                     "{} doesn't need computing",
@@ -163,6 +169,91 @@ impl ComputeJob {
             ids: self.ids,
             cache: Arc::new(cache),
         })
+    }
+}
+
+impl ComputeJob {
+    /// Fills nulls batch by batch, carrying the last value across batches.
+    /// Filling up first finds, from the end, the value carried into each
+    /// batch.
+    fn fill(
+        &self,
+        f: &Fill,
+        input_rows: usize,
+        progress: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<Arc<dyn DataSource>> {
+        let schema = self
+            .pipeline
+            .schema_at(self.step)
+            .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+        let indices = f
+            .columns
+            .iter()
+            .map(|c| schema.index_of(c))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let batches: Vec<Range<usize>> = (0..input_rows)
+            .step_by(PASS_ROWS)
+            .map(|start| start..(start + PASS_ROWS).min(input_rows))
+            .collect();
+        let read = |range: &Range<usize>| self.pipeline.read_at(self.step, range.clone());
+
+        // Values carried into each batch, per filled column (filling up).
+        let mut carried_up: Vec<Vec<Option<ArrayRef>>> = Vec::new();
+        let first_share = if f.up { 0.5 } else { 0.0 };
+        if f.up {
+            let mut carry: Vec<Option<ArrayRef>> = vec![None; indices.len()];
+            carried_up = vec![Vec::new(); batches.len()];
+            for (done, (b, range)) in batches.iter().enumerate().rev().enumerate() {
+                carried_up[b] = carry.clone();
+                let batch = read(range)?;
+                for (k, &i) in indices.iter().enumerate() {
+                    carry[k] = carry_out(batch.column(i), carry[k].take(), true);
+                }
+                if !progress(first_share * (done + 1) as f32 / batches.len() as f32) {
+                    return Err(Error::Cancelled);
+                }
+            }
+        }
+
+        let mut carry: Vec<Option<ArrayRef>> = vec![None; indices.len()];
+        let mut next = 0;
+        let mut produce = || -> Option<Result<RecordBatch>> {
+            let range = batches.get(next)?;
+            let b = next;
+            next += 1;
+            let result = (|| {
+                let batch = read(range)?;
+                let mut columns = batch.columns().to_vec();
+                for (k, &i) in indices.iter().enumerate() {
+                    let incoming = if f.up {
+                        carried_up[b][k].clone()
+                    } else {
+                        carry[k].clone()
+                    };
+                    columns[i] = fill(&columns[i], incoming.as_ref(), f.up)?;
+                    if !f.up {
+                        carry[k] = carry_out(batch.column(i), carry[k].take(), false);
+                    }
+                }
+                let fraction = (b + 1) as f32 / batches.len() as f32;
+                if !progress(first_share + (1.0 - first_share) * fraction) {
+                    return Err(Error::Cancelled);
+                }
+                Ok(RecordBatch::try_new(schema.clone(), columns)?)
+            })();
+            Some(result)
+        };
+        match self.pipeline.source().mode() {
+            SourceMode::InMemory => {
+                let batches = std::iter::from_fn(produce).collect::<Result<Vec<_>>>()?;
+                Ok(Arc::new(MemorySource::new(schema, batches)?))
+            }
+            SourceMode::Paged => {
+                let file = TempFile::new()?;
+                write_parquet(&file, &schema, std::iter::from_fn(&mut produce))?;
+                Ok(Arc::new(Checkpoint::open(file, schema)?))
+            }
+        }
     }
 }
 

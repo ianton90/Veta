@@ -634,6 +634,20 @@ pub fn context_menu<'a>(
             Some((Icon::Filter, "Filter…".into(), "", MenuItem::FilterColumn)),
             Some((Icon::Type, "Change type…".into(), "", MenuItem::ChangeType)),
             Some((
+                Icon::Replace,
+                "Replace values…".into(),
+                "",
+                MenuItem::ReplaceValues,
+            )),
+            Some((Icon::FillDown, "Fill down".into(), "", MenuItem::FillDown)),
+            Some((Icon::FillDown, "Fill up".into(), "", MenuItem::FillUp)),
+            Some((
+                Icon::CaseUpper,
+                "Format text…".into(),
+                "",
+                MenuItem::FormatText,
+            )),
+            Some((
                 Icon::SortAsc,
                 "Sort ascending".into(),
                 "",

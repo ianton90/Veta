@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
+use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 
 use crate::error::Result;
@@ -89,4 +90,21 @@ impl DataSource for Checkpoint {
             batch.columns().to_vec(),
         )?)
     }
+}
+
+/// Writes `batches` (with the columns of `schema`) to `file`.
+pub(super) fn write_parquet(
+    file: &TempFile,
+    schema: &SchemaRef,
+    batches: impl Iterator<Item = Result<RecordBatch>>,
+) -> Result<()> {
+    let mut writer = ArrowWriter::try_new(File::create(file.path())?, schema.clone(), None)?;
+    for batch in batches {
+        let batch = batch?;
+        // Concatenated batches may carry different schema metadata.
+        let batch = RecordBatch::try_new(schema.clone(), batch.columns().to_vec())?;
+        writer.write(&batch)?;
+    }
+    writer.close()?;
+    Ok(())
 }

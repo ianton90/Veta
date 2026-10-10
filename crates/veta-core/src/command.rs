@@ -8,7 +8,7 @@ use std::ops::Range;
 use arrow::datatypes::DataType;
 
 use crate::model::{KeyValue, WriterSettings};
-use crate::steps::{Cast, Filter, Sort, Step};
+use crate::steps::{Cast, Fill, Filter, Replace, Sort, Step, TextOp};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -66,6 +66,14 @@ pub enum Command {
     Sort(Sort),
     /// Changes a column's type.
     Cast(Cast),
+    Replace(Replace),
+    /// Trims or changes the case of text columns.
+    FormatText {
+        columns: Vec<String>,
+        op: TextOp,
+    },
+    /// Fills nulls from the row above (or below).
+    Fill(Fill),
     /// Removes the step at `index`. Later steps may become broken.
     RemoveStep {
         index: usize,

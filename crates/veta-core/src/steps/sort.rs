@@ -15,10 +15,9 @@ use arrow::compute::{SortOptions, concat_batches, take_record_batch};
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use arrow::row::{OwnedRow, RowConverter, Rows, SortField};
-use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 
-use super::checkpoint::{Checkpoint, TempFile};
+use super::checkpoint::{Checkpoint, TempFile, write_parquet};
 use super::invalid;
 use crate::error::{Error, Result};
 
@@ -240,22 +239,6 @@ fn read_all(
         }
     }
     Ok(concat_batches(schema, &batches)?)
-}
-
-fn write_parquet(
-    file: &TempFile,
-    schema: &SchemaRef,
-    batches: impl Iterator<Item = Result<RecordBatch>>,
-) -> Result<()> {
-    let mut writer = ArrowWriter::try_new(File::create(file.path())?, schema.clone(), None)?;
-    for batch in batches {
-        let batch = batch?;
-        // Concatenated batches may carry different schema metadata.
-        let batch = RecordBatch::try_new(schema.clone(), batch.columns().to_vec())?;
-        writer.write(&batch)?;
-    }
-    writer.close()?;
-    Ok(())
 }
 
 /// A k-way merge of sorted runs, yielding sorted batches.

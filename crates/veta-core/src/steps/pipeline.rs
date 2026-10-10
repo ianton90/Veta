@@ -10,6 +10,7 @@ use super::compute::{Cache, ComputeJob, Computed};
 use super::edits::CellEdits;
 use super::level::Level;
 use super::rows::kept_ranges;
+use super::text::map_columns;
 use super::{Step, invalid};
 use crate::error::Result;
 use crate::source::DataSource;
@@ -351,7 +352,18 @@ impl Pipeline {
             }
             // Full-pass steps are read through their cache above.
             Step::Cast(cast) => cast.apply(&self.read_level(previous, range)?, &schema),
-            Step::Filter(_) | Step::Sort(_) => {
+            Step::Replace(replace) => map_columns(
+                &self.read_level(previous, range)?,
+                &schema,
+                std::slice::from_ref(&replace.column),
+                |c| replace.apply(c),
+            ),
+            Step::FormatText { columns, op } => {
+                map_columns(&self.read_level(previous, range)?, &schema, columns, |c| {
+                    op.apply(c)
+                })
+            }
+            Step::Filter(_) | Step::Sort(_) | Step::Fill(_) => {
                 Err(invalid("this step must be computed first".into()))
             }
             Step::RemoveColumns { .. } | Step::RenameColumn { .. } | Step::MoveColumn { .. } => {
