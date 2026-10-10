@@ -146,6 +146,33 @@ pub fn edit(
     Ok(())
 }
 
+/// Applies a recipe's steps to `file` and saves the result.
+pub fn apply(
+    recipe: &Path,
+    file: &Path,
+    output: &Output,
+    out: &mut impl Write,
+) -> Result<(), Error> {
+    let text = std::fs::read_to_string(recipe)?;
+    let mut doc = crate::open(file)?;
+    let steps = veta_core::recipe::from_toml(&text, &doc.schema())?;
+    let count = steps.len();
+    if count > 0 {
+        controller::execute(&mut doc, Command::AppendSteps { steps })?;
+    }
+    if let veta_core::steps::Status::Broken { step, error } = doc.status() {
+        return Err(Error::Usage(format!(
+            "step {} ({}) doesn't apply: {error}",
+            step + 1,
+            doc.steps()[*step].describe()
+        )));
+    }
+    doc.save(output.output.clone())?;
+    let target = output.output.as_deref().unwrap_or(file);
+    writeln!(out, "Applied {count} steps; saved {}", target.display())?;
+    Ok(())
+}
+
 /// Converts a 1-based row number to an index.
 pub fn row_index(row: usize) -> Result<usize, Error> {
     row.checked_sub(1)

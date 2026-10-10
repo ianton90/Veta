@@ -78,6 +78,11 @@ pub enum Command {
     Merge(Merge),
     /// Adds a column computed from an expression.
     CustomColumn(CustomColumn),
+    /// Appends steps (e.g. from a recipe) as one change. Steps that don't
+    /// apply are kept and shown as broken.
+    AppendSteps {
+        steps: Vec<Step>,
+    },
     /// Removes the step at `index`. Later steps may become broken.
     RemoveStep {
         index: usize,

@@ -122,6 +122,14 @@ pub enum Command {
     },
     /// Show writer settings, or change them with the options below.
     WriterSettings(edit::WriterArgs),
+    /// Apply a recipe (steps saved from the desktop app) to a file.
+    Apply {
+        /// Recipe file (.toml).
+        recipe: PathBuf,
+        file: PathBuf,
+        #[command(flatten)]
+        output: edit::Output,
+    },
 }
 
 /// What the `veta` binary should do for the given arguments.
@@ -304,6 +312,11 @@ fn execute(command: Command, out: &mut impl Write) -> Result<(), Error> {
         }
         Command::Meta { command } => edit::meta(command, out),
         Command::WriterSettings(args) => edit::writer_settings(args, out),
+        Command::Apply {
+            recipe,
+            file,
+            output,
+        } => edit::apply(&recipe, &file, &output, out),
     }
 }
 
@@ -563,6 +576,64 @@ mod tests {
         let mut out = Vec::new();
         execute(command, &mut out).map_err(|e| e.to_string())?;
         Ok(String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn apply_runs_a_recipe() {
+        let dir = TempDir::new();
+        let file = dir.join("mixed.parquet");
+        fixtures::mixed_settings(&file);
+        let recipe = dir.join("r.toml");
+        std::fs::write(
+            &recipe,
+            r#"
+version = 1
+
+[[steps]]
+kind = "filter"
+match_all = true
+conditions = [{ column = "name", op = "equals", value = "ana" }]
+
+[[steps]]
+kind = "sort"
+keys = [{ column = "id", descending = true }]
+
+[[steps]]
+kind = "custom_column"
+name = "twice"
+expression = "id * 2"
+at = 1
+"#,
+        )
+        .unwrap();
+        let out = dir.join("out.parquet");
+        let message = run_args(&[
+            "veta",
+            "apply",
+            recipe.to_str().unwrap(),
+            file.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .unwrap();
+        assert!(message.starts_with("Applied 3 steps"), "{message}");
+        let head = run_args(&["veta", "head", out.to_str().unwrap(), "-n", "1"]).unwrap();
+        assert!(head.contains("995") && head.contains("1990"), "{head}");
+
+        // A step that doesn't apply stops before saving.
+        std::fs::write(
+            &recipe,
+            "version = 1\n[[steps]]\nkind = \"remove_columns\"\nnames = [\"nope\"]\n",
+        )
+        .unwrap();
+        let err = run_args(&[
+            "veta",
+            "apply",
+            recipe.to_str().unwrap(),
+            file.to_str().unwrap(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("step 1"), "{err}");
     }
 
     #[test]

@@ -10,6 +10,8 @@ repository.workspace = true
 [dependencies]
 arrow.workspace = true
 parquet.workspace = true
+serde.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 veta-testkit.workspace = true

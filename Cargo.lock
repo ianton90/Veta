@@ -3851,6 +3851,8 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "parquet",
+ "serde",
+ "toml",
  "veta-testkit",
 ]
 

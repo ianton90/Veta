@@ -419,6 +419,12 @@ enum Message {
     MoveStep(usize, usize),
     EditStep(usize),
     ConfirmStep(bool),
+    /// Save the active document's steps as a recipe.
+    SaveRecipe,
+    SaveRecipeTo(DocumentId, Option<PathBuf>),
+    /// Append a recipe's steps to the active document.
+    LoadRecipe,
+    LoadRecipeFrom(DocumentId, Option<PathBuf>),
     Choose(ChooseMessage),
     Writer(WriterMessage),
     Metadata(MetadataMessage),
@@ -1070,6 +1076,62 @@ impl App {
                     return self.edit_step(id, index);
                 }
             }
+            Message::SaveRecipe => {
+                if let Some(id) = self.active {
+                    let name = self
+                        .workbook
+                        .get(id)
+                        .map(|d| {
+                            let title = d.title();
+                            let stem = title.rsplit_once('.').map_or(title.as_str(), |(s, _)| s);
+                            format!("{stem}.recipe.toml")
+                        })
+                        .unwrap_or_default();
+                    return Task::perform(pick_recipe(Some(name)), move |path| {
+                        Message::SaveRecipeTo(id, path)
+                    });
+                }
+            }
+            Message::SaveRecipeTo(id, Some(path)) => {
+                if let Some(doc) = self.workbook.get(id) {
+                    let result = veta_core::recipe::to_toml(doc.steps())
+                        .map_err(|e| e.to_string())
+                        .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
+                    if let Err(e) = result {
+                        self.errors.push(format!("Could not save the recipe: {e}"));
+                    }
+                }
+            }
+            Message::LoadRecipe => {
+                if let Some(id) = self.active {
+                    if !self.editable(id) {
+                        self.not_editable(id);
+                        return Task::none();
+                    }
+                    return Task::perform(pick_recipe(None), move |path| {
+                        Message::LoadRecipeFrom(id, path)
+                    });
+                }
+            }
+            Message::LoadRecipeFrom(id, Some(path)) => {
+                let steps = std::fs::read_to_string(&path)
+                    .map_err(|e| e.to_string())
+                    .and_then(|text| {
+                        let schema = self.workbook.get(id).map(Document::schema);
+                        let schema = schema.ok_or_else(|| "the document is closed".to_owned())?;
+                        veta_core::recipe::from_toml(&text, &schema).map_err(|e| e.to_string())
+                    });
+                match steps {
+                    Ok(steps) if steps.is_empty() => {
+                        self.errors.push("The recipe has no steps.".into());
+                    }
+                    Ok(steps) => {
+                        self.execute(id, Command::AppendSteps { steps });
+                    }
+                    Err(e) => self.errors.push(format!("Could not load the recipe: {e}")),
+                }
+            }
+            Message::SaveRecipeTo(_, None) | Message::LoadRecipeFrom(_, None) => {}
             Message::ConfirmStep(yes) => {
                 if let Some(Dialog::ConfirmStep { document, command }) = self.dialog.take()
                     && yes
@@ -2517,6 +2579,23 @@ async fn pick_save_path(name: String, dir: Option<PathBuf>) -> Option<PathBuf> {
     Some(path)
 }
 
+/// Asks where to save a recipe (with a suggested `name`), or which recipe
+/// to open when `name` is `None`.
+async fn pick_recipe(name: Option<String>) -> Option<PathBuf> {
+    let dialog = rfd::AsyncFileDialog::new().add_filter("Recipe", &["toml"]);
+    let handle = match name {
+        Some(name) => {
+            dialog
+                .set_title("Save recipe")
+                .set_file_name(name)
+                .save_file()
+                .await?
+        }
+        None => dialog.set_title("Load recipe").pick_file().await?,
+    };
+    Some(handle.path().to_path_buf())
+}
+
 async fn pick_files() -> Option<Vec<PathBuf>> {
     let handles = rfd::AsyncFileDialog::new()
         .set_title("Open Parquet files")
@@ -3356,6 +3435,39 @@ mod tests {
         )));
         let _ = app.update(Message::Custom(CustomMessage::Apply));
         assert_eq!(schema(&app).field(3 + 2).data_type(), &DataType::Utf8);
+    }
+
+    #[test]
+    fn save_and_load_recipe() {
+        let dir = TempDir::new();
+        let a = dir.join("a.parquet");
+        let b = dir.join("b.parquet");
+        fixtures::mixed_settings(&a);
+        fixtures::mixed_settings(&b);
+        let mut app = app_with(&[&a, &b]);
+        let (ida, idb) = (app.tabs[0].id, app.tabs[1].id);
+
+        let _ = app.update(Message::SelectTab(ida));
+        let _ = app.update(Message::Grid(ida, GridEvent::Select { row: 0, column: 0 }));
+        let _ = app.update(Message::Action(Action::SortDescending));
+        finish_compute(&mut app, ida);
+        let _ = app.update(Message::Action(Action::IndexColumn));
+        let recipe = dir.join("r.toml");
+        let _ = app.update(Message::SaveRecipeTo(ida, Some(recipe.clone())));
+        assert!(app.errors.is_empty(), "{:?}", app.errors);
+
+        let _ = app.update(Message::SelectTab(idb));
+        let _ = app.update(Message::LoadRecipeFrom(idb, Some(recipe)));
+        assert_eq!(app.workbook.get(idb).unwrap().steps().len(), 2);
+        finish_compute(&mut app, idb);
+        let first = |app: &App, id| {
+            let doc = app.workbook.get(id).unwrap();
+            veta_core::display::format_batch(&doc.read(0..1).unwrap()).unwrap()
+        };
+        assert_eq!(first(&app, ida), first(&app, idb));
+
+        let _ = app.update(Message::LoadRecipeFrom(idb, Some(dir.join("missing.toml"))));
+        assert_eq!(app.errors.len(), 1);
     }
 
     #[test]

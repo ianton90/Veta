@@ -8,6 +8,7 @@ pub mod error;
 pub mod history;
 pub mod io;
 pub mod model;
+pub mod recipe;
 pub mod source;
 pub mod steps;
 pub mod values;

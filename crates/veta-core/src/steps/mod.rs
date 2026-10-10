@@ -150,6 +150,23 @@ impl Step {
     }
 }
 
+/// The schema after `step`, given its input schema (without reading data).
+pub fn schema_after(
+    schema: &arrow::datatypes::SchemaRef,
+    step: &Step,
+) -> crate::error::Result<arrow::datatypes::SchemaRef> {
+    // Row counts are unknown here; a large one lets row checks pass.
+    let level = level::Level {
+        schema: schema.clone(),
+        num_rows: usize::MAX / 4,
+    };
+    if step.needs_full_pass() {
+        level.check(step)?;
+        return Ok(schema.clone());
+    }
+    Ok(level.next(step)?.schema)
+}
+
 fn invalid(message: String) -> Error {
     Error::InvalidCommand(message)
 }

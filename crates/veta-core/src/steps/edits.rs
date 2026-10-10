@@ -38,6 +38,14 @@ impl CellEdits {
         value
     }
 
+    /// Every edit as (column, row, value), by column then row.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, usize, &ArrayRef)> {
+        self.columns.iter().flat_map(|(column, rows)| {
+            rows.iter()
+                .map(move |(row, value)| (column.as_str(), *row, value))
+        })
+    }
+
     /// Number of edited cells.
     pub fn len(&self) -> usize {
         self.columns.values().map(BTreeMap::len).sum()

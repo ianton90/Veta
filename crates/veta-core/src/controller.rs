@@ -249,6 +249,27 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
                 },
             ))
         }
+        Command::AppendSteps { steps } => {
+            if steps.is_empty() {
+                return Err(invalid("there are no steps to add".into()));
+            }
+            let before = doc.steps().to_vec();
+            let keep = before.len();
+            let mut after = before.clone();
+            let label = match steps.as_slice() {
+                [one] => one.describe(),
+                many => format!("Add {} steps", many.len()),
+            };
+            after.extend(steps);
+            Ok((
+                label,
+                Change::Steps {
+                    before,
+                    after,
+                    keep,
+                },
+            ))
+        }
         Command::ReplaceStep { index, step } => {
             let mut after = doc.steps().to_vec();
             let Some(slot) = after.get_mut(index) else {
@@ -873,6 +894,53 @@ mod tests {
         doc.save(Some(out.clone())).unwrap();
         let saved = Document::open(&out, OpenOptions::default()).unwrap();
         assert_eq!(saved.num_columns(), 6);
+    }
+
+    #[test]
+    fn recipe_round_trip_onto_another_document() {
+        use crate::steps::{Sort, SortKey};
+        let dir = TempDir::new();
+        let mut doc = mixed(&dir);
+        execute(
+            &mut doc,
+            Command::RenameColumn {
+                from: "name".into(),
+                to: "label".into(),
+            },
+        )
+        .unwrap();
+        execute(
+            &mut doc,
+            Command::SetCell {
+                row: 0,
+                column: "score".into(),
+                value: Some("0.1".into()),
+            },
+        )
+        .unwrap();
+        execute(
+            &mut doc,
+            Command::Sort(Sort {
+                keys: vec![SortKey {
+                    column: "score".into(),
+                    descending: true,
+                }],
+            }),
+        )
+        .unwrap();
+        doc.compute_all().unwrap();
+        let text = crate::recipe::to_toml(doc.steps()).unwrap();
+
+        let mut other = mixed(&dir);
+        let steps = crate::recipe::from_toml(&text, &other.schema()).unwrap();
+        execute(&mut other, Command::AppendSteps { steps }).unwrap();
+        other.compute_all().unwrap();
+        let all = |d: &Document| format_batch(&d.read(0..1000).unwrap()).unwrap();
+        assert_eq!(all(&doc), all(&other));
+        // One undo removes the whole recipe.
+        assert!(undo(&mut other));
+        assert!(other.steps().is_empty());
+        assert!(execute(&mut other, Command::AppendSteps { steps: vec![] }).is_err());
     }
 
     #[test]

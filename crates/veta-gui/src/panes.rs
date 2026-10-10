@@ -232,7 +232,25 @@ fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element<'a, Messag
                 .color(t.muted_text),
         );
     }
-    scrollable(content).height(Length::Fill).into()
+    let footer_button = |label: &'static str, message: Option<Message>| {
+        let mut b = button(text(label).size(ui.small()))
+            .padding([4, 8])
+            .style(move |_theme: &Theme, status| subtle_button(t, status));
+        if let Some(message) = message {
+            b = b.on_press(message);
+        }
+        b
+    };
+    let footer = row![
+        footer_button(
+            "Save recipe…",
+            (!steps.is_empty()).then_some(Message::SaveRecipe)
+        ),
+        footer_button("Load recipe…", Some(Message::LoadRecipe)),
+    ]
+    .spacing(4)
+    .padding([4, 8]);
+    column![scrollable(content).height(Length::Fill), footer].into()
 }
 
 /// Read-only file details and metadata.
