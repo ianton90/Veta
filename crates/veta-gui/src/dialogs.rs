@@ -1,12 +1,17 @@
-//! Dialogs for column commands (add, rename, choose columns), filters, sorts
-//! and writer settings.
+//! Dialogs for column commands (add, rename, choose columns, change type),
+//! filters, sorts and writer settings.
 
 use iced::widget::{Space, button, checkbox, column, pick_list, row, scrollable, text, text_input};
 use iced::{Alignment, Element, Length};
+use veta_core::arrow::array::ArrayRef;
 use veta_core::arrow::datatypes::{DataType, TimeUnit};
 use veta_core::io::ARROW_SCHEMA_KEY;
 use veta_core::model::KeyValue;
-use veta_core::steps::{Condition, Filter, FilterOp, Sort, SortKey};
+use veta_core::steps::{
+    Cast, CastOptions, CastPreview, Condition, FORMAT_CODES, Filter, FilterOp, OnError, Sort,
+    SortKey,
+};
+use veta_core::values::is_text;
 use veta_core::{
     ColumnSettings, Command, Compression, Encoding, FormatVersion, StatisticsLevel, WriterSettings,
 };
@@ -37,6 +42,11 @@ impl TypeChoice {
         Self::Date,
         Self::Timestamp,
     ];
+
+    /// The choice for `data_type`, if it is one offered.
+    pub fn from_type(data_type: &DataType) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| &c.data_type() == data_type)
+    }
 
     fn data_type(self) -> DataType {
         match self {
@@ -102,10 +112,7 @@ impl ColumnDialog {
 
     /// Starts with the choice matching `data_type`, if it is one offered.
     pub fn with_type(mut self, data_type: &DataType) -> Self {
-        if let Some(choice) = TypeChoice::ALL
-            .into_iter()
-            .find(|c| &c.data_type() == data_type)
-        {
+        if let Some(choice) = TypeChoice::from_type(data_type) {
             self.choice = choice;
         }
         self
@@ -426,6 +433,231 @@ impl FilterDialog {
         }
         body = body.push(buttons("OK", FilterMessage::Cancel, FilterMessage::Apply));
         card(body.into(), tokens, 720.0)
+    }
+}
+
+/// A separator choice for numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Separator {
+    None,
+    Dot,
+    Comma,
+    Space,
+    Apostrophe,
+}
+
+impl Separator {
+    fn char(self) -> Option<char> {
+        match self {
+            Self::None => None,
+            Self::Dot => Some('.'),
+            Self::Comma => Some(','),
+            Self::Space => Some(' '),
+            Self::Apostrophe => Some('\''),
+        }
+    }
+
+    fn from_char(c: Option<char>) -> Self {
+        match c {
+            Some('.') => Self::Dot,
+            Some(',') => Self::Comma,
+            Some(' ') => Self::Space,
+            Some('\'') => Self::Apostrophe,
+            _ => Self::None,
+        }
+    }
+}
+
+impl std::fmt::Display for Separator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::None => "none",
+            Self::Dot => "dot (1.5)",
+            Self::Comma => "comma (1,5)",
+            Self::Space => "space",
+            Self::Apostrophe => "apostrophe",
+        })
+    }
+}
+
+/// Change a column's type (Power Query's "Change Type … Using Locale").
+#[derive(Debug, Clone)]
+pub struct CastDialog {
+    column: String,
+    from_text: bool,
+    choice: TypeChoice,
+    decimal: Separator,
+    thousands: Separator,
+    format: String,
+    on_error: OnError,
+    /// The first rows of the column, to preview failures on.
+    sample: ArrayRef,
+    preview: CastPreview,
+}
+
+#[derive(Debug, Clone)]
+pub enum CastMessage {
+    Type(TypeChoice),
+    Decimal(Separator),
+    Thousands(Separator),
+    Format(String),
+    OnError(OnError),
+    Apply,
+    Cancel,
+}
+
+impl CastDialog {
+    /// A dialog for `column`, whose first values are `sample`. `cast` fills
+    /// it in when editing a step.
+    pub fn new(column: String, sample: ArrayRef, cast: Option<&Cast>) -> Self {
+        let from_text = is_text(sample.data_type());
+        let options = cast.map(|c| c.options.clone()).unwrap_or_default();
+        let choice = cast
+            .and_then(|c| TypeChoice::from_type(&c.to))
+            .unwrap_or(if from_text {
+                TypeChoice::Decimal
+            } else {
+                TypeChoice::Text
+            });
+        let mut dialog = Self {
+            column,
+            from_text,
+            choice,
+            decimal: Separator::from_char(Some(options.decimal)),
+            thousands: Separator::from_char(options.thousands),
+            format: options.format.unwrap_or_default(),
+            on_error: options.on_error,
+            sample,
+            preview: CastPreview::default(),
+        };
+        dialog.refresh();
+        dialog
+    }
+
+    fn uses_format(&self) -> bool {
+        self.from_text && matches!(self.choice, TypeChoice::Date | TypeChoice::Timestamp)
+    }
+
+    fn uses_separators(&self) -> bool {
+        self.from_text && matches!(self.choice, TypeChoice::Integer | TypeChoice::Decimal)
+    }
+
+    fn cast(&self) -> Cast {
+        let format = self.format.trim();
+        Cast {
+            column: self.column.clone(),
+            to: self.choice.data_type(),
+            options: CastOptions {
+                decimal: self.decimal.char().unwrap_or('.'),
+                thousands: self.thousands.char(),
+                format: (self.uses_format() && !format.is_empty()).then(|| format.to_owned()),
+                on_error: self.on_error,
+            },
+        }
+    }
+
+    fn refresh(&mut self) {
+        self.preview = self.cast().preview(&self.sample);
+    }
+
+    /// Handles a message. Returns the cast to apply on submit.
+    pub fn update(&mut self, message: CastMessage) -> Option<Cast> {
+        match message {
+            CastMessage::Type(choice) => self.choice = choice,
+            CastMessage::Decimal(s) => self.decimal = s,
+            CastMessage::Thousands(s) => self.thousands = s,
+            CastMessage::Format(f) => self.format = f,
+            CastMessage::OnError(e) => self.on_error = e,
+            CastMessage::Cancel => return None,
+            CastMessage::Apply => return Some(self.cast()),
+        }
+        self.refresh();
+        None
+    }
+
+    pub fn view(&self, tokens: Tokens) -> Element<'_, CastMessage> {
+        const LABEL: f32 = 130.0;
+        let labelled = |label: &'static str, control: Element<'static, CastMessage>| {
+            row![text(label).width(LABEL), control]
+                .spacing(12)
+                .align_y(Alignment::Center)
+        };
+        let mut body = column![
+            text(format!("Change type of {}", self.column)).size(20),
+            labelled(
+                "Type",
+                pick_list(TypeChoice::ALL, Some(self.choice), CastMessage::Type)
+                    .width(Length::Fill)
+                    .into()
+            ),
+        ]
+        .spacing(14);
+        if self.uses_separators() {
+            body = body.push(labelled(
+                "Decimal separator",
+                pick_list(
+                    [Separator::Dot, Separator::Comma],
+                    Some(self.decimal),
+                    CastMessage::Decimal,
+                )
+                .width(Length::Fill)
+                .into(),
+            ));
+            body = body.push(labelled(
+                "Thousands",
+                pick_list(
+                    [
+                        Separator::None,
+                        Separator::Comma,
+                        Separator::Dot,
+                        Separator::Space,
+                        Separator::Apostrophe,
+                    ],
+                    Some(self.thousands),
+                    CastMessage::Thousands,
+                )
+                .width(Length::Fill)
+                .into(),
+            ));
+        }
+        if self.uses_format() {
+            body = body.push(labelled(
+                "Format",
+                text_input("Automatic (ISO 8601: 2024-12-31)", &self.format)
+                    .on_input(CastMessage::Format)
+                    .on_submit(CastMessage::Apply)
+                    .into(),
+            ));
+            body = body.push(text(FORMAT_CODES).size(12).color(tokens.muted_text));
+        }
+        body = body.push(labelled(
+            "Invalid values",
+            pick_list(OnError::ALL, Some(self.on_error), CastMessage::OnError)
+                .width(Length::Fill)
+                .into(),
+        ));
+        let p = &self.preview;
+        let summary = if p.checked == 0 {
+            "No rows to check.".to_owned()
+        } else if p.failed == 0 {
+            format!("All of the first {} rows convert.", p.checked)
+        } else {
+            let examples: Vec<String> = p.examples.iter().map(|e| format!("{e:?}")).collect();
+            format!(
+                "{} of the first {} rows can't be converted, e.g. {}.",
+                p.failed,
+                p.checked,
+                examples.join(", ")
+            )
+        };
+        let color = if p.failed == 0 {
+            tokens.muted_text
+        } else {
+            iced::Color::from_rgb8(0xd1, 0x43, 0x43)
+        };
+        body = body.push(text(summary).color(color));
+        body = body.push(buttons("OK", CastMessage::Cancel, CastMessage::Apply));
+        card(body.into(), tokens, 520.0)
     }
 }
 

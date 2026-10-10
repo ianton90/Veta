@@ -142,6 +142,10 @@ impl Level {
                 fields[index] = fields[index].clone().with_name(to);
                 Ok(with_fields(fields, self.num_rows))
             }
+            Step::Cast(cast) => Ok(with_fields(
+                cast.output_fields(&self.schema)?,
+                self.num_rows,
+            )),
             Step::Filter(_) | Step::Sort(_) => {
                 Err(invalid("this step must be computed first".into()))
             }

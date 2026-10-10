@@ -23,7 +23,7 @@ use iced::{
     window,
 };
 use veta_core::steps::{
-    ComputeJob, Computed, Condition, Filter, FilterOp, Sort, SortKey, Status, Step,
+    Cast, ComputeJob, Computed, Condition, Filter, FilterOp, Sort, SortKey, Status, Step,
 };
 use veta_core::{Command, Document, DocumentId, OpenOptions, Workbook, controller};
 
@@ -31,8 +31,9 @@ use crate::config::Config;
 #[cfg(test)]
 use crate::config::ModePreference;
 use crate::dialogs::{
-    ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage, FilterDialog, FilterMessage,
-    MetadataDialog, MetadataMessage, SortDialog, SortMessage, WriterDialog, WriterMessage,
+    CastDialog, CastMessage, ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage,
+    FilterDialog, FilterMessage, MetadataDialog, MetadataMessage, SortDialog, SortMessage,
+    WriterDialog, WriterMessage,
 };
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav};
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
@@ -43,6 +44,8 @@ use crate::theme::{Mode, Tokens, VetaTheme};
 const FORMULA_ID: iced::widget::Id = iced::widget::Id::new("formula");
 /// Id of the text input drawn inside the cell being edited.
 const EDITOR_ID: iced::widget::Id = iced::widget::Id::new("cell-editor");
+/// Rows the change type dialog previews failures on.
+const CAST_SAMPLE_ROWS: usize = 1000;
 
 /// Opens the main window with `files` and blocks until it is closed.
 pub fn run(files: Vec<PathBuf>) -> iced::Result {
@@ -236,6 +239,7 @@ enum MenuItem {
     MoveColumnLeft,
     MoveColumnRight,
     FilterColumn,
+    ChangeType,
     SortAscending,
     SortDescending,
     /// Keep rows whose value in this column equals the selected cell's.
@@ -266,7 +270,11 @@ enum SideTab {
 fn step_dialog_supported(step: &Step) -> bool {
     matches!(
         step,
-        Step::RenameColumn { .. } | Step::AddColumn { .. } | Step::Filter(_) | Step::Sort(_)
+        Step::RenameColumn { .. }
+            | Step::AddColumn { .. }
+            | Step::Filter(_)
+            | Step::Sort(_)
+            | Step::Cast(_)
     )
 }
 
@@ -289,6 +297,12 @@ enum Dialog {
     Filter {
         document: DocumentId,
         dialog: FilterDialog,
+        /// Editing the step at this index instead of adding a new one.
+        replace: Option<usize>,
+    },
+    Cast {
+        document: DocumentId,
+        dialog: CastDialog,
         /// Editing the step at this index instead of adding a new one.
         replace: Option<usize>,
     },
@@ -346,6 +360,7 @@ enum Message {
     ColumnDialog(ColumnMessage),
     Filter(FilterMessage),
     Sort(SortMessage),
+    Cast(CastMessage),
     /// Progress (0–1) of the background pass with this key.
     ComputeProgress(DocumentId, Vec<u64>, f32),
     /// The background pass with this key finished.
@@ -667,6 +682,7 @@ impl App {
                     MenuItem::RenameColumn => return self.rename_column(id),
                     MenuItem::RemoveColumns => self.remove_columns(id),
                     MenuItem::FilterColumn => self.open_filter_dialog(id),
+                    MenuItem::ChangeType => self.open_cast_dialog(id, None),
                     MenuItem::SortAscending | MenuItem::SortDescending => {
                         self.sort_selected(id, item == MenuItem::SortDescending);
                     }
@@ -762,6 +778,31 @@ impl App {
                                 }
                                 Some(Err(e)) => dialog.set_error(e.to_string()),
                                 None => {}
+                            }
+                        }
+                        (None, _) if cancel => self.dialog = None,
+                        (None, _) => {}
+                    }
+                }
+            }
+            Message::Cast(message) => {
+                if let Some(Dialog::Cast {
+                    document,
+                    dialog,
+                    replace,
+                }) = &mut self.dialog
+                {
+                    let (id, replace) = (*document, *replace);
+                    let cancel = matches!(message, CastMessage::Cancel);
+                    match (dialog.update(message), replace) {
+                        (Some(cast), Some(index)) => {
+                            self.dialog = None;
+                            let step = Step::Cast(cast);
+                            self.change_steps(id, index, Command::ReplaceStep { index, step });
+                        }
+                        (Some(cast), None) => {
+                            if self.execute(id, Command::Cast(cast)) {
+                                self.dialog = None;
                             }
                         }
                         (None, _) if cancel => self.dialog = None,
@@ -961,6 +1002,7 @@ impl App {
                 | Action::KeepRows
                 | Action::SortAscending
                 | Action::SortDescending
+                | Action::DataType
         );
         if changes_data
             && let Some(id) = self.active
@@ -1025,6 +1067,11 @@ impl App {
             Action::KeepRows => {
                 if let Some(id) = self.active {
                     self.open_filter_dialog(id);
+                }
+            }
+            Action::DataType => {
+                if let Some(id) = self.active {
+                    self.open_cast_dialog(id, None);
                 }
             }
             Action::SortAscending | Action::SortDescending => {
@@ -1187,6 +1234,10 @@ impl App {
                 data_type,
                 at,
             } => ColumnDialog::add(*at).with_name(name).with_type(data_type),
+            Step::Cast(cast) => {
+                self.open_cast_dialog(id, Some((index, cast.clone())));
+                return Task::none();
+            }
             Step::Filter(_) | Step::Sort(_) => {
                 let columns = self
                     .workbook
@@ -1417,6 +1468,47 @@ impl App {
             document: id,
             dialog: FilterDialog::new(columns, selected),
             replace: None,
+        });
+    }
+
+    /// Opens the change type dialog on the selected column, or on the cast
+    /// step at `index` (previewed on that step's input).
+    fn open_cast_dialog(&mut self, id: DocumentId, step: Option<(usize, Cast)>) {
+        let Some(doc) = self.workbook.get(id) else {
+            return;
+        };
+        let level = step.as_ref().map_or(doc.evaluated_steps(), |(i, _)| *i);
+        let column = match &step {
+            Some((_, cast)) => Some(cast.column.clone()),
+            None => {
+                let index = self.selected_columns(id).map(|c| c.start).or_else(|| {
+                    self.tabs
+                        .iter()
+                        .find(|t| t.id == id)?
+                        .grid
+                        .selected()
+                        .map(|s| s.1)
+                });
+                index.and_then(|c| self.column_names(id, c..c + 1).pop())
+            }
+        };
+        let Some(column) = column else {
+            self.errors
+                .push("Select a column to change its type.".into());
+            return;
+        };
+        let sample = doc
+            .read_at(level, 0..CAST_SAMPLE_ROWS)
+            .ok()
+            .and_then(|batch| batch.column_by_name(&column).cloned());
+        let Some(sample) = sample else {
+            return;
+        };
+        self.edit = None;
+        self.dialog = Some(Dialog::Cast {
+            document: id,
+            dialog: CastDialog::new(column, sample, step.as_ref().map(|(_, c)| c)),
+            replace: step.map(|(i, _)| i),
         });
     }
 
@@ -1876,6 +1968,7 @@ impl App {
             Dialog::Column { dialog, .. } => dialog.view(ui.tokens).map(Message::ColumnDialog),
             Dialog::Filter { dialog, .. } => dialog.view(ui.tokens).map(Message::Filter),
             Dialog::Sort { dialog, .. } => dialog.view(ui.tokens).map(Message::Sort),
+            Dialog::Cast { dialog, .. } => dialog.view(ui.tokens).map(Message::Cast),
             Dialog::ConfirmStep { .. } => settings::confirm_step(ui.tokens),
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
             Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
@@ -1953,6 +2046,7 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use veta_core::arrow::datatypes::DataType;
     use veta_testkit::{TempDir, fixtures};
 
     fn app() -> App {
@@ -2551,6 +2645,45 @@ mod tests {
         finish_compute(&mut app, id);
         assert_eq!(id_at(&app, 0).as_deref(), Some("1"));
         assert_eq!(id_at(&app, 500).as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn change_type_dialog_and_edit_step() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let schema = |app: &App| app.workbook.get(id).unwrap().schema();
+
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 1,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::DataType));
+        assert!(matches!(app.dialog, Some(Dialog::Cast { .. })));
+        let _ = app.update(Message::Cast(CastMessage::Type(
+            dialogs::TypeChoice::Integer,
+        )));
+        let _ = app.update(Message::Cast(CastMessage::OnError(
+            veta_core::steps::OnError::ErrorColumn,
+        )));
+        let _ = app.update(Message::Cast(CastMessage::Apply));
+        assert!(app.dialog.is_none());
+        assert_eq!(schema(&app).field(1).data_type(), &DataType::Int64);
+        assert_eq!(schema(&app).field(2).name(), "name errors");
+
+        // Edit it: back to null on error, so the error column goes away.
+        let _ = app.update(Message::EditStep(0));
+        let _ = app.update(Message::Cast(CastMessage::OnError(
+            veta_core::steps::OnError::Null,
+        )));
+        let _ = app.update(Message::Cast(CastMessage::Apply));
+        assert_eq!(app.workbook.get(id).unwrap().steps().len(), 1);
+        assert_eq!(schema(&app).field(2).name(), "score");
     }
 
     #[test]

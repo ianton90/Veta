@@ -350,6 +350,7 @@ impl Pipeline {
                 with_schema(schema, columns, batch.num_rows())
             }
             // Full-pass steps are read through their cache above.
+            Step::Cast(cast) => cast.apply(&self.read_level(previous, range)?, &schema),
             Step::Filter(_) | Step::Sort(_) => {
                 Err(invalid("this step must be computed first".into()))
             }

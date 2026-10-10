@@ -27,3 +27,4 @@ Short log of project decisions. Newest last.
 | 21 | 2026-10-10 | Consecutive cell edits stay grouped in one step; each edit undoes on its own. | Keeps the steps list readable. |
 | 22 | 2026-10-10 | Steps that need a full pass (filter, sort, fill) cache their result: filters keep the surviving row ranges; sort/fill materialize their output in memory for in-memory files, or to a temporary Parquet file for paged files. Computed in the background; changing a step drops the caches from that step on. | Full results scrollable for files larger than RAM. |
 | 23 | 2026-10-10 | Changing an earlier step may break later ones; they are marked with the error, not refused. Saving and adding steps are blocked until fixed. | Same as Power Query. |
+| 24 | 2026-10-10 | Date/time formats in Cast use our own parser for a strftime subset (`%Y %y %m %d %b %B %H %I %p %M %S %f`) | `chrono` would need a direct dependency (arrow does not re-export it); about 150 lines instead. |

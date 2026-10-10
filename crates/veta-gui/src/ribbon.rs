@@ -59,7 +59,6 @@ impl Action {
             Action::Import => 45,
             Action::Export => 46,
             Action::DuplicateColumn => 40,
-            Action::DataType => 35,
             Action::ReplaceValues | Action::FillDown | Action::FormatText => 38,
             Action::SplitColumn | Action::MergeColumns => 39,
             Action::Statistics => 42,
@@ -78,6 +77,7 @@ impl Action {
             | Action::InsertRows
             | Action::RemoveRows
             | Action::KeepRows
+            | Action::DataType
             | Action::SortAscending
             | Action::SortDescending
             | Action::Undo

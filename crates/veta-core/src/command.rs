@@ -8,7 +8,7 @@ use std::ops::Range;
 use arrow::datatypes::DataType;
 
 use crate::model::{KeyValue, WriterSettings};
-use crate::steps::{Filter, Sort, Step};
+use crate::steps::{Cast, Filter, Sort, Step};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -64,6 +64,8 @@ pub enum Command {
     Filter(Filter),
     /// Sorts rows by one or more columns (stable; nulls last).
     Sort(Sort),
+    /// Changes a column's type.
+    Cast(Cast),
     /// Removes the step at `index`. Later steps may become broken.
     RemoveStep {
         index: usize,

@@ -202,6 +202,7 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
         )),
         Command::Filter(filter) => Ok((filter.describe(), Change::PushStep(Step::Filter(filter)))),
         Command::Sort(sort) => Ok((sort.describe(), Change::PushStep(Step::Sort(sort)))),
+        Command::Cast(cast) => Ok((cast.describe(), Change::PushStep(Step::Cast(cast)))),
         Command::RemoveStep { index } => {
             let mut after = doc.steps().to_vec();
             if index >= after.len() {
@@ -688,6 +689,74 @@ mod tests {
             results.push(format_batch(&saved.read(0..999).unwrap()).unwrap());
         }
         assert_eq!(results[0], results[1]);
+    }
+
+    #[test]
+    fn cast_command_with_error_column() {
+        use crate::steps::{Cast, CastOptions, OnError};
+        let dir = TempDir::new();
+        let mut doc = mixed(&dir);
+        // score (float) → text with a comma decimal, then back to a number.
+        execute(
+            &mut doc,
+            Command::Cast(Cast {
+                column: "score".into(),
+                to: DataType::Utf8,
+                options: CastOptions::default(),
+            }),
+        )
+        .unwrap();
+        assert_eq!(cell(&doc, 3, "score").as_deref(), Some("1.5"));
+        execute(
+            &mut doc,
+            Command::SetCell {
+                row: 3,
+                column: "score".into(),
+                value: Some("1.234,5".into()),
+            },
+        )
+        .unwrap();
+        execute(
+            &mut doc,
+            Command::Cast(Cast {
+                column: "score".into(),
+                to: DataType::Float64,
+                options: CastOptions {
+                    decimal: ',',
+                    thousands: Some('.'),
+                    on_error: OnError::ErrorColumn,
+                    ..CastOptions::default()
+                },
+            }),
+        )
+        .unwrap();
+        assert_eq!(cell(&doc, 3, "score").as_deref(), Some("1234.5"));
+        // "2.5" reads as 25 with these separators; nothing fails here.
+        assert_eq!(cell(&doc, 5, "score").as_deref(), Some("25.0"));
+        assert_eq!(cell(&doc, 5, "score errors"), None);
+
+        // name → int: every non-null name fails into the error column.
+        let mut cast = Cast {
+            column: "name".into(),
+            to: DataType::Int64,
+            options: CastOptions {
+                on_error: OnError::ErrorColumn,
+                ..CastOptions::default()
+            },
+        };
+        execute(&mut doc, Command::Cast(cast.clone())).unwrap();
+        assert_eq!(cell(&doc, 1, "name"), None);
+        assert_eq!(cell(&doc, 1, "name errors").as_deref(), Some("bo"));
+        let out = dir.join("cast.parquet");
+        doc.save(Some(out.clone())).unwrap();
+        let saved = Document::open(&out, OpenOptions::default()).unwrap();
+        assert_eq!(saved.schema().field(2).name(), "name errors");
+
+        undo(&mut doc);
+        cast.options.on_error = OnError::Fail;
+        execute(&mut doc, Command::Cast(cast)).unwrap();
+        assert!(doc.read(0..10).is_err(), "failing values stop reading");
+        assert!(doc.save(Some(dir.join("fail.parquet"))).is_err());
     }
 
     #[test]

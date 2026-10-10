@@ -8,6 +8,7 @@
 //! Steps refer to columns by name and to rows by their index in the previous
 //! step's output.
 
+mod cast;
 mod checkpoint;
 mod compute;
 mod edits;
@@ -24,6 +25,7 @@ use arrow::datatypes::DataType;
 use crate::display::type_name;
 use crate::error::Error;
 
+pub use cast::{Cast, CastOptions, CastPreview, FORMAT_CODES, OnError};
 pub use compute::{ComputeJob, Computed};
 pub use edits::CellEdits;
 pub use filter::{Condition, Filter, FilterOp};
@@ -66,6 +68,8 @@ pub enum Step {
     /// Keeps the rows that match.
     Filter(Filter),
     Sort(Sort),
+    /// Changes a column's type.
+    Cast(Cast),
 }
 
 impl Step {
@@ -113,6 +117,7 @@ impl Step {
             Step::MoveColumn { name, .. } => format!("Moved column {name}"),
             Step::Filter(filter) => filter.describe(),
             Step::Sort(sort) => sort.describe(),
+            Step::Cast(cast) => cast.describe(),
         }
     }
 }
