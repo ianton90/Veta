@@ -213,6 +213,10 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
         Command::Fill(fill) => Ok((fill.describe(), Change::PushStep(Step::Fill(fill)))),
         Command::Split(split) => Ok((split.describe(), Change::PushStep(Step::Split(split)))),
         Command::Merge(merge) => Ok((merge.describe(), Change::PushStep(Step::Merge(merge)))),
+        Command::CustomColumn(custom) => Ok((
+            custom.describe(),
+            Change::PushStep(Step::CustomColumn(custom)),
+        )),
         Command::RemoveStep { index } => {
             let mut after = doc.steps().to_vec();
             if index >= after.len() {
@@ -833,6 +837,42 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn custom_column_command() {
+        use crate::steps::CustomColumn;
+        let dir = TempDir::new();
+        let mut doc = mixed(&dir);
+        let custom = |name: &str, expression: &str, at| {
+            Command::CustomColumn(CustomColumn {
+                name: name.into(),
+                expression: expression.into(),
+                at,
+            })
+        };
+        execute(&mut doc, custom("n", "row() * 10 + id", 0)).unwrap();
+        assert_eq!(doc.schema().field(0).name(), "n");
+        // row() counts from the step's first row, whatever window is read.
+        assert_eq!(cell(&doc, 0, "n").as_deref(), Some("10"));
+        assert_eq!(cell(&doc, 500, "n").as_deref(), Some("5510"));
+        execute(
+            &mut doc,
+            custom(
+                "label",
+                "if(flag, upper(name), \"-\") & \"/\" & text(score)",
+                5,
+            ),
+        )
+        .unwrap();
+        assert_eq!(cell(&doc, 2, "label").as_deref(), Some("CY/1.0"));
+        assert_eq!(cell(&doc, 0, "label"), None, "null name and score");
+        assert!(execute(&mut doc, custom("bad", "name * 2", 0)).is_err());
+        assert!(execute(&mut doc, custom("n", "1", 0)).is_err());
+        let out = dir.join("custom.parquet");
+        doc.save(Some(out.clone())).unwrap();
+        let saved = Document::open(&out, OpenOptions::default()).unwrap();
+        assert_eq!(saved.num_columns(), 6);
     }
 
     #[test]

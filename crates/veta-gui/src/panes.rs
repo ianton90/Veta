@@ -648,6 +648,12 @@ pub fn context_menu<'a>(
                 MenuItem::FormatText,
             )),
             Some((
+                Icon::Copy,
+                "Duplicate".into(),
+                "",
+                MenuItem::DuplicateColumn,
+            )),
+            Some((
                 Icon::Split,
                 "Split column…".into(),
                 "",

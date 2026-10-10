@@ -8,7 +8,7 @@ use std::ops::Range;
 use arrow::datatypes::DataType;
 
 use crate::model::{KeyValue, WriterSettings};
-use crate::steps::{Cast, Fill, Filter, Merge, Replace, Sort, Split, Step, TextOp};
+use crate::steps::{Cast, CustomColumn, Fill, Filter, Merge, Replace, Sort, Split, Step, TextOp};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -76,6 +76,8 @@ pub enum Command {
     Fill(Fill),
     Split(Split),
     Merge(Merge),
+    /// Adds a column computed from an expression.
+    CustomColumn(CustomColumn),
     /// Removes the step at `index`. Later steps may become broken.
     RemoveStep {
         index: usize,

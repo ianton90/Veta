@@ -12,6 +12,7 @@ mod cast;
 mod checkpoint;
 mod compute;
 mod edits;
+mod expr;
 mod fill;
 mod filter;
 mod level;
@@ -31,6 +32,7 @@ use crate::error::Error;
 pub use cast::{Cast, CastOptions, CastPreview, FORMAT_CODES, OnError};
 pub use compute::{ComputeJob, Computed};
 pub use edits::CellEdits;
+pub use expr::{CustomColumn, expression_help};
 pub use fill::Fill;
 pub use filter::{Condition, Filter, FilterOp};
 pub use pipeline::{Pipeline, Status};
@@ -86,6 +88,7 @@ pub enum Step {
     Fill(Fill),
     Split(Split),
     Merge(Merge),
+    CustomColumn(CustomColumn),
 }
 
 impl Step {
@@ -142,6 +145,7 @@ impl Step {
             Step::Fill(fill) => fill.describe(),
             Step::Split(split) => split.describe(),
             Step::Merge(merge) => merge.describe(),
+            Step::CustomColumn(custom) => custom.describe(),
         }
     }
 }

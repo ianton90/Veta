@@ -151,6 +151,10 @@ impl Level {
                 split.output_fields(&self.schema)?,
                 self.num_rows,
             )),
+            Step::CustomColumn(custom) => Ok(with_fields(
+                custom.output_fields(&self.schema)?,
+                self.num_rows,
+            )),
             Step::Merge(merge) => Ok(with_fields(
                 merge.output_fields(&self.schema)?,
                 self.num_rows,

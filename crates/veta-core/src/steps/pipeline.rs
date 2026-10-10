@@ -353,6 +353,11 @@ impl Pipeline {
             // Full-pass steps are read through their cache above.
             Step::Cast(cast) => cast.apply(&self.read_level(previous, range)?, &schema),
             Step::Split(split) => split.apply(&self.read_level(previous, range)?, &schema),
+            Step::CustomColumn(custom) => custom.apply(
+                &self.read_level(previous, range.clone())?,
+                range.start,
+                &schema,
+            ),
             Step::Merge(merge) => merge.apply(&self.read_level(previous, range)?, &schema),
             Step::Replace(replace) => map_columns(
                 &self.read_level(previous, range)?,

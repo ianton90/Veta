@@ -24,8 +24,8 @@ use iced::{
 };
 use veta_core::arrow::array::ArrayRef;
 use veta_core::steps::{
-    Cast, ComputeJob, Computed, Condition, Fill, Filter, FilterOp, Merge, Replace, Sort, SortKey,
-    Split, Status, Step, TextOp,
+    Cast, ComputeJob, Computed, Condition, CustomColumn, Fill, Filter, FilterOp, Merge, Replace,
+    Sort, SortKey, Split, Status, Step, TextOp,
 };
 use veta_core::{Command, Document, DocumentId, OpenOptions, Workbook, controller};
 
@@ -34,9 +34,9 @@ use crate::config::Config;
 use crate::config::ModePreference;
 use crate::dialogs::{
     CastDialog, CastMessage, ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage,
-    FilterDialog, FilterMessage, FormatDialog, FormatMessage, MergeDialog, MergeMessage,
-    MetadataDialog, MetadataMessage, ReplaceDialog, ReplaceMessage, SortDialog, SortMessage,
-    SplitDialog, SplitMessage, WriterDialog, WriterMessage,
+    CustomDialog, CustomMessage, FilterDialog, FilterMessage, FormatDialog, FormatMessage,
+    MergeDialog, MergeMessage, MetadataDialog, MetadataMessage, ReplaceDialog, ReplaceMessage,
+    SortDialog, SortMessage, SplitDialog, SplitMessage, WriterDialog, WriterMessage,
 };
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav};
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
@@ -249,6 +249,7 @@ enum MenuItem {
     FormatText,
     SplitColumn,
     MergeColumns,
+    DuplicateColumn,
     SortAscending,
     SortDescending,
     /// Keep rows whose value in this column equals the selected cell's.
@@ -288,6 +289,7 @@ fn step_dialog_supported(step: &Step) -> bool {
             | Step::FormatText { .. }
             | Step::Split(_)
             | Step::Merge(_)
+            | Step::CustomColumn(_)
     )
 }
 
@@ -337,6 +339,11 @@ enum Dialog {
     Merge {
         document: DocumentId,
         dialog: MergeDialog,
+        replace: Option<usize>,
+    },
+    Custom {
+        document: DocumentId,
+        dialog: CustomDialog,
         replace: Option<usize>,
     },
     /// Editing the sort step at `index`.
@@ -397,6 +404,7 @@ enum Message {
     Replace(ReplaceMessage),
     Format(FormatMessage),
     Split(SplitMessage),
+    Custom(CustomMessage),
     Merge(MergeMessage),
     /// Progress (0–1) of the background pass with this key.
     ComputeProgress(DocumentId, Vec<u64>, f32),
@@ -727,6 +735,7 @@ impl App {
                     MenuItem::FormatText => self.open_format_dialog(id),
                     MenuItem::SplitColumn => return self.open_split_dialog(id, None),
                     MenuItem::MergeColumns => return self.open_merge_dialog(id, None),
+                    MenuItem::DuplicateColumn => self.duplicate_column(id),
                     MenuItem::SortAscending | MenuItem::SortDescending => {
                         self.sort_selected(id, item == MenuItem::SortDescending);
                     }
@@ -926,6 +935,28 @@ impl App {
                         if let Err(e) =
                             self.add_or_replace(id, replace, Step::Split(split), command)
                             && let Some(Dialog::Split { dialog, .. }) = &mut self.dialog
+                        {
+                            dialog.set_error(e);
+                        }
+                    } else if cancel {
+                        self.dialog = None;
+                    }
+                }
+            }
+            Message::Custom(message) => {
+                if let Some(Dialog::Custom {
+                    document,
+                    dialog,
+                    replace,
+                }) = &mut self.dialog
+                {
+                    let (id, replace) = (*document, *replace);
+                    let cancel = matches!(message, CustomMessage::Cancel);
+                    if let Some(custom) = dialog.update(message) {
+                        let command = Command::CustomColumn(custom.clone());
+                        let step = Step::CustomColumn(custom);
+                        if let Err(e) = self.add_or_replace(id, replace, step, command)
+                            && let Some(Dialog::Custom { dialog, .. }) = &mut self.dialog
                         {
                             dialog.set_error(e);
                         }
@@ -1154,6 +1185,11 @@ impl App {
                 | Action::FormatText
                 | Action::SplitColumn
                 | Action::MergeColumns
+                | Action::CustomColumn
+                | Action::DuplicateColumn
+                | Action::IndexColumn
+                | Action::Standard
+                | Action::DateTime
         );
         if changes_data
             && let Some(id) = self.active
@@ -1233,6 +1269,37 @@ impl App {
             Action::FormatText => {
                 if let Some(id) = self.active {
                     self.open_format_dialog(id);
+                }
+            }
+            Action::CustomColumn | Action::Standard | Action::DateTime => {
+                if let Some(id) = self.active {
+                    let column = self.selected_column_names(id).into_iter().next();
+                    let reference = column.as_deref().map(formula_reference);
+                    let expression = match (action, reference) {
+                        (Action::Standard, Some(c)) => format!("{c} * 1"),
+                        (Action::DateTime, Some(c)) => format!("year({c})"),
+                        _ => String::new(),
+                    };
+                    return self.open_custom_dialog(id, None, expression);
+                }
+            }
+            Action::DuplicateColumn => {
+                if let Some(id) = self.active {
+                    self.duplicate_column(id);
+                }
+            }
+            Action::IndexColumn => {
+                if let Some(id) = self.active {
+                    let at = self.column_count(id);
+                    let name = self.unique_name(id, "Index");
+                    self.execute(
+                        id,
+                        Command::CustomColumn(CustomColumn {
+                            name,
+                            expression: "row()".into(),
+                            at,
+                        }),
+                    );
                 }
             }
             Action::SplitColumn => {
@@ -1416,6 +1483,9 @@ impl App {
             }
             Step::Replace(r) => return self.open_replace_dialog(id, Some((index, r.clone()))),
             Step::Split(s) => return self.open_split_dialog(id, Some((index, s.clone()))),
+            Step::CustomColumn(c) => {
+                return self.open_custom_dialog(id, Some((index, c.clone())), String::new());
+            }
             Step::Merge(m) => return self.open_merge_dialog(id, Some((index, m.clone()))),
             Step::FormatText { columns, op } => {
                 self.edit = None;
@@ -1681,6 +1751,82 @@ impl App {
         self.dialog = None;
         self.refresh(id);
         Ok(())
+    }
+
+    /// Opens the custom column dialog (with `expression`), or the custom
+    /// column step at `index`.
+    fn open_custom_dialog(
+        &mut self,
+        id: DocumentId,
+        step: Option<(usize, CustomColumn)>,
+        expression: String,
+    ) -> Task<Message> {
+        let Some(doc) = self.workbook.get(id) else {
+            return Task::none();
+        };
+        let level = step.as_ref().map_or(doc.evaluated_steps(), |(i, _)| *i);
+        let Some(schema) = doc.schema_at(level) else {
+            return Task::none();
+        };
+        let custom = match &step {
+            Some((_, c)) => c.clone(),
+            None => CustomColumn {
+                name: self.unique_name(id, "Custom"),
+                expression,
+                at: self
+                    .selected_columns(id)
+                    .map_or(schema.fields().len(), |c| c.end),
+            },
+        };
+        self.edit = None;
+        self.dialog = Some(Dialog::Custom {
+            document: id,
+            dialog: CustomDialog::new(schema, custom),
+            replace: step.map(|(i, _)| i),
+        });
+        Task::batch([
+            iced::widget::operation::focus(dialogs::EXPRESSION_ID),
+            iced::widget::operation::move_cursor_to_end(dialogs::EXPRESSION_ID),
+        ])
+    }
+
+    /// Adds a copy of the selected column next to it.
+    fn duplicate_column(&mut self, id: DocumentId) {
+        let Some(range) = self.selected_columns(id).or_else(|| {
+            let (_, c) = self.tabs.iter().find(|t| t.id == id)?.grid.selected()?;
+            Some(c..c + 1)
+        }) else {
+            self.errors.push("Select a column to duplicate.".into());
+            return;
+        };
+        let Some(column) = self.column_names(id, range.start..range.start + 1).pop() else {
+            return;
+        };
+        let name = self.unique_name(id, &format!("{column} - Copy"));
+        self.execute(
+            id,
+            Command::CustomColumn(CustomColumn {
+                name,
+                expression: formula_reference(&column),
+                at: range.start + 1,
+            }),
+        );
+    }
+
+    /// `base`, or `base 2`, `base 3`… if a column already has that name.
+    fn unique_name(&self, id: DocumentId, base: &str) -> String {
+        let Some(doc) = self.workbook.get(id) else {
+            return base.to_owned();
+        };
+        let schema = doc.schema();
+        let taken = |name: &str| schema.fields().iter().any(|f| f.name() == name);
+        if !taken(base) {
+            return base.to_owned();
+        }
+        (2..)
+            .map(|n| format!("{base} {n}"))
+            .find(|name| !taken(name))
+            .unwrap_or_else(|| base.to_owned())
     }
 
     /// Opens the split dialog on the selected column, or on the split step
@@ -2309,6 +2455,7 @@ impl App {
             Dialog::Replace { dialog, .. } => dialog.view(ui.tokens).map(Message::Replace),
             Dialog::Format { dialog, .. } => dialog.view(ui.tokens).map(Message::Format),
             Dialog::Split { dialog, .. } => dialog.view(ui.tokens).map(Message::Split),
+            Dialog::Custom { dialog, .. } => dialog.view(ui.tokens).map(Message::Custom),
             Dialog::Merge { dialog, .. } => dialog.view(ui.tokens).map(Message::Merge),
             Dialog::ConfirmStep { .. } => settings::confirm_step(ui.tokens),
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
@@ -2334,6 +2481,11 @@ impl App {
         ]
         .into()
     }
+}
+
+/// How to refer to a column in a formula.
+fn formula_reference(column: &str) -> String {
+    format!("[{column}]")
 }
 
 fn divider<'a>(tokens: Tokens, vertical: bool) -> Element<'a, Message> {
@@ -3148,6 +3300,62 @@ mod tests {
         let _ = app.update(Message::Split(SplitMessage::Positions("1, 2".into())));
         let _ = app.update(Message::Split(SplitMessage::Apply));
         assert_eq!(names(&app), ["key.1", "key.2", "key.3", "score", "flag"]);
+    }
+
+    #[test]
+    fn custom_duplicate_and_index_columns() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let schema = |app: &App| app.workbook.get(id).unwrap().schema();
+        let names = |app: &App| {
+            schema(app)
+                .fields()
+                .iter()
+                .map(|f| f.name().clone())
+                .collect::<Vec<_>>()
+        };
+
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 2,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::Standard));
+        let _ = app.update(Message::Custom(CustomMessage::Expression(
+            "[score] * \"x\"".into(),
+        )));
+        let _ = app.update(Message::Custom(CustomMessage::Apply));
+        assert!(
+            matches!(app.dialog, Some(Dialog::Custom { .. })),
+            "an invalid formula keeps the dialog open"
+        );
+        let _ = app.update(Message::Custom(CustomMessage::Expression(
+            "score * 2".into(),
+        )));
+        let _ = app.update(Message::Custom(CustomMessage::Name("double".into())));
+        let _ = app.update(Message::Custom(CustomMessage::Apply));
+        assert!(app.dialog.is_none());
+        assert_eq!(names(&app), ["id", "name", "score", "double", "flag"]);
+
+        let _ = app.update(Message::Action(Action::DuplicateColumn));
+        let _ = app.update(Message::Action(Action::DuplicateColumn));
+        assert_eq!(names(&app)[3], "score - Copy 2");
+        assert_eq!(schema(&app).field(3).data_type(), &DataType::Float64);
+        let _ = app.update(Message::Action(Action::IndexColumn));
+        assert_eq!(names(&app).last().map(String::as_str), Some("Index"));
+
+        // Edit the first custom column.
+        let _ = app.update(Message::EditStep(0));
+        let _ = app.update(Message::Custom(CustomMessage::Expression(
+            "text(score)".into(),
+        )));
+        let _ = app.update(Message::Custom(CustomMessage::Apply));
+        assert_eq!(schema(&app).field(3 + 2).data_type(), &DataType::Utf8);
     }
 
     #[test]

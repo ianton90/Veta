@@ -58,9 +58,7 @@ impl Action {
         Some(match self {
             Action::Import => 45,
             Action::Export => 46,
-            Action::DuplicateColumn => 40,
             Action::Statistics => 42,
-            Action::Standard | Action::DateTime | Action::CustomColumn | Action::IndexColumn => 40,
             Action::StatisticsPane => 43,
             Action::Open
             | Action::AppliedSteps
@@ -80,6 +78,11 @@ impl Action {
             | Action::FillDown
             | Action::FormatText
             | Action::SplitColumn
+            | Action::DuplicateColumn
+            | Action::Standard
+            | Action::DateTime
+            | Action::CustomColumn
+            | Action::IndexColumn
             | Action::MergeColumns
             | Action::SortAscending
             | Action::SortDescending
