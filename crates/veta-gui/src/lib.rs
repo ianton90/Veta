@@ -37,6 +37,8 @@ use crate::theme::{Mode, Tokens, VetaTheme};
 
 /// Id of the formula bar's text input.
 const FORMULA_ID: iced::widget::Id = iced::widget::Id::new("formula");
+/// Id of the text input drawn inside the cell being edited.
+const EDITOR_ID: iced::widget::Id = iced::widget::Id::new("cell-editor");
 
 /// Opens the main window with `files` and blocks until it is closed.
 pub fn run(files: Vec<PathBuf>) -> iced::Result {
@@ -223,6 +225,8 @@ struct Edit {
     row: usize,
     column: String,
     text: String,
+    /// Why the last attempt to apply it failed.
+    error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -469,6 +473,12 @@ impl App {
             Message::CloseAnswer(answer) => return self.answer_close(answer),
             Message::Grid(id, event) => match event {
                 GridEvent::StartEdit { initial } => return self.start_edit(id, initial),
+                GridEvent::EditMove(nav) => {
+                    if self.commit_edit() {
+                        self.grid_event(id, GridEvent::Navigate(nav));
+                        return iced::widget::operation::focus(GRID_ID);
+                    }
+                }
                 GridEvent::InsertRows => self.insert_rows(id, false),
                 GridEvent::MoveColumn { from, to } => self.move_column(id, from, to),
                 GridEvent::DeleteRows => self.delete_rows(id),
@@ -499,7 +509,7 @@ impl App {
                             | GridEvent::SelectRows { .. }
                             | GridEvent::Navigate(_)
                     ) {
-                        self.commit_edit();
+                        self.commit_edit_or_drop();
                     }
                     if let (Some(doc), Some(tab)) = (
                         self.workbook.get(id),
@@ -510,7 +520,10 @@ impl App {
                 }
             },
             Message::EditInput(text) => match &mut self.edit {
-                Some(edit) => edit.text = text,
+                Some(edit) => {
+                    edit.text = text;
+                    edit.error = None;
+                }
                 None => {
                     // Typing straight into the formula bar starts an edit.
                     if let Some(id) = self.active {
@@ -1061,10 +1074,11 @@ impl App {
             row,
             column,
             text,
+            error: None,
         });
         Task::batch([
-            iced::widget::operation::focus(FORMULA_ID),
-            iced::widget::operation::move_cursor_to_end(FORMULA_ID),
+            iced::widget::operation::focus(EDITOR_ID),
+            iced::widget::operation::move_cursor_to_end(EDITOR_ID),
         ])
     }
 
@@ -1083,26 +1097,46 @@ impl App {
     }
 
     /// Applies the formula bar edit, if any. Returns whether it was applied.
+    ///
+    /// Invalid input keeps the edit open with the error shown next to it.
     fn commit_edit(&mut self) -> bool {
-        let Some(edit) = self.edit.take() else {
+        let Some(mut edit) = self.edit.take() else {
             return false;
         };
         if self.cell_text(edit.document).as_deref() == Some(edit.text.as_str()) {
             return true;
         }
-        let ok = self.execute(
-            edit.document,
-            Command::SetCell {
-                row: edit.row,
-                column: edit.column.clone(),
-                value: Some(edit.text.clone()),
-            },
-        );
-        if !ok {
-            // Keep the text so it can be fixed.
-            self.edit = Some(edit);
+        let command = Command::SetCell {
+            row: edit.row,
+            column: edit.column.clone(),
+            value: Some(edit.text.clone()),
+        };
+        let result = match self.workbook.get_mut(edit.document) {
+            Some(doc) => controller::execute(doc, command),
+            None => return false,
+        };
+        match result {
+            Ok(()) => {
+                self.refresh(edit.document);
+                true
+            }
+            Err(e) => {
+                edit.error = Some(e.to_string());
+                self.edit = Some(edit);
+                false
+            }
         }
-        ok
+    }
+
+    /// Applies the edit before the selection moves away; if it can't be
+    /// applied it is dropped and the error shown as a banner.
+    fn commit_edit_or_drop(&mut self) {
+        if !self.commit_edit()
+            && let Some(edit) = self.edit.take()
+            && let Some(error) = edit.error
+        {
+            self.errors.push(error);
+        }
     }
 
     fn save_config(&mut self) {
@@ -1181,7 +1215,24 @@ impl App {
             Some((tab, doc)) => {
                 let id = tab.id;
                 let edit = self.edit.as_ref().filter(|e| e.document == id);
-                let grid = grid::grid(&tab.grid, ui.tokens, move |e| Message::Grid(id, e));
+                let editor = edit.filter(|e| {
+                    let selected = tab
+                        .grid
+                        .selected()
+                        .map(|(r, c)| (r, doc.schema().fields().get(c).map(|f| f.name().clone())));
+                    selected == Some((e.row, Some(e.column.clone())))
+                });
+                let editor = editor.map(|e| {
+                    iced::widget::text_input("", &e.text)
+                        .id(EDITOR_ID)
+                        .on_input(Message::EditInput)
+                        .on_submit(Message::CommitEdit)
+                        .size(ui.size - 1.0)
+                        .padding([1, 5])
+                        .into()
+                });
+                let grid =
+                    grid::grid(&tab.grid, ui.tokens, move |e| Message::Grid(id, e)).editor(editor);
                 let grid = column![
                     panes::formula_bar(tab, doc, edit, ui),
                     divider(ui.tokens, false),
@@ -1476,8 +1527,11 @@ mod tests {
             },
         ));
         let _ = app.update(Message::CommitEdit);
-        assert!(app.edit.is_some());
-        assert_eq!(app.errors.len(), 1);
+        assert!(app.edit.as_ref().unwrap().error.is_some());
+        assert!(
+            app.errors.is_empty(),
+            "shown next to the editor, not as a banner"
+        );
         let _ = app.update(Message::Escape);
         assert!(app.edit.is_none());
 

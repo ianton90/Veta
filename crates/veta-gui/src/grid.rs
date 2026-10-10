@@ -108,6 +108,12 @@ pub enum GridEvent {
         from: usize,
         to: usize,
     },
+    /// Double-click on a column's right edge: fit the column to its content.
+    AutoFit {
+        column: usize,
+    },
+    /// Arrow up/down or Tab while editing a cell: apply the edit and move.
+    EditMove(Nav),
     /// Right-click; `position` is in window coordinates.
     ContextMenu {
         target: MenuTarget,
@@ -385,8 +391,15 @@ impl GridView {
                 self.cols = None;
                 self.navigate(nav);
             }
+            GridEvent::AutoFit { column } => {
+                if column < self.columns.len() {
+                    self.fit_column(column);
+                    self.set_scroll(self.first_row, self.scroll_x);
+                }
+            }
             // Handled by the app, which turns them into commands.
-            GridEvent::StartEdit { .. }
+            GridEvent::EditMove(_)
+            | GridEvent::StartEdit { .. }
             | GridEvent::ClearCell
             | GridEvent::InsertRows
             | GridEvent::DeleteRows
@@ -505,6 +518,16 @@ pub struct Grid<'a, Message> {
     view: &'a GridView,
     tokens: Tokens,
     on_event: Box<dyn Fn(GridEvent) -> Message + 'a>,
+    /// Editor drawn over the selected cell while it is being edited.
+    editor: Option<Element<'a, Message>>,
+}
+
+impl<'a, Message> Grid<'a, Message> {
+    /// Shows `editor` over the selected cell.
+    pub fn editor(mut self, editor: Option<Element<'a, Message>>) -> Self {
+        self.editor = editor;
+        self
+    }
 }
 
 impl<Message> std::fmt::Debug for Grid<'_, Message> {
@@ -524,6 +547,7 @@ pub fn grid<'a, Message>(
         view,
         tokens,
         on_event: Box::new(on_event),
+        editor: None,
     }
 }
 
@@ -534,6 +558,8 @@ struct State {
     reported: Option<(usize, u32)>,
     /// Time and cell of the last click, to detect double-clicks.
     last_click: Option<(Instant, (usize, usize))>,
+    /// Time and column of the last press on a column edge.
+    last_edge_click: Option<(Instant, usize)>,
     modifiers: keyboard::Modifiers,
 }
 
@@ -705,6 +731,26 @@ impl<Message> Grid<'_, Message> {
             .map(|(i, _, _)| i)
     }
 
+    /// Screen rectangle of the selected cell, if it is visible.
+    fn selected_cell_rect(&self, regions: &Regions) -> Option<Rectangle> {
+        let (row, column) = self.view.selected?;
+        let first = self.view.first_row;
+        if row < first {
+            return None;
+        }
+        let (_, x, width) = self
+            .visible_columns(regions.body)
+            .into_iter()
+            .find(|&(c, _, _)| c == column)?;
+        let rect = Rectangle {
+            x,
+            y: regions.body.y + (row - first) as f32 * regions.m.row_height,
+            width,
+            height: regions.m.row_height,
+        };
+        rect.intersection(&regions.body)
+    }
+
     /// Row under a y coordinate in the body.
     fn row_at(&self, regions: &Regions, y: f32) -> Option<usize> {
         if y < regions.body.y || y >= regions.body.y + regions.body.height {
@@ -766,22 +812,62 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
 
     fn layout(
         &mut self,
-        _tree: &mut Tree,
-        _renderer: &Renderer,
+        tree: &mut Tree,
+        renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        layout::Node::new(limits.max())
+        let size = limits.max();
+        if self.editor.is_none() {
+            return layout::Node::new(size);
+        }
+        // Lay the editor out over the selected cell (local coordinates); off
+        // screen when the cell is scrolled out of view.
+        let regions = Regions::new(Rectangle::new(Point::ORIGIN, size), self.view);
+        let rect = self.selected_cell_rect(&regions).unwrap_or(Rectangle::new(
+            Point::new(-10_000.0, -10_000.0),
+            Size::new(1.0, 1.0),
+        ));
+        let Some(editor) = &mut self.editor else {
+            return layout::Node::new(size);
+        };
+        let child_limits = layout::Limits::new(Size::ZERO, rect.size());
+        let child = editor
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, &child_limits)
+            .move_to(rect.position());
+        layout::Node::with_children(size, vec![child])
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        self.editor.iter().map(Tree::new).collect()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        match &self.editor {
+            Some(editor) => tree.diff_children(std::slice::from_ref(editor)),
+            None => tree.children.clear(),
+        }
     }
 
     fn operate(
         &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
-        _renderer: &Renderer,
+        renderer: &Renderer,
         operation: &mut dyn widget::Operation,
     ) {
         let state = tree.state.downcast_mut::<State>();
         operation.focusable(Some(&GRID_ID), layout.bounds(), state);
+        if let (Some(editor), Some(child_layout)) = (&mut self.editor, layout.children().next()) {
+            operation.traverse(&mut |operation| {
+                editor.as_widget_mut().operate(
+                    &mut tree.children[0],
+                    child_layout,
+                    renderer,
+                    operation,
+                );
+            });
+        }
     }
 
     fn tag(&self) -> widget::tree::Tag {
@@ -798,11 +884,41 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        _renderer: &Renderer,
-        _clipboard: &mut dyn Clipboard,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
-        _viewport: &Rectangle,
+        viewport: &Rectangle,
     ) {
+        if let (Some(editor), Some(child_layout)) = (&mut self.editor, layout.children().next()) {
+            editor.as_widget_mut().update(
+                &mut tree.children[0],
+                event,
+                child_layout,
+                cursor,
+                renderer,
+                clipboard,
+                shell,
+                viewport,
+            );
+            if shell.is_event_captured() {
+                return;
+            }
+            // Keys the text input doesn't use apply the edit and move.
+            if let Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event {
+                let nav = match key.as_ref() {
+                    keyboard::Key::Named(Named::ArrowUp) => Some(Nav::Up),
+                    keyboard::Key::Named(Named::ArrowDown) => Some(Nav::Down),
+                    keyboard::Key::Named(Named::Tab) if modifiers.shift() => Some(Nav::Left),
+                    keyboard::Key::Named(Named::Tab) => Some(Nav::Right),
+                    _ => None,
+                };
+                if let Some(nav) = nav {
+                    shell.publish((self.on_event)(GridEvent::EditMove(nav)));
+                    shell.capture_event();
+                    return;
+                }
+            }
+        }
         let state = tree.state.downcast_mut::<State>();
         let regions = Regions::new(layout.bounds(), self.view);
         let view = self.view;
@@ -853,11 +969,21 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                         }));
                     }
                 } else if let Some(column) = self.column_border_at(&regions, position) {
-                    state.drag = Drag::Column {
-                        column,
-                        origin_x: position.x,
-                        origin_width: view.columns[column].width,
-                    };
+                    let now = Instant::now();
+                    let double = state.last_edge_click.is_some_and(|(at, c)| {
+                        c == column && now.duration_since(at) < DOUBLE_CLICK
+                    });
+                    if double {
+                        state.last_edge_click = None;
+                        shell.publish((self.on_event)(GridEvent::AutoFit { column }));
+                    } else {
+                        state.last_edge_click = Some((now, column));
+                        state.drag = Drag::Column {
+                            column,
+                            origin_x: position.x,
+                            origin_width: view.columns[column].width,
+                        };
+                    }
                 } else if regions.header.contains(position) {
                     if let Some(column) = self.column_at(&regions, position.x) {
                         shell.publish((self.on_event)(GridEvent::SelectColumns {
@@ -1101,9 +1227,20 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         tree: &Tree,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        _viewport: &Rectangle,
-        _renderer: &Renderer,
+        viewport: &Rectangle,
+        renderer: &Renderer,
     ) -> mouse::Interaction {
+        if let (Some(editor), Some(child_layout)) = (&self.editor, layout.children().next())
+            && cursor.is_over(child_layout.bounds())
+        {
+            return editor.as_widget().mouse_interaction(
+                &tree.children[0],
+                child_layout,
+                cursor,
+                viewport,
+                renderer,
+            );
+        }
         let state = tree.state.downcast_ref::<State>();
         match state.drag {
             Drag::Column { .. } => return mouse::Interaction::ResizingHorizontally,
@@ -1124,11 +1261,11 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         &self,
         tree: &Tree,
         renderer: &mut Renderer,
-        _theme: &Theme,
-        _style: &renderer::Style,
+        theme: &Theme,
+        style: &renderer::Style,
         layout: Layout<'_>,
-        _cursor: mouse::Cursor,
-        _viewport: &Rectangle,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
     ) {
         let view = self.view;
         let regions = Regions::new(layout.bounds(), view);
@@ -1428,6 +1565,20 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 },
                 t.selection,
             );
+        }
+
+        if let (Some(editor), Some(child_layout)) = (&self.editor, layout.children().next()) {
+            renderer.with_layer(regions.body, |renderer| {
+                editor.as_widget().draw(
+                    &tree.children[0],
+                    renderer,
+                    theme,
+                    style,
+                    child_layout,
+                    cursor,
+                    viewport,
+                );
+            });
         }
 
         if view.columns.is_empty() {

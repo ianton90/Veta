@@ -294,10 +294,12 @@ pub fn formula_bar<'a>(
             .on_input(Message::EditInput)
             .on_submit(Message::CommitEdit);
     }
-    let hint = if edit.is_some() {
-        "Enter to apply · Esc to cancel"
-    } else {
-        ""
+    let (hint, hint_color) = match edit {
+        Some(Edit {
+            error: Some(error), ..
+        }) => (error.as_str(), Color::from_rgb8(0xd1, 0x43, 0x43)),
+        Some(_) => ("Enter to apply · Esc to cancel", t.muted_text),
+        None => ("", t.muted_text),
     };
     container(
         row![
@@ -308,7 +310,7 @@ pub fn formula_bar<'a>(
                 .wrapping(text::Wrapping::None),
             icon(Icon::Function, ui.size).color(t.muted_text),
             input,
-            text(hint).size(ui.small()).color(t.muted_text),
+            text(hint).size(ui.small()).color(hint_color),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
