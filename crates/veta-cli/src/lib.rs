@@ -122,6 +122,16 @@ pub enum Command {
     },
     /// Show writer settings, or change them with the options below.
     WriterSettings(edit::WriterArgs),
+    /// Column statistics: count, nulls, distinct, min, max, mean, std dev.
+    Stats {
+        file: PathBuf,
+        /// Only these columns (repeatable; default: all).
+        #[arg(short, long = "column", value_name = "NAME")]
+        columns: Vec<String>,
+        /// Print JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
     /// Apply a recipe (steps saved from the desktop app) to a file.
     Apply {
         /// Recipe file (.json).
@@ -312,6 +322,11 @@ fn execute(command: Command, out: &mut impl Write) -> Result<(), Error> {
         }
         Command::Meta { command } => edit::meta(command, out),
         Command::WriterSettings(args) => edit::writer_settings(args, out),
+        Command::Stats {
+            file,
+            columns,
+            json,
+        } => stats(&open(&file)?, columns, json, out),
         Command::Apply {
             recipe,
             file,
@@ -464,6 +479,44 @@ fn head(doc: &Document, rows: usize, out: &mut impl Write) -> Result<(), Error> 
     Ok(())
 }
 
+fn stats(
+    doc: &Document,
+    columns: Vec<String>,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<(), Error> {
+    use veta_core::stats::{format_distinct, format_float};
+    let stats = doc.stats_job(columns)?.run(&mut |_| true)?;
+    if json {
+        writeln!(out, "{}", veta_core::stats::to_json(&stats)?)?;
+        return Ok(());
+    }
+    let header: Vec<String> = [
+        "column", "type", "count", "nulls", "distinct", "min", "max", "mean", "std dev",
+    ]
+    .map(String::from)
+    .to_vec();
+    let rows: Vec<Vec<Option<String>>> = stats
+        .iter()
+        .map(|s| {
+            vec![
+                Some(s.column.clone()),
+                Some(s.type_name.clone()),
+                Some(s.count.to_string()),
+                Some(s.nulls.to_string()),
+                format_distinct(s),
+                s.min.clone(),
+                s.max.clone(),
+                s.mean.map(format_float),
+                s.std_dev.map(format_float),
+            ]
+        })
+        .collect();
+    let right = [false, false, true, true, true, false, false, true, true];
+    table::write(out, &header, None, &rows, &right)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,6 +629,30 @@ mod tests {
         let mut out = Vec::new();
         execute(command, &mut out).map_err(|e| e.to_string())?;
         Ok(String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn stats_table_and_json() {
+        let dir = TempDir::new();
+        let file = dir.join("mixed.parquet");
+        fixtures::mixed_settings(&file);
+        let f = file.to_str().unwrap();
+        let table = run_args(&["veta", "stats", f]).unwrap();
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(lines[0].starts_with("column"), "{table}");
+        assert_eq!(lines.len(), 2 + 4, "{table}");
+        let id = lines.iter().find(|l| l.starts_with("id ")).unwrap();
+        assert!(
+            id.contains("1000") && id.contains("499.5") && id.contains("999"),
+            "{id}"
+        );
+
+        let json = run_args(&["veta", "stats", f, "-c", "name", "--json"]).unwrap();
+        assert!(
+            json.contains("\"column\": \"name\"") && json.contains("\"distinct\": 5"),
+            "{json}"
+        );
+        assert!(run_args(&["veta", "stats", f, "-c", "nope"]).is_err());
     }
 
     #[test]
