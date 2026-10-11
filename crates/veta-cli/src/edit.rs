@@ -188,6 +188,9 @@ pub struct ConvertArgs {
     /// CSV field separator, e.g. ";" or "tab" (default: "," or tab for .tsv).
     #[arg(long)]
     pub delimiter: Option<String>,
+    /// CSV quote character, or "none" (default: ").
+    #[arg(long)]
+    pub quote: Option<String>,
     /// CSV decimal separator.
     #[arg(long, default_value = ".")]
     pub decimal: char,
@@ -228,6 +231,16 @@ pub fn convert(args: ConvertArgs, out: &mut impl Write) -> Result<(), Error> {
             ))),
         }
     };
+    let quote = match args.quote.as_deref() {
+        None => Some(b'"'),
+        Some("none") => None,
+        Some(q) if q.len() == 1 => Some(q.as_bytes()[0]),
+        Some(q) => {
+            return Err(Error::Usage(format!(
+                "the quote must be one character or \"none\", not {q:?}"
+            )));
+        }
+    };
     let budget = veta_core::io::DEFAULT_MEMORY_BUDGET;
     let mut doc = match from {
         FileFormat::Parquet => crate::open(&args.input)?,
@@ -235,6 +248,7 @@ pub fn convert(args: ConvertArgs, out: &mut impl Write) -> Result<(), Error> {
             &args.input,
             &CsvOptions {
                 delimiter: delimiter(&args.input)?,
+                quote,
                 header: !args.no_header,
                 encoding: match args.encoding {
                     InputEncoding::Utf8 => TextEncoding::Utf8,
@@ -256,9 +270,9 @@ pub fn convert(args: ConvertArgs, out: &mut impl Write) -> Result<(), Error> {
         }
         FileFormat::Csv => ExportFormat::Csv(CsvExportOptions {
             delimiter: delimiter(&args.output)?,
+            quote,
             header: !args.no_header,
             decimal: args.decimal,
-            ..CsvExportOptions::default()
         }),
         FileFormat::Json => ExportFormat::JsonArray,
         FileFormat::Ndjson => ExportFormat::JsonLines,

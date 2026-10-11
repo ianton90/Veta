@@ -42,7 +42,9 @@ pub enum TextEncoding {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CsvOptions {
     pub delimiter: u8,
-    pub quote: u8,
+    /// Character around values that contain separators; `None` reads
+    /// quotes as ordinary characters.
+    pub quote: Option<u8>,
     /// The first row holds column names.
     pub header: bool,
     pub encoding: TextEncoding,
@@ -57,7 +59,7 @@ impl Default for CsvOptions {
     fn default() -> Self {
         Self {
             delimiter: b',',
-            quote: b'"',
+            quote: Some(b'"'),
             header: true,
             encoding: TextEncoding::Utf8,
             decimal: '.',
@@ -78,7 +80,8 @@ pub struct CsvPreview {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CsvExportOptions {
     pub delimiter: u8,
-    pub quote: u8,
+    /// Character around values that need it; `None` never quotes.
+    pub quote: Option<u8>,
     pub header: bool,
     /// Decimal separator for numbers.
     pub decimal: char,
@@ -88,7 +91,7 @@ impl Default for CsvExportOptions {
     fn default() -> Self {
         Self {
             delimiter: b',',
-            quote: b'"',
+            quote: Some(b'"'),
             header: true,
             decimal: '.',
         }
@@ -292,7 +295,8 @@ fn csv_format(options: &CsvOptions) -> arrow::csv::reader::Format {
     arrow::csv::reader::Format::default()
         .with_header(options.header)
         .with_delimiter(options.delimiter)
-        .with_quote(options.quote)
+        // No quoting: a byte that doesn't occur in text files.
+        .with_quote(options.quote.unwrap_or(0))
         .with_truncated_rows(true)
 }
 
@@ -657,11 +661,14 @@ fn write_export(
     };
     match format {
         ExportFormat::Csv(options) => {
-            let mut writer = arrow::csv::WriterBuilder::new()
+            let mut builder = arrow::csv::WriterBuilder::new()
                 .with_header(options.header)
-                .with_delimiter(options.delimiter)
-                .with_quote(options.quote)
-                .build(file);
+                .with_delimiter(options.delimiter);
+            builder = match options.quote {
+                Some(quote) => builder.with_quote(quote),
+                None => builder.with_quote_style(arrow::csv::QuoteStyle::Never),
+            };
+            let mut writer = builder.build(file);
             for batch in batches.by_ref() {
                 let batch = decimal_text(&batch?, options.decimal)?;
                 writer.write(&batch)?;
@@ -814,6 +821,59 @@ mod tests {
         assert_eq!(c[1][2], None, "invalid values become null");
         options.types = Some(vec![DataType::Utf8]);
         assert!(import_csv(&path, &options, 1 << 30, &mut |_| true).is_err());
+    }
+
+    #[test]
+    fn quote_characters() {
+        let dir = TempDir::new();
+        let path = dir.join("q.csv");
+        std::fs::write(&path, "a|b\n'x|y'|\"z\"\n").unwrap();
+        let read = |quote| {
+            let options = CsvOptions {
+                delimiter: b'|',
+                quote,
+                ..CsvOptions::default()
+            };
+            cells(&import_csv(&path, &options, 1 << 30, &mut |_| true).unwrap())
+        };
+        assert_eq!(
+            read(Some(b'\'')),
+            [[Some("x|y".to_owned()), Some("\"z\"".into())]]
+        );
+        // Without quoting, quotes are ordinary text.
+        std::fs::write(&path, "a|b\n'x'|\"z\"\n").unwrap();
+        assert_eq!(read(None), [[Some("'x'".to_owned()), Some("\"z\"".into())]]);
+        std::fs::write(&path, "a|b\n'x|y'|\"z\"\n").unwrap();
+
+        let out = dir.join("out.csv");
+        let doc = import_csv(
+            &path,
+            &CsvOptions {
+                delimiter: b'|',
+                quote: Some(b'\''),
+                ..CsvOptions::default()
+            },
+            1 << 30,
+            &mut |_| true,
+        )
+        .unwrap();
+        let export_with = |quote| {
+            let options = CsvExportOptions {
+                delimiter: b'|',
+                quote,
+                ..CsvExportOptions::default()
+            };
+            export(
+                &doc.output().unwrap(),
+                &out,
+                &ExportFormat::Csv(options),
+                &mut |_| true,
+            )
+            .unwrap();
+            std::fs::read_to_string(&out).unwrap()
+        };
+        assert_eq!(export_with(Some(b'\'')).lines().nth(1), Some("'x|y'|\"z\""));
+        assert_eq!(export_with(None).lines().nth(1), Some("x|y|\"z\""));
     }
 
     #[test]

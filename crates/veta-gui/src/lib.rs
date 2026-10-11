@@ -4092,6 +4092,24 @@ mod tests {
     }
 
     #[test]
+    fn csv_quote_and_custom_separator() {
+        let dir = TempDir::new();
+        let csv = dir.join("q.txt");
+        std::fs::write(&csv, "a#b\n'x#y'#2\n").unwrap();
+        let mut dialog = ImportDialog::new(csv);
+        dialog.update(ImportMessage::Delimiter(dialogs::Delimiter::Other));
+        dialog.update(ImportMessage::Other("ab".into()));
+        assert!(
+            dialog.update(ImportMessage::Import).is_none(),
+            "bad separator"
+        );
+        dialog.update(ImportMessage::Other("#".into()));
+        dialog.update(ImportMessage::Quote(dialogs::Quote::Single));
+        let options = dialog.update(ImportMessage::Import).unwrap();
+        assert_eq!((options.delimiter, options.quote), (b'#', Some(b'\'')));
+    }
+
+    #[test]
     fn export_dialog() {
         let dir = TempDir::new();
         let path = dir.join("m.parquet");

@@ -1267,18 +1267,68 @@ pub enum Delimiter {
     Semicolon,
     Tab,
     Pipe,
+    /// Typed by the user.
+    Other,
 }
 
 impl Delimiter {
-    pub const ALL: [Delimiter; 4] = [Self::Comma, Self::Semicolon, Self::Tab, Self::Pipe];
+    pub const ALL: [Delimiter; 5] = [
+        Self::Comma,
+        Self::Semicolon,
+        Self::Tab,
+        Self::Pipe,
+        Self::Other,
+    ];
 
-    fn byte(self) -> u8 {
-        match self {
+    fn byte(self) -> Option<u8> {
+        Some(match self {
             Self::Comma => b',',
             Self::Semicolon => b';',
             Self::Tab => b'\t',
             Self::Pipe => b'|',
+            Self::Other => return None,
+        })
+    }
+}
+
+/// The separator byte: a preset, or the single ASCII character typed.
+fn separator(delimiter: Delimiter, other: &str) -> Result<u8, String> {
+    if let Some(b) = delimiter.byte() {
+        return Ok(b);
+    }
+    match other.as_bytes() {
+        [b] if b.is_ascii() && !b.is_ascii_alphanumeric() && *b != b'\n' => Ok(*b),
+        _ => Err("Type one punctuation character as the separator.".into()),
+    }
+}
+
+/// Quote characters (text qualifiers) for CSV files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quote {
+    Double,
+    Single,
+    None,
+}
+
+impl Quote {
+    pub const ALL: [Quote; 3] = [Self::Double, Self::Single, Self::None];
+
+    fn byte(self) -> Option<u8> {
+        match self {
+            Self::Double => Some(b'"'),
+            Self::Single => Some(b'\''),
+            Self::None => None,
         }
+    }
+}
+
+impl std::fmt::Display for Quote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Double => "double ( \" )",
+            Self::Single => "single ( ' )",
+            Self::None => "none",
+        })
     }
 }
 
@@ -1289,6 +1339,7 @@ impl std::fmt::Display for Delimiter {
             Self::Semicolon => "semicolon ( ; )",
             Self::Tab => "tab",
             Self::Pipe => "pipe ( | )",
+            Self::Other => "other…",
         })
     }
 }
@@ -1328,7 +1379,7 @@ impl std::fmt::Display for EncodingChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Utf8 => "UTF-8",
-            Self::Latin1 => "Latin-1 (Windows Western)",
+            Self::Latin1 => "Latin-1",
         })
     }
 }
@@ -1341,6 +1392,9 @@ const PREVIEW_ROWS: usize = 12;
 pub struct ImportDialog {
     pub path: std::path::PathBuf,
     delimiter: Delimiter,
+    /// The separator typed when `delimiter` is `Other`.
+    other: String,
+    quote: Quote,
     header: bool,
     encoding: EncodingChoice,
     decimal: DecimalMark,
@@ -1352,6 +1406,8 @@ pub struct ImportDialog {
 #[derive(Debug, Clone)]
 pub enum ImportMessage {
     Delimiter(Delimiter),
+    Other(String),
+    Quote(Quote),
     Header(bool),
     Encoding(EncodingChoice),
     Decimal(DecimalMark),
@@ -1372,6 +1428,8 @@ impl ImportDialog {
             } else {
                 Delimiter::Comma
             },
+            other: String::new(),
+            quote: Quote::Double,
             header: true,
             encoding: EncodingChoice::Utf8,
             decimal: DecimalMark::Dot,
@@ -1395,8 +1453,10 @@ impl ImportDialog {
         let first = head[..n].split(|&b| b == b'\n').next().unwrap_or_default();
         if let Some(best) = Delimiter::ALL
             .into_iter()
-            .max_by_key(|d| first.iter().filter(|&&b| b == d.byte()).count())
-            .filter(|d| first.contains(&d.byte()))
+            .filter_map(|d| Some((d, d.byte()?)))
+            .max_by_key(|(_, b)| first.iter().filter(|&&c| c == *b).count())
+            .filter(|(_, b)| first.contains(b))
+            .map(|(d, _)| d)
         {
             self.delimiter = best;
             if best == Delimiter::Semicolon {
@@ -1407,8 +1467,8 @@ impl ImportDialog {
 
     pub fn options(&self) -> CsvOptions {
         CsvOptions {
-            delimiter: self.delimiter.byte(),
-            quote: b'"',
+            delimiter: separator(self.delimiter, &self.other).unwrap_or(b','),
+            quote: self.quote.byte(),
             header: self.header,
             encoding: match self.encoding {
                 EncodingChoice::Utf8 => TextEncoding::Utf8,
@@ -1423,6 +1483,10 @@ impl ImportDialog {
     fn refresh(&mut self, guess: bool) {
         if guess {
             self.types.clear();
+        }
+        if let Err(e) = separator(self.delimiter, &self.other) {
+            self.preview = Err(e);
+            return;
         }
         self.preview =
             preview_csv(&self.path, &self.options(), PREVIEW_ROWS).map_err(|e| e.to_string());
@@ -1441,6 +1505,14 @@ impl ImportDialog {
         match message {
             ImportMessage::Delimiter(d) => {
                 self.delimiter = d;
+                self.refresh(true);
+            }
+            ImportMessage::Other(text) => {
+                self.other = text;
+                self.refresh(true);
+            }
+            ImportMessage::Quote(q) => {
+                self.quote = q;
                 self.refresh(true);
             }
             ImportMessage::Header(on) => {
@@ -1478,12 +1550,26 @@ impl ImportDialog {
         let options = row![
             column![
                 text("Separator").size(13),
-                pick_list(
-                    Delimiter::ALL,
-                    Some(self.delimiter),
-                    ImportMessage::Delimiter
-                )
-                .width(170),
+                row![
+                    pick_list(
+                        Delimiter::ALL,
+                        Some(self.delimiter),
+                        ImportMessage::Delimiter
+                    )
+                    .width(160),
+                ]
+                .extend((self.delimiter == Delimiter::Other).then(|| {
+                    text_input("", &self.other)
+                        .on_input(ImportMessage::Other)
+                        .width(36)
+                        .into()
+                }))
+                .spacing(4),
+            ]
+            .spacing(4),
+            column![
+                text("Quote").size(13),
+                pick_list(Quote::ALL, Some(self.quote), ImportMessage::Quote).width(130),
             ]
             .spacing(4),
             column![
@@ -1503,13 +1589,13 @@ impl ImportDialog {
                     Some(self.encoding),
                     ImportMessage::Encoding
                 )
-                .width(220),
+                .width(150),
             ]
             .spacing(4),
             column![
                 text(" ").size(13),
                 checkbox(self.header)
-                    .label("First row has column names")
+                    .label("Header row")
                     .on_toggle(ImportMessage::Header),
             ]
             .spacing(8),
@@ -1608,6 +1694,9 @@ impl std::fmt::Display for ExportChoice {
 pub struct ExportDialog {
     pub choice: ExportChoice,
     delimiter: Delimiter,
+    other: String,
+    quote: Quote,
+    error: Option<String>,
     decimal: DecimalMark,
     header: bool,
 }
@@ -1616,6 +1705,8 @@ pub struct ExportDialog {
 pub enum ExportMessage {
     Format(ExportChoice),
     Delimiter(Delimiter),
+    Other(String),
+    Quote(Quote),
     Decimal(DecimalMark),
     Header(bool),
     Export,
@@ -1627,6 +1718,9 @@ impl Default for ExportDialog {
         Self {
             choice: ExportChoice::Csv,
             delimiter: Delimiter::Comma,
+            other: String::new(),
+            quote: Quote::Double,
+            error: None,
             decimal: DecimalMark::Dot,
             header: true,
         }
@@ -1637,8 +1731,8 @@ impl ExportDialog {
     pub fn format(&self) -> ExportFormat {
         match self.choice {
             ExportChoice::Csv => ExportFormat::Csv(CsvExportOptions {
-                delimiter: self.delimiter.byte(),
-                quote: b'"',
+                delimiter: separator(self.delimiter, &self.other).unwrap_or(b','),
+                quote: self.quote.byte(),
                 header: self.header,
                 decimal: self.decimal.char(),
             }),
@@ -1649,8 +1743,11 @@ impl ExportDialog {
 
     /// Handles a message. Returns the format on submit.
     pub fn update(&mut self, message: ExportMessage) -> Option<ExportFormat> {
+        self.error = None;
         match message {
             ExportMessage::Format(c) => self.choice = c,
+            ExportMessage::Other(text) => self.other = text,
+            ExportMessage::Quote(q) => self.quote = q,
             ExportMessage::Delimiter(d) => {
                 self.delimiter = d;
                 if d == Delimiter::Semicolon {
@@ -1660,7 +1757,15 @@ impl ExportDialog {
             ExportMessage::Decimal(d) => self.decimal = d,
             ExportMessage::Header(on) => self.header = on,
             ExportMessage::Cancel => {}
-            ExportMessage::Export => return Some(self.format()),
+            ExportMessage::Export => {
+                if self.choice == ExportChoice::Csv
+                    && let Err(e) = separator(self.delimiter, &self.other)
+                {
+                    self.error = Some(e);
+                    return None;
+                }
+                return Some(self.format());
+            }
         }
         None
     }
@@ -1693,13 +1798,28 @@ impl ExportDialog {
             body = body
                 .push(labelled(
                     "Separator",
-                    pick_list(
-                        Delimiter::ALL,
-                        Some(self.delimiter),
-                        ExportMessage::Delimiter,
-                    )
-                    .width(Length::Fill)
+                    row![
+                        pick_list(
+                            Delimiter::ALL,
+                            Some(self.delimiter),
+                            ExportMessage::Delimiter,
+                        )
+                        .width(Length::Fill)
+                    ]
+                    .extend((self.delimiter == Delimiter::Other).then(|| {
+                        text_input("", &self.other)
+                            .on_input(ExportMessage::Other)
+                            .width(36)
+                            .into()
+                    }))
+                    .spacing(4)
                     .into(),
+                ))
+                .push(labelled(
+                    "Quote",
+                    pick_list(Quote::ALL, Some(self.quote), ExportMessage::Quote)
+                        .width(Length::Fill)
+                        .into(),
                 ))
                 .push(labelled(
                     "Decimal",

@@ -698,6 +698,25 @@ mod tests {
         let round_trip = run_args(&["veta", "head", &p(&back), "-n", "5"]).unwrap();
         assert_eq!(original, round_trip);
 
+        let piped = dir.join("p.csv");
+        run_args(&[
+            "veta",
+            "convert",
+            &p(&parquet),
+            &p(&piped),
+            "--delimiter",
+            "|",
+            "--quote",
+            "'",
+        ])
+        .unwrap();
+        assert!(
+            std::fs::read_to_string(&piped)
+                .unwrap()
+                .starts_with("id|name|score|flag")
+        );
+        assert!(run_args(&["veta", "convert", &p(&parquet), &p(&piped), "--quote", "ab"]).is_err());
+
         let err = run_args(&["veta", "convert", &p(&parquet), &p(&dir.join("x.xyz"))]);
         assert!(err.unwrap_err().contains("--format"));
         run_args(&[
