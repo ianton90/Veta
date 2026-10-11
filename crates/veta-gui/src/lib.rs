@@ -1099,6 +1099,13 @@ impl App {
                     tab.grid.set_preview(preview, doc);
                 }
             }
+            Message::RemoveStep(_) | Message::MoveStep(..) | Message::EditStep(_)
+                if self.active.is_some_and(|id| !self.steps_changeable(id)) =>
+            {
+                if let Some(id) = self.active {
+                    self.not_editable(id);
+                }
+            }
             Message::RemoveStep(index) => {
                 if let Some(id) = self.active {
                     self.change_steps(id, index, Command::RemoveStep { index });
@@ -1329,6 +1336,16 @@ impl App {
                 }
             }
             Action::Undo | Action::Redo => {
+                if let Some(id) = self.active
+                    && self
+                        .workbook
+                        .get(id)
+                        .is_some_and(|d| matches!(d.status(), Status::Computing { .. }))
+                {
+                    // Cancel stops the pass (and undoes the change).
+                    self.not_editable(id);
+                    return Task::none();
+                }
                 self.edit = None;
                 if let Some(id) = self.active
                     && let Some(doc) = self.workbook.get_mut(id)
@@ -1534,6 +1551,20 @@ impl App {
         !previewing && ready
     }
 
+    /// Whether steps can be removed, moved or edited: not while one is
+    /// computing or a filter is on (broken steps can be fixed).
+    fn steps_changeable(&self, id: DocumentId) -> bool {
+        let computing = self
+            .workbook
+            .get(id)
+            .is_some_and(|d| matches!(d.status(), Status::Computing { .. }));
+        let filtered = self
+            .tabs
+            .iter()
+            .any(|t| t.id == id && t.grid.filter().is_some());
+        !computing && !filtered
+    }
+
     /// Explains why a change can't be made right now.
     fn not_editable(&mut self, id: DocumentId) {
         let message = match self.workbook.get(id).map(Document::status) {
@@ -1544,7 +1575,10 @@ impl App {
                 )
             }
             Some(Status::Computing { step }) => {
-                format!("Step {} is still being computed.", step + 1)
+                format!(
+                    "Step {} is still being computed. Wait for it, or cancel it.",
+                    step + 1
+                )
             }
             _ if self
                 .tabs
@@ -2571,9 +2605,11 @@ impl App {
                     grid::grid(&tab.grid, ui.tokens, move |e| Message::Grid(id, e)).editor(editor);
                 let grid: Element<'_, Message> =
                     match self.computing.as_ref().filter(|c| c.document == id) {
+                        // Not opaque: the table can still be scrolled and
+                        // read; edits are refused until the step is done.
                         Some(c) => stack![
                             grid,
-                            opaque(panes::computing(computing_label(doc, c), c.progress, ui))
+                            panes::computing(computing_label(doc, c), c.progress, ui)
                         ]
                         .into(),
                         None => grid.into(),
@@ -3448,6 +3484,75 @@ mod tests {
         let _ = app.update(Message::Filter(FilterMessage::Apply));
         finish_compute(&mut app, id);
         assert_eq!(rows(&app), anas);
+    }
+
+    #[test]
+    fn no_edits_while_computing_but_other_files_work() {
+        let dir = TempDir::new();
+        let a = dir.join("a.parquet");
+        let b = dir.join("b.parquet");
+        fixtures::mixed_settings(&a);
+        fixtures::mixed_settings(&b);
+        let mut app = app_with(&[&a, &b]);
+        let (ida, idb) = (app.tabs[0].id, app.tabs[1].id);
+        let _ = app.update(Message::SelectTab(ida));
+        let _ = app.update(Message::Grid(ida, GridEvent::Select { row: 0, column: 0 }));
+        let _ = app.update(Message::Action(Action::SortDescending));
+        let steps = |app: &App, id| app.workbook.get(id).unwrap().steps().len();
+        assert_eq!(steps(&app, ida), 1);
+
+        let attempts = [
+            Message::Grid(
+                ida,
+                GridEvent::StartEdit {
+                    initial: Some("5".into()),
+                },
+            ),
+            Message::EditInput("5".into()),
+            Message::Grid(ida, GridEvent::ClearCell),
+            Message::Grid(ida, GridEvent::DeleteRows),
+            Message::Grid(ida, GridEvent::InsertRows),
+            Message::Grid(ida, GridEvent::MoveColumn { from: 0, to: 1 }),
+            Message::Action(Action::DeleteRows),
+            Message::Action(Action::RemoveColumns),
+            Message::Action(Action::SortAscending),
+            Message::Action(Action::Undo),
+            Message::RemoveStep(0),
+            Message::EditStep(0),
+            Message::LoadRecipe,
+        ];
+        for message in attempts {
+            let _ = app.update(message.clone());
+            assert!(app.edit.is_none(), "{message:?}");
+            assert!(app.dialog.is_none(), "{message:?}");
+            assert_eq!(steps(&app, ida), 1, "{message:?}");
+            assert!(app.computing.is_some(), "{message:?}");
+        }
+        // The column menu's actions are refused too.
+        let _ = app.update(Message::Grid(
+            ida,
+            GridEvent::ContextMenu {
+                target: MenuTarget::Column(0),
+                position: iced::Point::ORIGIN,
+            },
+        ));
+        let _ = app.update(Message::Menu(MenuItem::RemoveColumns));
+        assert_eq!(steps(&app, ida), 1);
+
+        // The other file can be edited meanwhile.
+        let _ = app.update(Message::SelectTab(idb));
+        let _ = app.update(Message::Grid(idb, GridEvent::Select { row: 0, column: 0 }));
+        let _ = app.update(Message::Action(Action::RemoveColumns));
+        assert!(matches!(app.dialog, Some(Dialog::Choose { .. })));
+        let _ = app.update(Message::CloseDialog);
+        let _ = app.update(Message::Grid(idb, GridEvent::Select { row: 1, column: 1 }));
+        let _ = app.update(Message::Grid(idb, GridEvent::ClearCell));
+        assert_eq!(steps(&app, idb), 1);
+
+        let _ = app.update(Message::SelectTab(ida));
+        finish_compute(&mut app, ida);
+        let _ = app.update(Message::Action(Action::Undo));
+        assert_eq!(steps(&app, ida), 0);
     }
 
     #[test]

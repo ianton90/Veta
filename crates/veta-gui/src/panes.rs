@@ -624,9 +624,18 @@ pub fn computing<'a>(label: String, progress: f32, ui: Ui) -> Element<'a, Messag
                 radius: 8.0.into(),
             })
     });
-    center(card)
-        .style(|_theme: &Theme| {
-            container::Style::default().background(Color::from_rgba(0.0, 0.0, 0.0, 0.2))
+    // A faint wash over the table, which stays readable.
+    container(card)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::End)
+        .align_y(Alignment::End)
+        .padding(16)
+        .style(move |_theme: &Theme| {
+            container::Style::default().background(Color {
+                a: 0.45,
+                ..t.background
+            })
         })
         .into()
 }
