@@ -152,12 +152,13 @@ veta writer-settings <file> [--column C]... [--compression ...] [--level N]
       [--encoding ...] [--dictionary on|off] [--statistics none|chunk|page]
       [--bloom-filter on|off] [--row-group-rows N] [--format-version 1|2]
 veta stats <file> [-c NAME]... [--json]
+veta convert <in> <out> [--from F] [--format parquet|csv|json|ndjson]
+      [--delimiter C] [--decimal C] [--no-header] [--encoding utf8|latin1]
 veta apply <recipe.json> <file>        # run steps saved from the GUI
 ```
 
 Rows and positions are numbered from 1, as in the GUI. Commands that modify
-write in place unless `-o FILE` is given. Planned: `convert`.
-
+write in place unless `-o FILE` is given. 
 Recipes (`veta_core::recipe`) are JSON: metadata (`format`, `version`, `name`,
 `description`, `created_with`, `source_file`) and a `steps` array; each step
 has `order`, `type`, a readable `description` (ignored on load) and

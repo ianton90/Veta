@@ -132,6 +132,9 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Convert between Parquet, CSV and JSON (formats from the file
+    /// extensions unless --format is given).
+    Convert(edit::ConvertArgs),
     /// Apply a recipe (steps saved from the desktop app) to a file.
     Apply {
         /// Recipe file (.json).
@@ -327,6 +330,7 @@ fn execute(command: Command, out: &mut impl Write) -> Result<(), Error> {
             columns,
             json,
         } => stats(&open(&file)?, columns, json, out),
+        Command::Convert(args) => edit::convert(args, out),
         Command::Apply {
             recipe,
             file,
@@ -653,6 +657,58 @@ mod tests {
             "{json}"
         );
         assert!(run_args(&["veta", "stats", f, "-c", "nope"]).is_err());
+    }
+
+    #[test]
+    fn convert_between_formats() {
+        let dir = TempDir::new();
+        let parquet = dir.join("mixed.parquet");
+        fixtures::mixed_settings(&parquet);
+        let p = |path: &std::path::Path| path.to_str().unwrap().to_owned();
+        let csv = dir.join("eu.csv");
+        let out = run_args(&[
+            "veta",
+            "convert",
+            &p(&parquet),
+            &p(&csv),
+            "--delimiter",
+            ";",
+            "--decimal",
+            ",",
+        ])
+        .unwrap();
+        assert!(out.starts_with("Wrote 1000 rows"), "{out}");
+        assert!(std::fs::read_to_string(&csv).unwrap().contains(";0,5;"));
+
+        let json = dir.join("out.ndjson");
+        run_args(&[
+            "veta",
+            "convert",
+            &p(&csv),
+            &p(&json),
+            "--delimiter",
+            ";",
+            "--decimal",
+            ",",
+        ])
+        .unwrap();
+        let back = dir.join("back.parquet");
+        run_args(&["veta", "convert", &p(&json), &p(&back)]).unwrap();
+        let original = run_args(&["veta", "head", &p(&parquet), "-n", "5"]).unwrap();
+        let round_trip = run_args(&["veta", "head", &p(&back), "-n", "5"]).unwrap();
+        assert_eq!(original, round_trip);
+
+        let err = run_args(&["veta", "convert", &p(&parquet), &p(&dir.join("x.xyz"))]);
+        assert!(err.unwrap_err().contains("--format"));
+        run_args(&[
+            "veta",
+            "convert",
+            &p(&parquet),
+            &p(&dir.join("x.xyz")),
+            "--format",
+            "json",
+        ])
+        .unwrap();
     }
 
     #[test]

@@ -146,6 +146,133 @@ pub fn edit(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum FileFormat {
+    Parquet,
+    Csv,
+    /// A JSON array of objects.
+    Json,
+    /// One JSON object per line.
+    Ndjson,
+}
+
+impl FileFormat {
+    fn from_path(path: &Path) -> Option<Self> {
+        let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+        Some(match ext.as_str() {
+            "parquet" | "parq" | "pq" => Self::Parquet,
+            "csv" | "tsv" | "txt" => Self::Csv,
+            "json" => Self::Json,
+            "ndjson" | "jsonl" => Self::Ndjson,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum InputEncoding {
+    Utf8,
+    Latin1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct ConvertArgs {
+    pub input: PathBuf,
+    pub output: PathBuf,
+    /// Input format (default: from the input's extension).
+    #[arg(long, value_enum)]
+    pub from: Option<FileFormat>,
+    /// Output format (default: from the output's extension).
+    #[arg(long = "format", value_enum)]
+    pub to: Option<FileFormat>,
+    /// CSV field separator, e.g. ";" or "tab" (default: "," or tab for .tsv).
+    #[arg(long)]
+    pub delimiter: Option<String>,
+    /// CSV decimal separator.
+    #[arg(long, default_value = ".")]
+    pub decimal: char,
+    /// The CSV input has no header row / don't write one.
+    #[arg(long)]
+    pub no_header: bool,
+    /// CSV input encoding.
+    #[arg(long, value_enum, default_value = "utf8")]
+    pub encoding: InputEncoding,
+}
+
+/// Converts a file between formats.
+pub fn convert(args: ConvertArgs, out: &mut impl Write) -> Result<(), Error> {
+    use veta_core::convert::{
+        CsvExportOptions, CsvOptions, ExportFormat, TextEncoding, export, import_csv, import_json,
+    };
+    let format_of = |given: Option<FileFormat>, path: &Path| {
+        given
+            .or_else(|| FileFormat::from_path(path))
+            .ok_or_else(|| {
+                Error::Usage(format!(
+                    "can't tell the format of {}; use --from/--format",
+                    path.display()
+                ))
+            })
+    };
+    let from = format_of(args.from, &args.input)?;
+    let to = format_of(args.to, &args.output)?;
+    let tab = |p: &Path| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("tsv"));
+    let delimiter = |path: &Path| -> Result<u8, Error> {
+        match args.delimiter.as_deref() {
+            None if tab(path) => Ok(b'\t'),
+            None => Ok(b','),
+            Some("tab" | "\\t") => Ok(b'\t'),
+            Some(d) if d.len() == 1 => Ok(d.as_bytes()[0]),
+            Some(d) => Err(Error::Usage(format!(
+                "the delimiter must be one character, not {d:?}"
+            ))),
+        }
+    };
+    let budget = veta_core::io::DEFAULT_MEMORY_BUDGET;
+    let mut doc = match from {
+        FileFormat::Parquet => crate::open(&args.input)?,
+        FileFormat::Csv => import_csv(
+            &args.input,
+            &CsvOptions {
+                delimiter: delimiter(&args.input)?,
+                header: !args.no_header,
+                encoding: match args.encoding {
+                    InputEncoding::Utf8 => TextEncoding::Utf8,
+                    InputEncoding::Latin1 => TextEncoding::Latin1,
+                },
+                decimal: args.decimal,
+                ..CsvOptions::default()
+            },
+            budget,
+            &mut |_| true,
+        )?,
+        FileFormat::Json | FileFormat::Ndjson => import_json(&args.input, budget, &mut |_| true)?,
+    };
+    let format = match to {
+        FileFormat::Parquet => {
+            doc.save(Some(args.output.clone()))?;
+            writeln!(out, "Saved {}", args.output.display())?;
+            return Ok(());
+        }
+        FileFormat::Csv => ExportFormat::Csv(CsvExportOptions {
+            delimiter: delimiter(&args.output)?,
+            header: !args.no_header,
+            decimal: args.decimal,
+            ..CsvExportOptions::default()
+        }),
+        FileFormat::Json => ExportFormat::JsonArray,
+        FileFormat::Ndjson => ExportFormat::JsonLines,
+    };
+    export(&doc.output()?, &args.output, &format, &mut |_| true)?;
+    writeln!(
+        out,
+        "Wrote {} rows to {}",
+        doc.num_rows(),
+        args.output.display()
+    )?;
+    Ok(())
+}
+
 /// Applies a recipe's steps to `file` and saves the result.
 pub fn apply(
     recipe: &Path,
