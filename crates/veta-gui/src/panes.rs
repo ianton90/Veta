@@ -16,7 +16,8 @@ use crate::theme::Tokens;
 use crate::{Edit, FORMULA_ID, MenuItem, Message, SideTab, Tab, Ui, bold};
 use std::collections::HashSet;
 
-use veta_core::display::ValueNode;
+use veta_core::arrow::datatypes::DataType;
+use veta_core::display::{PathPart, ValueNode};
 use veta_core::stats::ColumnStats;
 use veta_core::steps::Status;
 
@@ -90,14 +91,21 @@ pub fn empty_state(opening: bool, recent: &[PathBuf], ui: Ui) -> Element<'_, Mes
     center(content).into()
 }
 
+/// What the Value tab shows: the cell's tree, collapsed nodes and the leaf
+/// being edited (pointer, text, error).
+pub struct ValueView<'v> {
+    pub tree: Option<ValueNode>,
+    pub collapsed: &'v HashSet<String>,
+    pub leaf_edit: Option<(&'v [PathPart], &'v str, Option<&'v str>)>,
+}
+
 /// The side pane: applied steps or file details.
 pub fn side_pane<'a>(
     tab: &'a Tab,
     doc: &'a Document,
     side: SideTab,
     stats: StatsView,
-    value: Option<ValueNode>,
-    collapsed: &HashSet<String>,
+    value: ValueView<'_>,
     ui: Ui,
 ) -> Element<'a, Message> {
     let t = ui.tokens;
@@ -133,7 +141,7 @@ pub fn side_pane<'a>(
     let body = match side {
         SideTab::Steps => steps_pane(tab, doc, ui),
         SideTab::Stats => stats_pane(stats, ui),
-        SideTab::Value => value_pane(value, collapsed, ui),
+        SideTab::Value => value_pane(value.tree, value.collapsed, value.leaf_edit, ui),
         SideTab::File => file_details(doc, ui),
     };
     container(column![container(tabs).padding([8, 12]), body])
@@ -147,6 +155,7 @@ pub fn side_pane<'a>(
 fn value_pane<'a>(
     value: Option<ValueNode>,
     collapsed: &HashSet<String>,
+    leaf_edit: Option<(&[PathPart], &str, Option<&str>)>,
     ui: Ui,
 ) -> Element<'a, Message> {
     let t = ui.tokens;
@@ -179,12 +188,55 @@ fn value_pane<'a>(
         } else {
             t.text
         };
+        // Values inside nested cells can be edited in place.
+        let editing = leaf_edit.filter(|(pointer, ..)| *pointer == node.pointer.as_slice());
+        let value: Element<'a, Message> = match editing {
+            Some((_, current, error)) => {
+                let mut column = column![
+                    text_input("null", current)
+                        .id(crate::LEAF_ID)
+                        .size(ui.small())
+                        .padding([1, 4])
+                        .on_input(Message::LeafInput)
+                        .on_submit(Message::CommitLeaf)
+                        .width(140)
+                ];
+                if let Some(error) = error {
+                    column = column.push(
+                        text(error.to_owned())
+                            .size(ui.small() - 1.0)
+                            .color(Color::from_rgb8(0xd1, 0x43, 0x43)),
+                    );
+                }
+                column.into()
+            }
+            None if !has_children && !node.pointer.is_empty() => {
+                let initial = if node.null {
+                    String::new()
+                } else {
+                    node.text.clone()
+                };
+                button(text(node.text.clone()).size(ui.small()).color(value_color))
+                    .padding([0, 3])
+                    .style(move |_theme: &Theme, status| subtle_button(t, status))
+                    .on_press(Message::EditLeaf(
+                        node.pointer.clone(),
+                        node.data_type.clone(),
+                        initial,
+                    ))
+                    .into()
+            }
+            None => text(node.text.clone())
+                .size(ui.small())
+                .color(value_color)
+                .into(),
+        };
         lines = lines.push(
             row![
                 iced::widget::Space::new().width(depth as f32 * 14.0),
                 marker,
                 text(node.label.clone()).size(ui.small()).font(bold()),
-                text(node.text.clone()).size(ui.small()).color(value_color),
+                value,
                 // Containers say what they hold; leaves show their type.
                 text(if has_children {
                     String::new()
@@ -845,6 +897,7 @@ pub fn context_menu<'a>(
     target: MenuTarget,
     rows: usize,
     columns: usize,
+    column_type: Option<&DataType>,
     ui: Ui,
 ) -> Element<'a, Message> {
     let t = ui.tokens;
@@ -962,6 +1015,28 @@ pub fn context_menu<'a>(
                 "",
                 MenuItem::DuplicateColumn,
             )),
+        ]);
+        match column_type {
+            Some(DataType::Struct(_)) => items.push(Some((
+                Icon::ListTree,
+                "Expand fields to columns".into(),
+                "",
+                MenuItem::ExpandStruct,
+            ))),
+            Some(
+                DataType::List(_)
+                | DataType::LargeList(_)
+                | DataType::FixedSizeList(..)
+                | DataType::Map(..),
+            ) => items.push(Some((
+                Icon::Rows,
+                "Explode to rows".into(),
+                "",
+                MenuItem::ExplodeList,
+            ))),
+            _ => {}
+        }
+        items.extend([
             Some((
                 Icon::Split,
                 "Split column…".into(),

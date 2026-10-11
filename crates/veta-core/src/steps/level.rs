@@ -30,6 +30,9 @@ impl Level {
             Step::Filter(filter) => filter.validate(&self.schema),
             Step::Sort(sort) => sort.validate(&self.schema),
             Step::Fill(fill) => fill.validate(&self.schema),
+            Step::ExplodeList { column } => {
+                super::nested::explode_fields(&self.schema, column).map(|_| ())
+            }
             Step::RemoveEmptyColumn { name } => {
                 self.index(name)?;
                 if self.schema.fields().len() < 2 {
@@ -175,6 +178,10 @@ impl Level {
                 split.output_fields(&self.schema)?,
                 self.num_rows,
             )),
+            Step::ExpandStruct { column } => Ok(with_fields(
+                super::nested::expand_fields(&self.schema, column)?,
+                self.num_rows,
+            )),
             Step::CustomColumn(custom) => Ok(with_fields(
                 custom.output_fields(&self.schema)?,
                 self.num_rows,
@@ -191,9 +198,11 @@ impl Level {
                 op.validate(&self.schema, columns)?;
                 Ok(self.clone())
             }
-            Step::Filter(_) | Step::Sort(_) | Step::Fill(_) | Step::RemoveEmptyColumn { .. } => {
-                Err(invalid("this step must be computed first".into()))
-            }
+            Step::Filter(_)
+            | Step::Sort(_)
+            | Step::Fill(_)
+            | Step::RemoveEmptyColumn { .. }
+            | Step::ExplodeList { .. } => Err(invalid("this step must be computed first".into())),
             Step::MoveColumn { name, to } => {
                 let index = self.index(name)?;
                 if *to >= fields.len() {

@@ -80,6 +80,14 @@ pub enum Command {
     Fill(Fill),
     Split(Split),
     Merge(Merge),
+    /// Fields of a struct column become columns.
+    ExpandStruct {
+        column: String,
+    },
+    /// One row per item of a list or map column.
+    ExplodeList {
+        column: String,
+    },
     /// Adds a column computed from an expression.
     CustomColumn(CustomColumn),
     /// Appends steps (e.g. from a recipe) as one change. Steps that don't

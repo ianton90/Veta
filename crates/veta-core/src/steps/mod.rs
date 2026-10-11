@@ -16,6 +16,7 @@ mod expr;
 mod fill;
 mod filter;
 mod level;
+mod nested;
 mod pipeline;
 mod rows;
 mod sort;
@@ -93,6 +94,14 @@ pub enum Step {
     Split(Split),
     Merge(Merge),
     CustomColumn(CustomColumn),
+    /// Fields of a struct column become columns `<column>.<field>`.
+    ExpandStruct {
+        column: String,
+    },
+    /// One row per item of a list (or entry of a map) column.
+    ExplodeList {
+        column: String,
+    },
     /// Removes a column if every value in it is null; fails otherwise
     /// (e.g. a cast's error column when nothing failed).
     RemoveEmptyColumn {
@@ -106,7 +115,11 @@ impl Step {
     pub fn needs_full_pass(&self) -> bool {
         matches!(
             self,
-            Step::Filter(_) | Step::Sort(_) | Step::Fill(_) | Step::RemoveEmptyColumn { .. }
+            Step::Filter(_)
+                | Step::Sort(_)
+                | Step::Fill(_)
+                | Step::RemoveEmptyColumn { .. }
+                | Step::ExplodeList { .. }
         )
     }
 
@@ -163,6 +176,8 @@ impl Step {
             Step::Merge(merge) => merge.describe(),
             Step::CustomColumn(custom) => custom.describe(),
             Step::RemoveEmptyColumn { name } => format!("Removed column {name} if empty"),
+            Step::ExpandStruct { column } => format!("Expanded {column}"),
+            Step::ExplodeList { column } => format!("Exploded {column} into rows"),
         }
     }
 }

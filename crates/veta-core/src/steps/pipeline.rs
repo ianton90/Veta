@@ -380,9 +380,14 @@ impl Pipeline {
                     op.apply(c)
                 })
             }
-            Step::Filter(_) | Step::Sort(_) | Step::Fill(_) | Step::RemoveEmptyColumn { .. } => {
-                Err(invalid("this step must be computed first".into()))
+            Step::ExpandStruct { column } => {
+                super::nested::expand(&self.read_level(previous, range)?, column, &schema)
             }
+            Step::Filter(_)
+            | Step::Sort(_)
+            | Step::Fill(_)
+            | Step::RemoveEmptyColumn { .. }
+            | Step::ExplodeList { .. } => Err(invalid("this step must be computed first".into())),
             Step::RemoveColumns { .. }
             | Step::KeepColumns { .. }
             | Step::RenameColumn { .. }

@@ -69,6 +69,9 @@ pub struct ValueNode {
     pub label: String,
     /// Identifies the node within the tree (`point.x`, `tags[1]`).
     pub path: String,
+    /// Where the node is inside the cell's value (empty for the cell).
+    pub pointer: Vec<PathPart>,
+    pub data_type: DataType,
     pub type_name: String,
     /// The value as text for leaves and nulls; a summary such as
     /// `3 items` for lists and maps.
@@ -77,15 +80,31 @@ pub struct ValueNode {
     pub children: Vec<ValueNode>,
 }
 
-/// The value at `row` of `array` as a tree labelled `label`.
-pub fn value_tree(array: &dyn Array, row: usize, label: &str) -> ValueNode {
-    build_node(array, row, label.to_owned(), label.to_owned())
+/// A step into a nested value: a struct field, a list index or a map key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathPart {
+    Field(String),
+    Index(usize),
+    Key(String),
 }
 
-fn build_node(array: &dyn Array, row: usize, label: String, path: String) -> ValueNode {
+/// The value at `row` of `array` as a tree labelled `label`.
+pub fn value_tree(array: &dyn Array, row: usize, label: &str) -> ValueNode {
+    build_node(array, row, label.to_owned(), label.to_owned(), Vec::new())
+}
+
+fn build_node(
+    array: &dyn Array,
+    row: usize,
+    label: String,
+    path: String,
+    pointer: Vec<PathPart>,
+) -> ValueNode {
     use arrow::array::{AsArray, FixedSizeListArray, LargeListArray, ListArray, MapArray};
     let mut node = ValueNode {
         label,
+        pointer,
+        data_type: array.data_type().clone(),
         type_name: type_name(array.data_type()),
         text: String::new(),
         null: array.is_null(row),
@@ -103,8 +122,10 @@ fn build_node(array: &dyn Array, row: usize, label: String, path: String) -> Val
         };
         for (k, i) in range.enumerate() {
             let path = format!("{}[{k}]", node.path);
+            let mut pointer = node.pointer.clone();
+            pointer.push(PathPart::Index(k));
             node.children
-                .push(build_node(values, i, format!("[{k}]"), path));
+                .push(build_node(values, i, format!("[{k}]"), path, pointer));
         }
     };
     match array.data_type() {
@@ -113,8 +134,15 @@ fn build_node(array: &dyn Array, row: usize, label: String, path: String) -> Val
             node.text = format!("{} fields", fields.len());
             for (field, column) in fields.iter().zip(s.columns()) {
                 let path = format!("{}.{}", node.path, field.name());
-                node.children
-                    .push(build_node(column.as_ref(), row, field.name().clone(), path));
+                let mut pointer = node.pointer.clone();
+                pointer.push(PathPart::Field(field.name().clone()));
+                node.children.push(build_node(
+                    column.as_ref(),
+                    row,
+                    field.name().clone(),
+                    path,
+                    pointer,
+                ));
             }
         }
         DataType::List(_) => {
@@ -162,8 +190,10 @@ fn build_node(array: &dyn Array, row: usize, label: String, path: String) -> Val
                     .map(|f| f.value(i).to_string())
                     .unwrap_or_default();
                 let path = format!("{}[{key:?}]", node.path);
+                let mut pointer = node.pointer.clone();
+                pointer.push(PathPart::Key(key.clone()));
                 node.children
-                    .push(build_node(values.as_ref(), i, key, path));
+                    .push(build_node(values.as_ref(), i, key, path, pointer));
             }
         }
         _ => {

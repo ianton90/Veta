@@ -230,6 +230,14 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
         }
         Command::Fill(fill) => Ok((fill.describe(), Change::PushStep(Step::Fill(fill)))),
         Command::Split(split) => Ok((split.describe(), Change::PushStep(Step::Split(split)))),
+        Command::ExpandStruct { column } => {
+            let step = Step::ExpandStruct { column };
+            Ok((step.describe(), Change::PushStep(step)))
+        }
+        Command::ExplodeList { column } => {
+            let step = Step::ExplodeList { column };
+            Ok((step.describe(), Change::PushStep(step)))
+        }
         Command::Merge(merge) => Ok((merge.describe(), Change::PushStep(Step::Merge(merge)))),
         Command::CustomColumn(custom) => Ok((
             custom.describe(),
@@ -1039,6 +1047,74 @@ mod tests {
         assert!(undo(&mut doc));
         assert!(doc.steps().is_empty());
         assert!(!doc.history().can_undo());
+    }
+
+    #[test]
+    fn nested_cells_edit_as_json_and_expand_explode() {
+        use crate::steps::Status;
+        let dir = TempDir::new();
+        let path = dir.join("n.parquet");
+        fixtures::nested(&path);
+        for options in [OpenOptions::default(), OpenOptions::paged()] {
+            let mut doc = Document::open(&path, options).unwrap();
+            execute(
+                &mut doc,
+                Command::SetCell {
+                    row: 2,
+                    column: "point".into(),
+                    value: Some(r#"{"x": 10, "y": 20}"#.into()),
+                },
+            )
+            .unwrap();
+            assert_eq!(cell(&doc, 2, "point").as_deref(), Some("{x: 10, y: 20}"));
+            let bad = execute(
+                &mut doc,
+                Command::SetCell {
+                    row: 2,
+                    column: "tags".into(),
+                    value: Some("[1, oops]".into()),
+                },
+            );
+            assert!(bad.unwrap_err().to_string().contains("JSON"));
+
+            execute(
+                &mut doc,
+                Command::ExpandStruct {
+                    column: "point".into(),
+                },
+            )
+            .unwrap();
+            assert_eq!(cell(&doc, 2, "point.x").as_deref(), Some("10"));
+            execute(
+                &mut doc,
+                Command::ExplodeList {
+                    column: "tags".into(),
+                },
+            )
+            .unwrap();
+            assert_eq!(doc.status(), &Status::Computing { step: 2 });
+            doc.compute_all().unwrap();
+            assert_eq!(doc.num_rows(), 7);
+            assert_eq!(cell(&doc, 1, "tags").as_deref(), Some("b"));
+            assert_eq!(cell(&doc, 1, "point.y").as_deref(), Some("2"));
+            assert!(
+                execute(
+                    &mut doc,
+                    Command::ExpandStruct {
+                        column: "tags".into()
+                    }
+                )
+                .is_err()
+            );
+            let out = dir.join("out.parquet");
+            doc.save(Some(out.clone())).unwrap();
+            assert_eq!(
+                Document::open(&out, OpenOptions::default())
+                    .unwrap()
+                    .num_rows(),
+                7
+            );
+        }
     }
 
     #[test]

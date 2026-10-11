@@ -176,6 +176,12 @@ enum RecipeStep {
     RemoveEmptyColumn {
         name: String,
     },
+    ExpandStruct {
+        column: String,
+    },
+    ExplodeList {
+        column: String,
+    },
 }
 
 fn dot() -> char {
@@ -389,6 +395,12 @@ impl RecipeStep {
                 separator: m.separator.clone(),
                 name: m.name.clone(),
             },
+            Step::ExpandStruct { column } => RecipeStep::ExpandStruct {
+                column: column.clone(),
+            },
+            Step::ExplodeList { column } => RecipeStep::ExplodeList {
+                column: column.clone(),
+            },
             Step::RemoveEmptyColumn { name } => {
                 RecipeStep::RemoveEmptyColumn { name: name.clone() }
             }
@@ -518,6 +530,8 @@ impl RecipeStep {
                 name,
             }),
             RecipeStep::RemoveEmptyColumn { name } => Step::RemoveEmptyColumn { name },
+            RecipeStep::ExpandStruct { column } => Step::ExpandStruct { column },
+            RecipeStep::ExplodeList { column } => Step::ExplodeList { column },
             RecipeStep::CustomColumn {
                 name,
                 expression,

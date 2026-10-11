@@ -51,6 +51,8 @@ use crate::theme::{Mode, Tokens, VetaTheme};
 
 /// Id of the formula bar's text input.
 const FORMULA_ID: iced::widget::Id = iced::widget::Id::new("formula");
+/// Id of the input editing a value in the Value tab.
+const LEAF_ID: iced::widget::Id = iced::widget::Id::new("leaf-editor");
 /// Id of the text input drawn inside the cell being edited.
 const EDITOR_ID: iced::widget::Id = iced::widget::Id::new("cell-editor");
 /// Rows dialogs sample (to preview cast failures, suggest split parts).
@@ -200,6 +202,8 @@ struct App {
     stats: Stats,
     /// Nodes collapsed in the value tree, by path.
     collapsed: HashSet<String>,
+    /// A value inside a nested cell being edited in the Value tab.
+    leaf_edit: Option<LeafEdit>,
     /// Exports running in the background.
     exporting: usize,
     /// Last thing done worth telling (shown in the status bar).
@@ -219,6 +223,18 @@ struct Computing {
     step: usize,
     progress: f32,
     cancel: Arc<AtomicBool>,
+}
+
+/// A value inside a nested cell, edited from the Value tab.
+#[derive(Debug, Clone, PartialEq)]
+struct LeafEdit {
+    document: DocumentId,
+    row: usize,
+    column: usize,
+    pointer: Vec<veta_core::display::PathPart>,
+    data_type: veta_core::arrow::datatypes::DataType,
+    text: String,
+    error: Option<String>,
 }
 
 /// Statistics computed for the side pane, and the pass running.
@@ -296,6 +312,8 @@ enum MenuItem {
     SplitColumn,
     MergeColumns,
     DuplicateColumn,
+    ExpandStruct,
+    ExplodeList,
     SortAscending,
     SortDescending,
     /// Filter to rows whose value in this column equals the selected cell's.
@@ -477,6 +495,14 @@ enum Message {
     ConfirmStep(bool),
     /// Save the active document's steps as a recipe.
     StatsProgress(DocumentId, u64, f32),
+    /// Start editing a value inside the selected nested cell.
+    EditLeaf(
+        Vec<veta_core::display::PathPart>,
+        veta_core::arrow::datatypes::DataType,
+        String,
+    ),
+    LeafInput(String),
+    CommitLeaf,
     /// Collapse or expand a node of the value tree.
     ToggleNode(String),
     StatsDone(DocumentId, u64, Result<Vec<ColumnStats>, String>),
@@ -553,6 +579,7 @@ impl App {
             exporting: 0,
             notice: None,
             collapsed: HashSet::new(),
+            leaf_edit: None,
         };
         let open = app.open(files);
         let system = iced::system::theme().map(Message::SystemMode);
@@ -836,6 +863,8 @@ impl App {
                     MenuItem::SplitColumn => return self.open_split_dialog(id, None),
                     MenuItem::MergeColumns => return self.open_merge_dialog(id, None),
                     MenuItem::DuplicateColumn => self.duplicate_column(id),
+                    MenuItem::ExpandStruct => self.nested_step(id, false),
+                    MenuItem::ExplodeList => self.nested_step(id, true),
                     MenuItem::SortAscending | MenuItem::SortDescending => {
                         self.sort_selected(id, item == MenuItem::SortDescending);
                     }
@@ -1215,6 +1244,39 @@ impl App {
                     return self.edit_step(id, index);
                 }
             }
+            Message::EditLeaf(pointer, data_type, text) => {
+                if let Some(id) = self.active {
+                    if !self.editable(id) {
+                        self.not_editable(id);
+                        return Task::none();
+                    }
+                    let selected = self
+                        .tabs
+                        .iter()
+                        .find(|t| t.id == id)
+                        .and_then(|t| t.grid.selected());
+                    if let Some((row, column)) = selected {
+                        self.edit = None;
+                        self.leaf_edit = Some(LeafEdit {
+                            document: id,
+                            row,
+                            column,
+                            pointer,
+                            data_type,
+                            text,
+                            error: None,
+                        });
+                        return iced::widget::operation::focus(LEAF_ID);
+                    }
+                }
+            }
+            Message::LeafInput(text) => {
+                if let Some(edit) = &mut self.leaf_edit {
+                    edit.text = text;
+                    edit.error = None;
+                }
+            }
+            Message::CommitLeaf => self.commit_leaf(),
             Message::ToggleNode(path) => {
                 if !self.collapsed.remove(&path) {
                     self.collapsed.insert(path);
@@ -1467,7 +1529,8 @@ impl App {
             }
             Message::CloseMenu => self.menu = None,
             Message::Escape => {
-                if self.menu.take().is_some() {
+                // Close the innermost thing that is open.
+                if self.leaf_edit.take().is_some() || self.menu.take().is_some() {
                 } else if self.dialog.is_some() {
                     self.dialog = None;
                     self.closing = None;
@@ -1520,6 +1583,8 @@ impl App {
                 | Action::SortAscending
                 | Action::SortDescending
                 | Action::CustomSort
+                | Action::ExpandStruct
+                | Action::ExplodeList
                 | Action::DataType
                 | Action::ReplaceValues
                 | Action::FillDown
@@ -1694,6 +1759,11 @@ impl App {
             Action::DataType => {
                 if let Some(id) = self.active {
                     self.open_cast_dialog(id, None);
+                }
+            }
+            Action::ExpandStruct | Action::ExplodeList => {
+                if let Some(id) = self.active {
+                    self.nested_step(id, action == Action::ExplodeList);
                 }
             }
             Action::CustomSort => {
@@ -2287,6 +2357,60 @@ impl App {
             iced::widget::operation::focus(dialogs::EXPRESSION_ID),
             iced::widget::operation::move_cursor_to_end(dialogs::EXPRESSION_ID),
         ])
+    }
+
+    /// Applies the Value tab edit: the cell gets its JSON with the edited
+    /// value replaced.
+    fn commit_leaf(&mut self) {
+        let Some(mut edit) = self.leaf_edit.take() else {
+            return;
+        };
+        let id = edit.document;
+        let result = (|| -> Result<(), String> {
+            let tab = self.tabs.iter().find(|t| t.id == id).ok_or("closed")?;
+            let doc = self.workbook.get(id).ok_or("closed")?;
+            let json = tab
+                .grid
+                .cell_array(edit.row, edit.column, doc)
+                .and_then(|a| veta_core::display::value_json(a.as_ref(), 0).ok().flatten())
+                .ok_or("the cell is empty")?;
+            let text = (!edit.text.is_empty()).then_some(edit.text.as_str());
+            let value = veta_core::values::set_nested(&json, &edit.pointer, text, &edit.data_type)
+                .map_err(|e| e.to_string())?;
+            let column = doc.schema().field(edit.column).name().clone();
+            let doc = self.workbook.get_mut(id).ok_or("closed")?;
+            controller::execute(
+                doc,
+                Command::SetCell {
+                    row: edit.row,
+                    column,
+                    value: Some(value),
+                },
+            )
+            .map_err(|e| e.to_string())
+        })();
+        match result {
+            Ok(()) => self.refresh(id),
+            Err(e) => {
+                edit.error = Some(e);
+                self.leaf_edit = Some(edit);
+            }
+        }
+    }
+
+    /// Expands the selected struct column, or explodes the selected list
+    /// column into rows.
+    fn nested_step(&mut self, id: DocumentId, explode: bool) {
+        let Some(column) = self.selected_column_names(id).into_iter().next() else {
+            self.errors.push("Select a column first.".into());
+            return;
+        };
+        let command = if explode {
+            Command::ExplodeList { column }
+        } else {
+            Command::ExpandStruct { column }
+        };
+        self.execute(id, command);
     }
 
     /// Adds a copy of the selected column next to it.
@@ -3110,8 +3234,19 @@ impl App {
                             doc,
                             self.side_tab,
                             self.stats_view(id),
-                            self.value_tree(tab, doc),
-                            &self.collapsed,
+                            panes::ValueView {
+                                tree: self.value_tree(tab, doc),
+                                collapsed: &self.collapsed,
+                                leaf_edit: self
+                                    .leaf_edit
+                                    .as_ref()
+                                    .filter(|e| e.document == id)
+                                    .map(|e| (
+                                        e.pointer.as_slice(),
+                                        e.text.as_str(),
+                                        e.error.as_deref()
+                                    )),
+                            },
                             ui
                         )
                     ]
@@ -3198,6 +3333,13 @@ impl App {
         if let Some(menu) = &self.menu {
             let rows = self.selected_rows(menu.document).map_or(1, |r| r.len());
             let columns = self.selected_columns(menu.document).map_or(1, |c| c.len());
+            let column_type = match menu.target {
+                MenuTarget::Column(c) => self
+                    .workbook
+                    .get(menu.document)
+                    .and_then(|d| d.schema().fields().get(c).map(|f| f.data_type().clone())),
+                _ => None,
+            };
             return stack![
                 window,
                 mouse_area(
@@ -3207,7 +3349,14 @@ impl App {
                 )
                 .on_press(Message::CloseMenu)
                 .on_right_press(Message::CloseMenu),
-                pin(panes::context_menu(menu.target, rows, columns, ui)).position(menu.position),
+                pin(panes::context_menu(
+                    menu.target,
+                    rows,
+                    columns,
+                    column_type.as_ref(),
+                    ui
+                ))
+                .position(menu.position),
             ]
             .into();
         }
@@ -4211,6 +4360,80 @@ mod tests {
         assert_eq!((tree.label.as_str(), tree.children.len()), ("point", 2));
         let _ = app.update(Message::ToggleNode("point".into()));
         assert!(app.collapsed.contains("point"));
+    }
+
+    #[test]
+    fn edit_nested_values_and_expand_explode() {
+        use veta_core::display::PathPart;
+        let dir = TempDir::new();
+        let path = dir.join("n.parquet");
+        fixtures::nested(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let cell = |app: &App, row: usize, column: &str| {
+            let doc = app.workbook.get(id).unwrap();
+            let i = doc.schema().index_of(column).unwrap();
+            veta_core::display::format_batch(&doc.read(row..row + 1).unwrap()).unwrap()[0][i]
+                .clone()
+        };
+
+        // Edit owner.home.y from the Value tab.
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 5 }));
+        let _ = app.update(Message::SideTab(SideTab::Value));
+        let pointer = vec![PathPart::Field("home".into()), PathPart::Field("y".into())];
+        let int64 = veta_core::arrow::datatypes::DataType::Int64;
+        let _ = app.update(Message::EditLeaf(
+            pointer.clone(),
+            int64.clone(),
+            "6".into(),
+        ));
+        let _ = app.update(Message::LeafInput("not a number".into()));
+        let _ = app.update(Message::CommitLeaf);
+        assert!(app.leaf_edit.as_ref().unwrap().error.is_some());
+        let _ = app.update(Message::LeafInput("60".into()));
+        let _ = app.update(Message::CommitLeaf);
+        assert!(app.leaf_edit.is_none());
+        assert_eq!(
+            cell(&app, 0, "owner").as_deref(),
+            Some("{name: Ana, home: {x: 5, y: 60}}")
+        );
+
+        // Whole cells edit as JSON in the cell editor.
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 1, column: 2 }));
+        let _ = app.update(Message::Grid(id, GridEvent::StartEdit { initial: None }));
+        assert_eq!(app.edit.as_ref().unwrap().text, "[]");
+        let _ = app.update(Message::EditInput(r#"["x", "y"]"#.into()));
+        let _ = app.update(Message::CommitEdit);
+        assert_eq!(cell(&app, 1, "tags").as_deref(), Some("[x, y]"));
+
+        // Column menu: expand the struct, explode the list.
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::ContextMenu {
+                target: MenuTarget::Column(1),
+                position: iced::Point::ORIGIN,
+            },
+        ));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 1,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Menu(MenuItem::ExpandStruct));
+        assert_eq!(cell(&app, 0, "point.x").as_deref(), Some("1"));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 3,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::ExplodeList));
+        finish_compute(&mut app, id);
+        // Row 1 now has two tags: 2 + 2 + 1 (null row) + 3.
+        assert_eq!(app.workbook.get(id).unwrap().num_rows(), 8);
     }
 
     #[test]

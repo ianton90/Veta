@@ -159,6 +159,9 @@ impl ComputeJob {
                 Cache::Data(source)
             }
             Step::Fill(f) => Cache::Data(self.fill(f, input_rows, progress)?),
+            Step::ExplodeList { column } => {
+                Cache::Data(self.explode(column, input_rows, progress)?)
+            }
             Step::RemoveEmptyColumn { name } => {
                 let mut values = 0;
                 let mut example = None;
@@ -287,6 +290,16 @@ impl ComputeJob {
             })();
             Some(result)
         };
+        self.materialize(schema.clone(), &mut produce)
+    }
+
+    /// Stores batches from `produce` in memory (in-memory documents) or in
+    /// a temporary Parquet file (paged ones).
+    fn materialize(
+        &self,
+        schema: arrow::datatypes::SchemaRef,
+        produce: &mut dyn FnMut() -> Option<Result<RecordBatch>>,
+    ) -> Result<Arc<dyn DataSource>> {
         match self.pipeline.source().mode() {
             SourceMode::InMemory => {
                 let batches = std::iter::from_fn(produce).collect::<Result<Vec<_>>>()?;
@@ -294,10 +307,44 @@ impl ComputeJob {
             }
             SourceMode::Paged => {
                 let file = TempFile::new()?;
-                write_parquet(&file, &schema, std::iter::from_fn(&mut produce))?;
+                write_parquet(&file, &schema, std::iter::from_fn(produce))?;
                 Ok(Arc::new(Checkpoint::open(file, schema)?))
             }
         }
+    }
+
+    /// One row per list item, batch by batch.
+    fn explode(
+        &self,
+        column: &str,
+        input_rows: usize,
+        progress: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<Arc<dyn DataSource>> {
+        let input = self
+            .pipeline
+            .schema_at(self.step)
+            .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+        let schema = Arc::new(arrow::datatypes::Schema::new_with_metadata(
+            super::nested::explode_fields(&input, column)?,
+            input.metadata().clone(),
+        ));
+        let mut start = 0;
+        let mut produce = || -> Option<Result<RecordBatch>> {
+            if start >= input_rows {
+                return None;
+            }
+            let end = (start + PASS_ROWS).min(input_rows);
+            let result = self
+                .pipeline
+                .read_at(self.step, start..end)
+                .and_then(|batch| super::nested::explode(&batch, column, &schema));
+            start = end;
+            if result.is_ok() && !progress(start as f32 / input_rows as f32) {
+                return Some(Err(Error::Cancelled));
+            }
+            Some(result)
+        };
+        self.materialize(schema.clone(), &mut produce)
     }
 }
 

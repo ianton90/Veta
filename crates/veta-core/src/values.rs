@@ -66,6 +66,38 @@ fn parse_json(text: &str, data_type: &DataType) -> Result<ArrayRef> {
     Ok(batch.column(0).clone())
 }
 
+/// The JSON of a nested cell with the leaf at `pointer` replaced by
+/// `text` (read as `leaf_type`; empty or `None` sets null).
+pub fn set_nested(
+    cell_json: &str,
+    pointer: &[crate::display::PathPart],
+    text: Option<&str>,
+    leaf_type: &DataType,
+) -> Result<String> {
+    use crate::display::PathPart;
+    let mut root: serde_json::Value = serde_json::from_str(cell_json)
+        .map_err(|e| Error::InvalidCommand(format!("the cell is not valid JSON: {e}")))?;
+    let leaf = parse_value(text, leaf_type)?;
+    let leaf = match crate::display::value_json(leaf.as_ref(), 0)? {
+        Some(json) => {
+            serde_json::from_str(&json).map_err(|e| Error::InvalidCommand(e.to_string()))?
+        }
+        None => serde_json::Value::Null,
+    };
+    let mut target = &mut root;
+    for part in pointer {
+        let missing = || Error::InvalidCommand("that part of the value no longer exists".into());
+        target = match part {
+            PathPart::Field(name) | PathPart::Key(name) => {
+                target.get_mut(name.as_str()).ok_or_else(missing)?
+            }
+            PathPart::Index(i) => target.get_mut(*i).ok_or_else(missing)?,
+        };
+    }
+    *target = leaf;
+    Ok(root.to_string())
+}
+
 /// A short JSON example for a nested type.
 pub fn json_example(data_type: &DataType) -> String {
     match data_type {
@@ -123,6 +155,18 @@ mod tests {
         assert!(parse_value(Some(r#"{"x": "a"}"#), point).is_err());
         assert!(parse_value(Some(r#"{"x": 1} junk"#), point).is_err());
         assert!(parse_value(Some(""), point).unwrap().is_null(0));
+        // Editing one leaf inside a nested value.
+        use crate::display::PathPart;
+        let owner = r#"{"name":"Ana","home":{"x":5,"y":6}}"#;
+        let home_y = [PathPart::Field("home".into()), PathPart::Field("y".into())];
+        let edited = set_nested(owner, &home_y, Some("60"), &DataType::Int64).unwrap();
+        let edited: serde_json::Value = serde_json::from_str(&edited).unwrap();
+        assert_eq!(edited["home"]["y"], 60);
+        assert_eq!(edited["name"], "Ana");
+        let name = [PathPart::Field("name".into())];
+        let cleared = set_nested(owner, &name, None, &DataType::Utf8).unwrap();
+        assert!(cleared.contains(r#""name":null"#));
+        assert!(set_nested(owner, &home_y, Some("a"), &DataType::Int64).is_err());
         let tags = schema.field(2).data_type();
         let list = parse_value(Some(r#"["a", null]"#), tags).unwrap();
         assert_eq!(

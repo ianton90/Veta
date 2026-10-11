@@ -34,6 +34,8 @@ pub enum Action {
     SortAscending,
     SortDescending,
     CustomSort,
+    ExpandStruct,
+    ExplodeList,
     DataType,
     ReplaceValues,
     FillDown,
@@ -246,6 +248,13 @@ fn groups(tab: Tab) -> Vec<Group> {
             group(
                 "Date & Time",
                 vec![large(A::DateTime, "Date", Icon::Calendar)],
+            ),
+            group(
+                "Structured Column",
+                vec![
+                    small(A::ExpandStruct, "Expand", Icon::ListTree),
+                    small(A::ExplodeList, "Explode to Rows", Icon::Rows),
+                ],
             ),
             group(
                 "Rows",
