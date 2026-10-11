@@ -21,6 +21,8 @@ pub struct Filter {
     pub conditions: Vec<Condition>,
     /// `true`: every condition must hold; `false`: at least one.
     pub match_all: bool,
+    /// Remove the matching rows instead of keeping them.
+    pub exclude: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -111,7 +113,8 @@ impl Filter {
     pub fn describe(&self) -> String {
         let parts: Vec<String> = self.conditions.iter().map(Condition::describe).collect();
         let joined = parts.join(if self.match_all { " and " } else { " or " });
-        format!("Kept rows where {joined}")
+        let verb = if self.exclude { "Removed" } else { "Kept" };
+        format!("{verb} rows where {joined}")
     }
 
     /// Checks the filter against the input schema.
@@ -159,7 +162,8 @@ impl Filter {
                 Some(acc) => or_kleene(&acc, &mask)?,
             });
         }
-        Ok(result.unwrap_or_else(|| BooleanArray::from(vec![true; batch.num_rows()])))
+        let kept = result.unwrap_or_else(|| BooleanArray::from(vec![true; batch.num_rows()]));
+        Ok(if self.exclude { not(&kept)? } else { kept })
     }
 }
 
@@ -278,6 +282,7 @@ mod tests {
         Filter {
             conditions: vec![c],
             match_all: true,
+            exclude: false,
         }
     }
 
@@ -325,10 +330,15 @@ mod tests {
                 condition("name", FilterOp::EndsWith, "bel"),
             ],
             match_all: false,
+            exclude: false,
         };
         assert_eq!(kept(&filter), [true, false, false, true]);
         filter.match_all = true;
         assert_eq!(kept(&filter), [false, false, false, false]);
+        // Excluding removes the matching rows, rows with nulls included.
+        filter.match_all = false;
+        filter.exclude = true;
+        assert_eq!(kept(&filter), [false, true, true, false]);
     }
 
     #[test]
@@ -357,7 +367,8 @@ mod tests {
         assert!(
             Filter {
                 conditions: vec![],
-                match_all: true
+                match_all: true,
+                exclude: false
             }
             .validate(&schema)
             .is_err()

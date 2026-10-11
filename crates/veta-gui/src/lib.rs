@@ -196,11 +196,21 @@ struct App {
 #[derive(Debug)]
 struct Computing {
     document: DocumentId,
+    target: Target,
     /// The job's key; it is stale once the document's key differs.
     key: Vec<u64>,
     step: usize,
     progress: f32,
     cancel: Arc<AtomicBool>,
+}
+
+/// What a background pass computes for a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    /// A step of the document.
+    Document,
+    /// The tab's temporary filter.
+    View,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -234,6 +244,7 @@ enum MenuItem {
     ClearCell,
     InsertRowsAbove,
     InsertRowsBelow,
+    KeepRows,
     DeleteRows,
     InsertColumnLeft,
     InsertColumnRight,
@@ -253,9 +264,9 @@ enum MenuItem {
     DuplicateColumn,
     SortAscending,
     SortDescending,
-    /// Keep rows whose value in this column equals the selected cell's.
+    /// Filter to rows whose value in this column equals the selected cell's.
     KeepValue,
-    /// Remove rows whose value in this column equals the selected cell's.
+    /// Filter out rows whose value in this column equals the selected cell's.
     ExcludeValue,
 }
 
@@ -408,9 +419,9 @@ enum Message {
     Custom(CustomMessage),
     Merge(MergeMessage),
     /// Progress (0–1) of the background pass with this key.
-    ComputeProgress(DocumentId, Vec<u64>, f32),
+    ComputeProgress(DocumentId, Target, Vec<u64>, f32),
     /// The background pass with this key finished.
-    ComputeDone(DocumentId, Vec<u64>, Result<Slot<Computed>, String>),
+    ComputeDone(DocumentId, Target, Vec<u64>, Result<Slot<Computed>, String>),
     /// Stop the background pass and undo the change that started it.
     CancelCompute,
     SideTab(SideTab),
@@ -421,6 +432,8 @@ enum Message {
     EditStep(usize),
     ConfirmStep(bool),
     /// Save the active document's steps as a recipe.
+    /// Turn off the temporary row filter.
+    ClearFilter,
     SaveRecipe,
     SaveRecipeTo(DocumentId, Option<PathBuf>),
     /// Append a recipe's steps to the active document.
@@ -631,7 +644,6 @@ impl App {
                             | GridEvent::InsertRows
                             | GridEvent::DeleteRows
                             | GridEvent::MoveColumn { .. }
-                            | GridEvent::ContextMenu { .. }
                     ) =>
             {
                 if !matches!(event, GridEvent::StartEdit { .. }) {
@@ -714,7 +726,16 @@ impl App {
                     return Task::none();
                 };
                 let id = menu.document;
+                let views_only = matches!(
+                    item,
+                    MenuItem::KeepValue | MenuItem::ExcludeValue | MenuItem::FilterColumn
+                );
+                if !views_only && !self.editable(id) {
+                    self.not_editable(id);
+                    return Task::none();
+                }
                 match item {
+                    MenuItem::KeepRows => self.keep_rows(id),
                     MenuItem::EditCell => return self.start_edit(id, None),
                     MenuItem::ClearCell => {
                         return self.update(Message::Grid(id, GridEvent::ClearCell));
@@ -827,20 +848,14 @@ impl App {
                             let step = Step::Filter(filter);
                             self.change_steps(id, index, Command::ReplaceStep { index, step });
                         }
-                        (Some(filter), None) => {
-                            let result = self
-                                .workbook
-                                .get_mut(id)
-                                .map(|doc| controller::execute(doc, Command::Filter(filter)));
-                            match result {
-                                Some(Ok(())) => {
-                                    self.dialog = None;
-                                    self.refresh(id);
+                        (Some(filter), None) => match self.set_view_filter(id, filter) {
+                            Ok(()) => self.dialog = None,
+                            Err(e) => {
+                                if let Some(Dialog::Filter { dialog, .. }) = &mut self.dialog {
+                                    dialog.set_error(e);
                                 }
-                                Some(Err(e)) => dialog.set_error(e.to_string()),
-                                None => {}
                             }
-                        }
+                        },
                         (None, _) if cancel => self.dialog = None,
                         (None, _) => {}
                     }
@@ -1013,21 +1028,40 @@ impl App {
                     }
                 }
             }
-            Message::ComputeProgress(id, key, progress) => {
+            Message::ComputeProgress(id, target, key, progress) => {
                 if let Some(c) = &mut self.computing
                     && c.document == id
+                    && c.target == target
                     && c.key == key
                 {
                     c.progress = progress;
                 }
             }
-            Message::ComputeDone(id, key, result) => {
+            Message::ComputeDone(id, target, key, result) => {
                 if self
                     .computing
                     .as_ref()
-                    .is_some_and(|c| c.document == id && c.key == key)
+                    .is_some_and(|c| c.document == id && c.target == target && c.key == key)
                 {
                     self.computing = None;
+                }
+                if target == Target::View {
+                    if let (Some(doc), Some(tab)) = (
+                        self.workbook.get(id),
+                        self.tabs.iter_mut().find(|t| t.id == id),
+                    ) {
+                        match result.map(|slot| slot.take()) {
+                            Ok(Some(computed)) => {
+                                tab.grid.install_filter(computed, doc);
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                tab.grid.set_filter(None, doc);
+                                self.errors.push(format!("Could not filter: {e}"));
+                            }
+                        }
+                    }
+                    return Task::none();
                 }
                 let Some(doc) = self.workbook.get_mut(id) else {
                     return Task::none();
@@ -1044,7 +1078,9 @@ impl App {
             Message::CancelCompute => {
                 if let Some(c) = self.computing.take() {
                     c.cancel.store(true, Ordering::Relaxed);
-                    if let Some(doc) = self.workbook.get_mut(c.document) {
+                    if c.target == Target::View {
+                        self.clear_filter(c.document);
+                    } else if let Some(doc) = self.workbook.get_mut(c.document) {
                         if !controller::undo(doc) {
                             doc.fail_compute(&c.key, "Cancelled".into());
                         }
@@ -1076,6 +1112,11 @@ impl App {
             Message::EditStep(index) => {
                 if let Some(id) = self.active {
                     return self.edit_step(id, index);
+                }
+            }
+            Message::ClearFilter => {
+                if let Some(id) = self.active {
+                    self.clear_filter(id);
                 }
             }
             Message::SaveRecipe => {
@@ -1235,12 +1276,11 @@ impl App {
         let changes_data = matches!(
             action,
             Action::InsertRows
-                | Action::RemoveRows
+                | Action::DeleteRows
                 | Action::AddColumn
                 | Action::RenameColumn
                 | Action::RemoveColumns
                 | Action::KeepColumns
-                | Action::KeepRows
                 | Action::SortAscending
                 | Action::SortDescending
                 | Action::DataType
@@ -1310,14 +1350,19 @@ impl App {
                     self.insert_rows(id, false);
                 }
             }
-            Action::RemoveRows => {
+            Action::DeleteRows => {
                 if let Some(id) = self.active {
                     self.delete_rows(id);
                 }
             }
-            Action::KeepRows => {
+            Action::FilterRows => {
                 if let Some(id) = self.active {
                     self.open_filter_dialog(id);
+                }
+            }
+            Action::KeepRows | Action::RemoveRows => {
+                if let Some(id) = self.active {
+                    self.apply_filter(id, action == Action::RemoveRows);
                 }
             }
             Action::ReplaceValues => {
@@ -1481,7 +1526,7 @@ impl App {
             .tabs
             .iter()
             .find(|t| t.id == id)
-            .is_some_and(|t| t.grid.preview().is_some());
+            .is_some_and(|t| t.grid.preview().is_some() || t.grid.filter().is_some());
         let ready = self
             .workbook
             .get(id)
@@ -1500,6 +1545,15 @@ impl App {
             }
             Some(Status::Computing { step }) => {
                 format!("Step {} is still being computed.", step + 1)
+            }
+            _ if self
+                .tabs
+                .iter()
+                .any(|t| t.id == id && t.grid.filter().is_some()) =>
+            {
+                "A filter is on. Keep or remove the filtered rows, or clear the filter, to make \
+                 changes."
+                    .into()
             }
             _ => "You're viewing an earlier step. Select the last step to make changes.".into(),
         };
@@ -1769,12 +1823,89 @@ impl App {
         let selected = self
             .selected_columns(id)
             .and_then(|c| columns.get(c.start).cloned());
+        let current = self
+            .tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.grid.filter().cloned());
+        let dialog = match current {
+            Some(filter) => FilterDialog::edit(columns, &filter),
+            None => FilterDialog::new(columns, selected),
+        };
         self.edit = None;
         self.dialog = Some(Dialog::Filter {
             document: id,
-            dialog: FilterDialog::new(columns, selected),
+            dialog,
             replace: None,
         });
+    }
+
+    /// Filters the rows shown (not a step). The filter is computed in the
+    /// background; the table is read-only until it is cleared or applied.
+    fn set_view_filter(&mut self, id: DocumentId, filter: Filter) -> Result<(), String> {
+        let Some(doc) = self.workbook.get(id) else {
+            return Ok(());
+        };
+        if doc.status() != &Status::Ready {
+            return Err("Wait until the steps are computed.".into());
+        }
+        let view = doc.filter_view(filter.clone()).map_err(|e| e.to_string())?;
+        self.commit_edit_or_drop();
+        if let (Some(doc), Some(tab)) = (
+            self.workbook.get(id),
+            self.tabs.iter_mut().find(|t| t.id == id),
+        ) {
+            tab.grid.set_filter(Some((filter, view)), doc);
+        }
+        Ok(())
+    }
+
+    fn clear_filter(&mut self, id: DocumentId) {
+        if let (Some(doc), Some(tab)) = (
+            self.workbook.get(id),
+            self.tabs.iter_mut().find(|t| t.id == id),
+        ) {
+            tab.grid.set_filter(None, doc);
+        }
+    }
+
+    /// Turns the temporary filter into a step that keeps (or removes) the
+    /// rows it shows, and clears it.
+    fn apply_filter(&mut self, id: DocumentId, remove: bool) {
+        let Some(filter) = self
+            .tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.grid.filter().cloned())
+        else {
+            return;
+        };
+        self.clear_filter(id);
+        self.execute(
+            id,
+            Command::Filter(Filter {
+                exclude: remove,
+                ..filter
+            }),
+        );
+    }
+
+    /// Keeps only the selected rows.
+    fn keep_rows(&mut self, id: DocumentId) {
+        let (Some(rows), Some(total)) = (
+            self.selected_rows(id),
+            self.workbook.get(id).map(Document::num_rows),
+        ) else {
+            return;
+        };
+        let delete: Vec<_> = [0..rows.start, rows.end..total]
+            .into_iter()
+            .filter(|r| !r.is_empty())
+            .collect();
+        if !delete.is_empty() {
+            self.edit = None;
+            self.execute(id, Command::DeleteRows { rows: delete });
+        }
     }
 
     /// Closes the dialog and adds `command`'s step, or replaces step
@@ -2078,26 +2209,48 @@ impl App {
             (None, true) => FilterOp::IsNull,
             (None, false) => FilterOp::IsNotNull,
         };
-        let filter = Filter {
-            conditions: vec![Condition {
-                column,
-                op,
-                value: value.unwrap_or_default(),
-                case_sensitive: true,
-            }],
-            match_all: true,
+        let condition = Condition {
+            column,
+            op,
+            value: value.unwrap_or_default(),
+            case_sensitive: true,
         };
-        self.execute(id, Command::Filter(filter));
+        let current = self
+            .tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.grid.filter().cloned());
+        let filter = match current {
+            Some(mut f) if f.match_all => {
+                f.conditions.push(condition);
+                f
+            }
+            _ => Filter {
+                conditions: vec![condition],
+                match_all: true,
+                exclude: false,
+            },
+        };
+        if let Err(e) = self.set_view_filter(id, filter) {
+            self.errors.push(e);
+        }
     }
 
     /// Starts the next pending full pass if none is running, and stops a
     /// running one whose result would no longer apply.
     fn schedule_compute(&mut self) -> Task<Message> {
         if let Some(c) = &self.computing {
-            let current = self
-                .workbook
-                .get(c.document)
-                .and_then(Document::compute_key);
+            let current = match c.target {
+                Target::Document => self
+                    .workbook
+                    .get(c.document)
+                    .and_then(Document::compute_key),
+                Target::View => self
+                    .tabs
+                    .iter()
+                    .find(|t| t.id == c.document)
+                    .and_then(|t| t.grid.filter_key()),
+            };
             if current.as_ref() != Some(&c.key) {
                 c.cancel.store(true, Ordering::Relaxed);
                 self.computing = None;
@@ -2111,17 +2264,22 @@ impl App {
         order.sort_by_key(|id| Some(*id) != self.active);
         for id in order {
             if let Some(job) = self.workbook.get(id).and_then(Document::compute_job) {
-                return self.start_compute(id, job);
+                return self.start_compute(id, Target::Document, job);
+            }
+            let view = self.tabs.iter().find(|t| t.id == id);
+            if let Some(job) = view.and_then(|t| t.grid.filter_job()) {
+                return self.start_compute(id, Target::View, job);
             }
         }
         Task::none()
     }
 
-    fn start_compute(&mut self, id: DocumentId, job: ComputeJob) -> Task<Message> {
+    fn start_compute(&mut self, id: DocumentId, target: Target, job: ComputeJob) -> Task<Message> {
         let key = job.key().to_vec();
         let cancel = Arc::new(AtomicBool::new(false));
         self.computing = Some(Computing {
             document: id,
+            target,
             key: key.clone(),
             step: job.step(),
             progress: 0.0,
@@ -2133,14 +2291,18 @@ impl App {
             let result = job.run(&mut |progress| {
                 if progress - reported >= 0.01 {
                     reported = progress;
-                    let _ =
-                        sender.unbounded_send(Message::ComputeProgress(id, key.clone(), progress));
+                    let _ = sender.unbounded_send(Message::ComputeProgress(
+                        id,
+                        target,
+                        key.clone(),
+                        progress,
+                    ));
                 }
                 !cancel.load(Ordering::Relaxed)
             });
             if !cancel.load(Ordering::Relaxed) {
                 let result = result.map(Slot::new).map_err(|e| e.to_string());
-                let _ = sender.unbounded_send(Message::ComputeDone(id, key, result));
+                let _ = sender.unbounded_send(Message::ComputeDone(id, target, key, result));
             }
         });
         Task::run(receiver, |message| message)
@@ -2409,17 +2571,22 @@ impl App {
                     grid::grid(&tab.grid, ui.tokens, move |e| Message::Grid(id, e)).editor(editor);
                 let grid: Element<'_, Message> =
                     match self.computing.as_ref().filter(|c| c.document == id) {
-                        Some(c) => {
-                            stack![grid, opaque(panes::computing(doc, c.step, c.progress, ui))]
-                                .into()
-                        }
+                        Some(c) => stack![
+                            grid,
+                            opaque(panes::computing(computing_label(doc, c), c.progress, ui))
+                        ]
+                        .into(),
                         None => grid.into(),
                     };
-                let grid = column![
+                let mut grid_column = column![
                     panes::formula_bar(tab, doc, edit, ui),
                     divider(ui.tokens, false),
-                    container(grid).width(Length::Fill).height(Length::Fill),
                 ];
+                if let Some(bar) = panes::filter_bar(tab, doc, ui) {
+                    grid_column = grid_column.push(bar);
+                }
+                let grid =
+                    grid_column.push(container(grid).width(Length::Fill).height(Length::Fill));
                 if self.show_side_pane {
                     row![
                         grid,
@@ -2437,6 +2604,9 @@ impl App {
         let context = ribbon::Context {
             has_document: self.active.is_some(),
             has_selection: self.active.and_then(|id| self.selected_rows(id)).is_some(),
+            filter_active: self
+                .active_document()
+                .is_some_and(|(tab, doc)| tab.grid.filter_counts(doc).is_some()),
             can_undo: self
                 .active_document()
                 .is_some_and(|(_, d)| d.history().can_undo()),
@@ -2554,6 +2724,14 @@ impl App {
             )
         ]
         .into()
+    }
+}
+
+/// What the computing overlay says is running.
+fn computing_label(doc: &Document, c: &Computing) -> String {
+    match (c.target, doc.steps().get(c.step)) {
+        (Target::Document, Some(step)) => format!("{}. {}", c.step + 1, step.describe()),
+        _ => "Filtering rows".to_owned(),
     }
 }
 
@@ -2803,7 +2981,7 @@ mod tests {
         );
         assert_eq!(app.tabs[0].grid.value(5, 0), Some(None));
 
-        let _ = app.update(Message::Action(Action::RemoveRows));
+        let _ = app.update(Message::Action(Action::DeleteRows));
         assert_eq!(rows(&app), 1000);
         // Like Excel, the same row positions stay selected after a delete.
         let _ = app.update(Message::Grid(id, GridEvent::DeleteRows));
@@ -2943,7 +3121,7 @@ mod tests {
                 extend: false,
             },
         ));
-        let _ = app.update(Message::Action(Action::RemoveRows));
+        let _ = app.update(Message::Action(Action::DeleteRows));
         assert!(app.workbook.get(id).unwrap().is_modified());
 
         // What the worker thread does, run inline.
@@ -2989,7 +3167,7 @@ mod tests {
                 extend: false,
             },
         ));
-        let _ = app.update(Message::Action(Action::RemoveRows));
+        let _ = app.update(Message::Action(Action::DeleteRows));
         assert!(app.title().starts_with('●'));
 
         let _ = app.update(Message::Action(Action::Close));
@@ -3018,7 +3196,7 @@ mod tests {
                 extend: false,
             },
         ));
-        let _ = app.update(Message::Action(Action::RemoveRows));
+        let _ = app.update(Message::Action(Action::DeleteRows));
 
         let _ = app.update(Message::CloseTab(id));
         let _ = app.update(Message::CloseAnswer(CloseAnswer::Save));
@@ -3055,7 +3233,7 @@ mod tests {
                 },
             ));
             let _ = app.update(Message::SelectTab(id));
-            let _ = app.update(Message::Action(Action::RemoveRows));
+            let _ = app.update(Message::Action(Action::DeleteRows));
         }
         let _ = app.update(Message::CloseRequested);
         assert!(
@@ -3096,14 +3274,14 @@ mod tests {
                 extend: false,
             },
         ));
-        let _ = app.update(Message::Action(Action::RemoveRows));
+        let _ = app.update(Message::Action(Action::DeleteRows));
         assert_eq!(doc(&app), 2);
 
         // Preview the source: read-only.
         let _ = app.update(Message::PreviewStep(id, 0));
         assert_eq!(app.tabs[0].grid.preview(), Some(0));
         assert_eq!(app.tabs[0].grid.value(0, 0), Some(Some("0")));
-        let _ = app.update(Message::Action(Action::RemoveRows));
+        let _ = app.update(Message::Action(Action::DeleteRows));
         assert_eq!(doc(&app), 2, "changes are disabled while previewing");
         assert_eq!(app.errors.len(), 1);
         let _ = app.update(Message::PreviewStep(id, usize::MAX));
@@ -3133,20 +3311,38 @@ mod tests {
             .run(&mut |_| true)
             .map(Slot::new)
             .map_err(|e| e.to_string());
-        let _ = app.update(Message::ComputeDone(id, key, result));
+        let _ = app.update(Message::ComputeDone(id, Target::Document, key, result));
+    }
+
+    /// Runs the pending filter of document `id`'s tab here.
+    fn finish_filter(app: &mut App, id: DocumentId) {
+        let tab = app.tabs.iter().find(|t| t.id == id).unwrap();
+        let job = tab.grid.filter_job().unwrap();
+        let key = job.key().to_vec();
+        let result = job
+            .run(&mut |_| true)
+            .map(Slot::new)
+            .map_err(|e| e.to_string());
+        let _ = app.update(Message::ComputeDone(id, Target::View, key, result));
     }
 
     #[test]
-    fn filter_dialog_background_pass_and_cancel() {
+    fn filter_view_then_keep_or_remove() {
         let dir = TempDir::new();
         let path = dir.join("m.parquet");
         fixtures::mixed_settings(&path);
         let mut app = app_with(&[&path]);
         let id = app.tabs[0].id;
         let n = fixtures::MIXED_SETTINGS_ROWS;
-        let status = |app: &App| app.workbook.get(id).unwrap().status().clone();
+        let rows = |app: &App| app.workbook.get(id).unwrap().num_rows();
+        let steps = |app: &App| app.workbook.get(id).unwrap().steps().len();
+        let shown = |app: &App| {
+            let doc = app.workbook.get(id).unwrap();
+            app.tabs[0].grid.filter_counts(doc).map(|c| c.0)
+        };
+        let anas = (0..n).filter(|i| i % 5 == 0 && i % 7 != 0).count();
 
-        // Keep Rows opens on the selected column.
+        // Filter opens on the selected column and sets a view, not a step.
         let _ = app.update(Message::Grid(
             id,
             GridEvent::SelectColumns {
@@ -3154,8 +3350,7 @@ mod tests {
                 extend: false,
             },
         ));
-        let _ = app.update(Message::Action(Action::KeepRows));
-        assert!(matches!(app.dialog, Some(Dialog::Filter { .. })));
+        let _ = app.update(Message::Action(Action::FilterRows));
         let _ = app.update(Message::Filter(FilterMessage::Op(0, FilterOp::Greater)));
         let _ = app.update(Message::Filter(FilterMessage::Column(0, "score".into())));
         let _ = app.update(Message::Filter(FilterMessage::Value(0, "abc".into())));
@@ -3169,16 +3364,24 @@ mod tests {
         let _ = app.update(Message::Filter(FilterMessage::Value(0, "ANA".into())));
         let _ = app.update(Message::Filter(FilterMessage::Apply));
         assert!(app.dialog.is_none());
-        assert_eq!(status(&app), Status::Computing { step: 0 });
-        assert!(app.computing.is_some(), "a background pass started");
+        assert_eq!(steps(&app), 0);
+        assert!(
+            app.computing
+                .as_ref()
+                .is_some_and(|c| c.target == Target::View)
+        );
+        finish_filter(&mut app, id);
+        assert_eq!(shown(&app), Some(anas));
+        assert_eq!(app.tabs[0].grid.value(0, 1), Some(Some("ana")));
 
-        finish_compute(&mut app, id);
-        assert!(app.computing.is_none());
-        assert_eq!(status(&app), Status::Ready);
-        let expected = (0..n).filter(|i| i % 5 == 0 && i % 7 != 0).count();
-        assert_eq!(app.workbook.get(id).unwrap().num_rows(), expected);
+        // Read-only while filtered.
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 0 }));
+        let _ = app.update(Message::Action(Action::DeleteRows));
+        assert_eq!(steps(&app), 0);
+        assert!(!app.errors.is_empty());
+        app.errors.clear();
 
-        // Quick filter from a cell, then cancel: the step is undone.
+        // Filter by a cell value adds to the filter.
         let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 3 }));
         let _ = app.update(Message::Grid(
             id,
@@ -3188,14 +3391,22 @@ mod tests {
             },
         ));
         let _ = app.update(Message::Menu(MenuItem::ExcludeValue));
-        assert_eq!(app.workbook.get(id).unwrap().steps().len(), 2);
-        assert!(app.computing.is_some());
-        let _ = app.update(Message::CancelCompute);
-        assert!(app.computing.is_none());
-        assert_eq!(app.workbook.get(id).unwrap().steps().len(), 1);
-        assert_eq!(status(&app), Status::Ready);
+        assert_eq!(app.tabs[0].grid.filter().unwrap().conditions.len(), 2);
+        finish_filter(&mut app, id);
+        let first_flag = app.tabs[0].grid.value(0, 3).flatten().map(str::to_owned);
+        assert!(first_flag.is_some());
 
-        // Undo while computing drops the running pass.
+        // Remove rows: the inverse of what's shown becomes a step.
+        let shown_now = shown(&app).unwrap();
+        let _ = app.update(Message::Action(Action::RemoveRows));
+        assert!(app.tabs[0].grid.filter().is_none());
+        finish_compute(&mut app, id);
+        assert_eq!(rows(&app), n - shown_now);
+        let _ = app.update(Message::Action(Action::Undo));
+        assert_eq!(rows(&app), n);
+
+        // Clear drops the view; Keep keeps the rows shown.
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 1, column: 1 }));
         let _ = app.update(Message::Grid(
             id,
             GridEvent::ContextMenu {
@@ -3204,20 +3415,72 @@ mod tests {
             },
         ));
         let _ = app.update(Message::Menu(MenuItem::KeepValue));
-        let stale = app.computing.as_ref().unwrap().key.clone();
-        let _ = app.update(Message::Action(Action::Undo));
-        assert!(app.computing.is_none());
-        let _ = app.update(Message::ComputeDone(id, stale, Err("late".into())));
-        assert_eq!(status(&app), Status::Ready);
-
-        // Editing the filter step opens the dialog on it.
-        let _ = app.update(Message::EditStep(0));
-        let _ = app.update(Message::Filter(FilterMessage::Value(0, "bo".into())));
-        let _ = app.update(Message::Filter(FilterMessage::Apply));
-        assert_eq!(status(&app), Status::Computing { step: 0 });
+        finish_filter(&mut app, id);
+        let _ = app.update(Message::ClearFilter);
+        assert!(app.tabs[0].grid.filter().is_none());
+        assert_eq!(app.tabs[0].grid.value(0, 0), Some(Some("0")));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::ContextMenu {
+                target: MenuTarget::Cell,
+                position: iced::Point::ORIGIN,
+            },
+        ));
+        let _ = app.update(Message::Menu(MenuItem::KeepValue));
+        finish_filter(&mut app, id);
+        let _ = app.update(Message::Action(Action::KeepRows));
         finish_compute(&mut app, id);
-        let expected = (0..n).filter(|i| i % 5 == 1 && i % 7 != 0).count();
-        assert_eq!(app.workbook.get(id).unwrap().num_rows(), expected);
+        let bos = (0..n).filter(|i| i % 5 == 1 && i % 7 != 0).count();
+        assert_eq!(rows(&app), bos);
+
+        // Cancel while filtering clears the filter.
+        let _ = app.update(Message::Action(Action::FilterRows));
+        let _ = app.update(Message::Filter(FilterMessage::Value(0, "x".into())));
+        let _ = app.update(Message::Filter(FilterMessage::Apply));
+        assert!(app.computing.is_some());
+        let _ = app.update(Message::CancelCompute);
+        assert!(app.tabs[0].grid.filter().is_none());
+        assert_eq!(steps(&app), 1);
+
+        // Editing the filter step still works through the dialog.
+        let _ = app.update(Message::EditStep(0));
+        let _ = app.update(Message::Filter(FilterMessage::Value(0, "ana".into())));
+        let _ = app.update(Message::Filter(FilterMessage::Apply));
+        finish_compute(&mut app, id);
+        assert_eq!(rows(&app), anas);
+    }
+
+    #[test]
+    fn keep_selected_rows_from_the_menu() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectRows {
+                row: 2,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectRows {
+                row: 4,
+                extend: true,
+            },
+        ));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::ContextMenu {
+                target: MenuTarget::Rows,
+                position: iced::Point::ORIGIN,
+            },
+        ));
+        let _ = app.update(Message::Menu(MenuItem::KeepRows));
+        assert_eq!(app.workbook.get(id).unwrap().num_rows(), 3);
+        assert_eq!(app.tabs[0].grid.value(0, 0), Some(Some("2")));
     }
 
     #[test]

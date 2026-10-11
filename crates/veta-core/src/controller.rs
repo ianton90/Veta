@@ -662,6 +662,7 @@ mod tests {
                 case_sensitive: false,
             }],
             match_all: true,
+            exclude: false,
         };
         execute(&mut doc, Command::Filter(filter)).unwrap();
         assert_eq!(doc.status(), &Status::Computing { step: 0 });
@@ -683,6 +684,7 @@ mod tests {
                 case_sensitive: false,
             }],
             match_all: true,
+            exclude: false,
         };
         assert!(execute(&mut doc, Command::Filter(bad)).is_err());
     }

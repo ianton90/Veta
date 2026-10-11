@@ -300,6 +300,8 @@ pub struct FilterDialog {
     columns: Vec<String>,
     conditions: Vec<Condition>,
     matching: Matching,
+    /// Kept from an edited step: remove the matching rows.
+    exclude: bool,
     error: Option<String>,
 }
 
@@ -347,6 +349,7 @@ impl FilterDialog {
                 case_sensitive: false,
             }],
             matching: Matching::All,
+            exclude: false,
             error: None,
         }
     }
@@ -361,6 +364,7 @@ impl FilterDialog {
             } else {
                 Matching::Any
             },
+            exclude: filter.exclude,
             error: None,
         }
     }
@@ -395,6 +399,7 @@ impl FilterDialog {
                 return Some(Filter {
                     conditions: self.conditions.clone(),
                     match_all: self.matching == Matching::All,
+                    exclude: self.exclude,
                 });
             }
         }

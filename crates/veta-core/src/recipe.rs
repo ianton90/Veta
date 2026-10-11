@@ -78,6 +78,8 @@ enum RecipeStep {
     },
     Filter {
         match_all: bool,
+        #[serde(default)]
+        exclude: bool,
         conditions: Vec<RecipeCondition>,
     },
     Sort {
@@ -282,6 +284,7 @@ impl RecipeStep {
             },
             Step::Filter(f) => RecipeStep::Filter {
                 match_all: f.match_all,
+                exclude: f.exclude,
                 conditions: f
                     .conditions
                     .iter()
@@ -385,9 +388,11 @@ impl RecipeStep {
             RecipeStep::MoveColumn { name, to } => Step::MoveColumn { name, to },
             RecipeStep::Filter {
                 match_all,
+                exclude,
                 conditions,
             } => Step::Filter(Filter {
                 match_all,
+                exclude,
                 conditions: conditions
                     .into_iter()
                     .map(|c| Condition {
@@ -554,6 +559,7 @@ mod tests {
             },
             Step::Filter(Filter {
                 match_all: false,
+                exclude: false,
                 conditions: vec![Condition {
                     column: "id".into(),
                     op: FilterOp::GreaterOrEqual,

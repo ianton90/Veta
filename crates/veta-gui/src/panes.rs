@@ -11,6 +11,7 @@ use veta_core::{Document, DocumentId, SourceMode};
 
 use crate::grid::MenuTarget;
 use crate::icon::{Icon, icon};
+use crate::ribbon::Action;
 use crate::theme::Tokens;
 use crate::{Edit, FORMULA_ID, MenuItem, Message, SideTab, Tab, Ui, bold};
 use veta_core::steps::Status;
@@ -524,13 +525,77 @@ pub fn formula_bar<'a>(
 
 /// Right-click menu for cells, rows or columns. `rows` is how many rows are
 /// selected.
-/// Covers the grid while a step's full pass runs.
-pub fn computing<'a>(doc: &Document, step: usize, progress: f32, ui: Ui) -> Element<'a, Message> {
+/// The bar above the grid while a temporary filter is on.
+pub fn filter_bar<'a>(tab: &Tab, doc: &Document, ui: Ui) -> Option<Element<'a, Message>> {
     let t = ui.tokens;
-    let label = doc
-        .steps()
-        .get(step)
-        .map_or_else(String::new, |s| format!("{}. {}", step + 1, s.describe()));
+    let filter = tab.grid.filter()?;
+    let counts = tab.grid.filter_counts(doc);
+    let summary = match counts {
+        Some((shown, total)) => format!(
+            "{} · {} of {} rows",
+            filter
+                .describe()
+                .replacen("Kept rows where", "Showing rows where", 1),
+            abbreviate_count(shown),
+            abbreviate_count(total)
+        ),
+        None => "Filtering…".to_owned(),
+    };
+    let action = |label: &'static str, message: Option<Message>| {
+        let mut b = button(text(label).size(ui.small()))
+            .padding([3, 8])
+            .style(move |_theme: &Theme, status| subtle_button(t, status));
+        if let Some(message) = message {
+            b = b.on_press(message);
+        }
+        b
+    };
+    let ready = counts.is_some();
+    let bar = row![
+        icon(Icon::Filter, ui.small()).color(t.primary),
+        text(summary).size(ui.small()).width(Length::Fill),
+        action("Edit", Some(Message::Action(Action::FilterRows))),
+        action(
+            "Keep rows",
+            ready.then_some(Message::Action(Action::KeepRows))
+        ),
+        action(
+            "Remove rows",
+            ready.then_some(Message::Action(Action::RemoveRows))
+        ),
+        action("Clear", Some(Message::ClearFilter)),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
+    .padding([3, 8]);
+    Some(
+        container(bar)
+            .width(Length::Fill)
+            .style(move |_theme: &Theme| {
+                container::Style::default().background(Color {
+                    a: 0.1,
+                    ..t.primary
+                })
+            })
+            .into(),
+    )
+}
+
+fn abbreviate_count(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Covers the grid while a step's full pass runs.
+pub fn computing<'a>(label: String, progress: f32, ui: Ui) -> Element<'a, Message> {
+    let t = ui.tokens;
     let card = container(
         column![
             text("Computing…").size(ui.heading()).font(bold()),
@@ -597,13 +662,13 @@ pub fn context_menu<'a>(
         items.push(None);
         items.push(Some((
             Icon::Filter,
-            "Keep rows with this value".into(),
+            "Filter by this value".into(),
             "",
             MenuItem::KeepValue,
         )));
         items.push(Some((
             Icon::Filter,
-            "Remove rows with this value".into(),
+            "Filter out this value".into(),
             "",
             MenuItem::ExcludeValue,
         )));
@@ -621,6 +686,16 @@ pub fn context_menu<'a>(
             rows_label("Insert", " below"),
             "",
             MenuItem::InsertRowsBelow,
+        )));
+        items.push(Some((
+            Icon::FilterPlus,
+            if rows == 1 {
+                "Keep only this row".to_owned()
+            } else {
+                format!("Keep only these {rows} rows")
+            },
+            "",
+            MenuItem::KeepRows,
         )));
         items.push(Some((
             Icon::Trash,

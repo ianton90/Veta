@@ -21,6 +21,7 @@ use iced::{
 use std::ops::Range;
 use std::time::{Duration, Instant};
 use veta_core::Document;
+use veta_core::steps::{ComputeJob, Computed, Filter, Pipeline, Status};
 
 use crate::theme::Tokens;
 use veta_core::display::{format_batch, is_numeric, type_name};
@@ -174,6 +175,21 @@ pub struct GridView {
     window_start: usize,
     cells: Vec<Vec<Option<String>>>,
     error: Option<String>,
+    /// A temporary filter over the document's output (not a step).
+    filter: Option<FilterView>,
+}
+
+/// The document's output with a filter applied, computed in the background.
+#[derive(Debug, Clone)]
+struct FilterView {
+    filter: Filter,
+    pipeline: Pipeline,
+}
+
+impl FilterView {
+    fn ready(&self) -> bool {
+        self.pipeline.status() == &Status::Ready
+    }
 }
 
 impl GridView {
@@ -206,6 +222,7 @@ impl GridView {
             window_start: 0,
             cells: Vec::new(),
             error: None,
+            filter: None,
         };
         view.load(document, true);
         view.fit_columns();
@@ -247,9 +264,60 @@ impl GridView {
     }
 
     /// Shows the data after `at` steps (`None`: after all evaluated steps).
+    /// Clears the filter, if any.
     pub fn set_preview(&mut self, at: Option<usize>, document: &Document) {
         self.at = at;
+        self.filter = None;
         self.refresh(document);
+    }
+
+    /// The temporary filter, if one is on.
+    pub fn filter(&self) -> Option<&Filter> {
+        self.filter.as_ref().map(|f| &f.filter)
+    }
+
+    /// Shows the document filtered by `view` (a filter and the document's
+    /// pipeline with it applied), or unfiltered.
+    pub fn set_filter(&mut self, view: Option<(Filter, Pipeline)>, document: &Document) {
+        self.at = None;
+        self.filter = view.map(|(filter, pipeline)| FilterView { filter, pipeline });
+        self.refresh(document);
+    }
+
+    /// The filter's pass, while it still needs computing.
+    pub fn filter_job(&self) -> Option<ComputeJob> {
+        self.filter.as_ref()?.pipeline.compute_job()
+    }
+
+    pub fn filter_key(&self) -> Option<Vec<u64>> {
+        self.filter.as_ref()?.pipeline.compute_key()
+    }
+
+    /// Stores the filter's computed pass; returns whether it applied.
+    pub fn install_filter(&mut self, computed: Computed, document: &Document) -> bool {
+        let Some(view) = &mut self.filter else {
+            return false;
+        };
+        if !view.pipeline.install(computed) {
+            return false;
+        }
+        self.refresh(document);
+        true
+    }
+
+    /// Rows shown and rows in the document, while a filter is on and
+    /// computed.
+    pub fn filter_counts(&self, document: &Document) -> Option<(usize, usize)> {
+        let view = self.filter.as_ref().filter(|f| f.ready())?;
+        Some((view.pipeline.num_rows(), document.num_rows()))
+    }
+
+    /// The computed filter view, if any.
+    fn view(&self) -> Option<&Pipeline> {
+        self.filter
+            .as_ref()
+            .filter(|f| f.ready())
+            .map(|f| &f.pipeline)
     }
 
     /// The step count whose output is shown.
@@ -316,9 +384,12 @@ impl GridView {
     pub fn refresh(&mut self, document: &Document) {
         let old: Vec<Column> = std::mem::take(&mut self.columns);
         let level = self.level(document);
-        let schema = document
-            .schema_at(level)
-            .unwrap_or_else(|| document.schema());
+        let schema = match self.view() {
+            Some(view) => view.schema(),
+            None => document
+                .schema_at(level)
+                .unwrap_or_else(|| document.schema()),
+        };
         let mut fresh = Vec::new();
         self.columns = schema
             .fields()
@@ -337,7 +408,10 @@ impl GridView {
                 }
             })
             .collect();
-        self.num_rows = document.num_rows_at(level).unwrap_or(0);
+        self.num_rows = match self.view() {
+            Some(view) => view.num_rows(),
+            None => document.num_rows_at(level).unwrap_or(0),
+        };
         self.selected = self.selected.and_then(|(r, c)| {
             (self.num_rows > 0 && !self.columns.is_empty())
                 .then(|| (r.min(self.num_rows - 1), c.min(self.columns.len() - 1)))
@@ -510,10 +584,11 @@ impl GridView {
         }
         let start = self.first_row.saturating_sub(self.visible_rows);
         let end = (self.first_row + 2 * self.visible_rows + 1).min(self.num_rows);
-        match document
-            .read_at(self.level(document), start..end)
-            .and_then(|batch| format_batch(&batch))
-        {
+        let batch = match self.view() {
+            Some(view) => view.read(start..end),
+            None => document.read_at(self.level(document), start..end),
+        };
+        match batch.and_then(|batch| format_batch(&batch)) {
             Ok(cells) => {
                 self.window_start = start;
                 self.cells = cells;

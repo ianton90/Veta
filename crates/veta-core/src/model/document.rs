@@ -148,6 +148,14 @@ impl Document {
         self.pipeline.compute_all(&mut |_| true)
     }
 
+    /// The document's output with `filter` applied, for a temporary filtered
+    /// view. Compute it with [`Pipeline::compute_job`] before reading.
+    pub fn filter_view(&self, filter: crate::steps::Filter) -> Result<Pipeline> {
+        let mut view = self.pipeline.clone();
+        view.push(Step::Filter(filter))?;
+        Ok(view)
+    }
+
     /// Number of steps whose output is available.
     pub fn evaluated_steps(&self) -> usize {
         self.pipeline.evaluated()

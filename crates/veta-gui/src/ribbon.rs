@@ -26,9 +26,11 @@ pub enum Action {
     AddColumn,
     DuplicateColumn,
     RenameColumn,
+    FilterRows,
     KeepRows,
     RemoveRows,
     InsertRows,
+    DeleteRows,
     SortAscending,
     SortDescending,
     DataType,
@@ -73,6 +75,8 @@ impl Action {
             | Action::InsertRows
             | Action::RemoveRows
             | Action::KeepRows
+            | Action::FilterRows
+            | Action::DeleteRows
             | Action::DataType
             | Action::ReplaceValues
             | Action::FillDown
@@ -104,7 +108,7 @@ impl Action {
             Action::SaveAs => Some("Ctrl+Shift+S"),
             Action::Undo => Some("Ctrl+Z"),
             Action::InsertRows => Some("Ctrl++"),
-            Action::RemoveRows => Some("Ctrl+-"),
+            Action::DeleteRows => Some("Ctrl+-"),
             Action::Redo => Some("Ctrl+Y"),
             Action::Settings => Some("Ctrl+,"),
             _ => None,
@@ -236,7 +240,8 @@ fn groups(tab: Tab) -> Vec<Group> {
             group(
                 "Reduce Rows",
                 vec![
-                    large(A::KeepRows, "Keep Rows", Icon::Filter),
+                    large(A::FilterRows, "Filter", Icon::Filter),
+                    large(A::KeepRows, "Keep Rows", Icon::FilterPlus),
                     large(A::RemoveRows, "Remove Rows", Icon::Eraser),
                 ],
             ),
@@ -289,7 +294,7 @@ fn groups(tab: Tab) -> Vec<Group> {
                 "Rows",
                 vec![
                     small(A::InsertRows, "Insert Rows", Icon::InsertRows),
-                    small(A::RemoveRows, "Remove Rows", Icon::Eraser),
+                    small(A::DeleteRows, "Delete Rows", Icon::Trash),
                 ],
             ),
         ],
@@ -360,6 +365,8 @@ fn groups(tab: Tab) -> Vec<Group> {
 pub struct Context {
     pub has_document: bool,
     pub has_selection: bool,
+    /// A temporary row filter is on.
+    pub filter_active: bool,
     pub can_undo: bool,
     pub can_redo: bool,
     pub details_visible: bool,
@@ -376,7 +383,9 @@ impl Context {
         match action {
             Action::Close => self.has_document,
             Action::Undo => self.can_undo,
-            Action::InsertRows | Action::RemoveRows | Action::RenameColumn => self.has_selection,
+            Action::InsertRows | Action::DeleteRows | Action::RenameColumn => self.has_selection,
+            Action::KeepRows | Action::RemoveRows => self.filter_active,
+            Action::FilterRows => self.has_document,
             Action::Save
             | Action::SaveAs
             | Action::AddColumn
