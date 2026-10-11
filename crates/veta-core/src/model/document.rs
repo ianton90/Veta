@@ -24,6 +24,8 @@ pub struct Document {
     pub(crate) source_file: Option<(PathBuf, OpenOptions)>,
     pub(crate) pipeline: Pipeline,
     pub(crate) info: Option<FileInfo>,
+    /// Footer of the file the data comes from.
+    footer: Option<Arc<parquet::file::metadata::ParquetMetaData>>,
     pub(crate) metadata: FileMetadata,
     pub(crate) writer: WriterSettings,
     pub(crate) history: History,
@@ -36,6 +38,7 @@ impl Default for Document {
             source_file: None,
             pipeline: Pipeline::new(Arc::new(MemorySource::empty())),
             info: None,
+            footer: None,
             metadata: FileMetadata::default(),
             writer: WriterSettings::default(),
             history: History::new(),
@@ -58,6 +61,7 @@ impl Document {
             path: Some(path),
             pipeline: Pipeline::new(opened.source),
             info: Some(opened.info),
+            footer: Some(opened.footer),
             metadata: opened.metadata,
             writer: opened.writer,
             history: History::new(),
@@ -156,6 +160,26 @@ impl Document {
         Ok(view)
     }
 
+    /// A statistics pass over `columns` (all when empty) of the output.
+    /// Fails while a step is computing or broken.
+    pub fn stats_job(&self, columns: Vec<String>) -> Result<crate::stats::StatsJob> {
+        if self.status() != &Status::Ready {
+            return Err(Error::InvalidCommand(
+                "statistics need every step to be evaluated".into(),
+            ));
+        }
+        crate::stats::StatsJob::new(self.pipeline.clone(), columns)
+    }
+
+    /// Nulls, min and max of `column` from the file's footer, when no steps
+    /// change the data.
+    pub fn quick_stats(&self, column: &str) -> Option<crate::stats::ColumnStats> {
+        if !self.steps().is_empty() {
+            return None;
+        }
+        crate::stats::quick_stats(self.footer.as_ref()?, &self.pipeline.schema(), column)
+    }
+
     /// Number of steps whose output is available.
     pub fn evaluated_steps(&self) -> usize {
         self.pipeline.evaluated()
@@ -226,6 +250,7 @@ impl Document {
         if let Some(opened) = result.reopened {
             self.pipeline = Pipeline::new(opened.source);
             self.info = Some(opened.info);
+            self.footer = Some(opened.footer);
             self.metadata = opened.metadata;
             self.writer = opened.writer;
             self.history = History::new();

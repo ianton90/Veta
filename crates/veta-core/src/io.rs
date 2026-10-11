@@ -66,6 +66,8 @@ pub struct OpenedFile {
     pub metadata: FileMetadata,
     pub writer: WriterSettings,
     pub info: FileInfo,
+    /// The file's footer, for statistics read without the data.
+    pub footer: Arc<ParquetMetaData>,
 }
 
 /// Opens a Parquet file: reads its footer and builds an in-memory or paged
@@ -100,6 +102,7 @@ pub fn open_parquet(path: &Path, options: OpenOptions) -> Result<OpenedFile> {
         metadata: file_metadata(&parquet_metadata),
         writer: writer_settings(&parquet_metadata),
         info,
+        footer: parquet_metadata,
     })
 }
 

@@ -10,6 +10,7 @@ pub mod io;
 pub mod model;
 pub mod recipe;
 pub mod source;
+pub mod stats;
 pub mod steps;
 pub mod values;
 
