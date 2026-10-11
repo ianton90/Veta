@@ -155,7 +155,7 @@ pub fn apply(
 ) -> Result<(), Error> {
     let text = std::fs::read_to_string(recipe)?;
     let mut doc = crate::open(file)?;
-    let steps = veta_core::recipe::from_toml(&text, &doc.schema())?;
+    let steps = veta_core::recipe::from_json(&text, &doc.schema())?;
     let count = steps.len();
     if count > 0 {
         controller::execute(&mut doc, Command::AppendSteps { steps })?;

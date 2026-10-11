@@ -11,7 +11,7 @@ repository.workspace = true
 arrow.workspace = true
 parquet.workspace = true
 serde.workspace = true
-toml.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 veta-testkit.workspace = true

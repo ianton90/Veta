@@ -124,7 +124,7 @@ pub enum Command {
     WriterSettings(edit::WriterArgs),
     /// Apply a recipe (steps saved from the desktop app) to a file.
     Apply {
-        /// Recipe file (.toml).
+        /// Recipe file (.json).
         recipe: PathBuf,
         file: PathBuf,
         #[command(flatten)]
@@ -583,27 +583,20 @@ mod tests {
         let dir = TempDir::new();
         let file = dir.join("mixed.parquet");
         fixtures::mixed_settings(&file);
-        let recipe = dir.join("r.toml");
+        let recipe = dir.join("r.json");
         std::fs::write(
             &recipe,
-            r#"
-version = 1
-
-[[steps]]
-kind = "filter"
-match_all = true
-conditions = [{ column = "name", op = "equals", value = "ana" }]
-
-[[steps]]
-kind = "sort"
-keys = [{ column = "id", descending = true }]
-
-[[steps]]
-kind = "custom_column"
-name = "twice"
-expression = "id * 2"
-at = 1
-"#,
+            r#"{
+  "format": "veta-recipe",
+  "version": 1,
+  "steps": [
+    { "order": 1, "type": "filter", "settings": {
+        "match_all": true,
+        "conditions": [{ "column": "name", "op": "equals", "value": "ana" }] } },
+    { "order": 2, "type": "sort", "settings": { "keys": [{ "column": "id", "descending": true }] } },
+    { "order": 3, "type": "custom_column", "settings": { "name": "twice", "expression": "id * 2", "at": 1 } }
+  ]
+}"#,
         )
         .unwrap();
         let out = dir.join("out.parquet");
@@ -620,10 +613,12 @@ at = 1
         let head = run_args(&["veta", "head", out.to_str().unwrap(), "-n", "1"]).unwrap();
         assert!(head.contains("995") && head.contains("1990"), "{head}");
 
+        let one_step =
+            |step: &str| format!(r#"{{"format": "veta-recipe", "version": 1, "steps": [{step}]}}"#);
         // A step that doesn't apply stops before saving.
         std::fs::write(
             &recipe,
-            "version = 1\n[[steps]]\nkind = \"remove_columns\"\nnames = [\"nope\"]\n",
+            one_step(r#"{"order": 1, "type": "remove_columns", "settings": {"names": ["nope"]}}"#),
         )
         .unwrap();
         let err = run_args(&[
@@ -634,6 +629,27 @@ at = 1
         ])
         .unwrap_err();
         assert!(err.contains("step 1"), "{err}");
+
+        // A cast whose error column isn't empty stops at the check.
+        std::fs::write(
+            &recipe,
+            r#"{"format": "veta-recipe", "version": 1, "steps": [
+              {"order": 1, "type": "cast", "settings": {"column": "name", "type": "int64", "on_error": "error_column"}},
+              {"order": 2, "type": "remove_empty_column", "settings": {"name": "name errors"}}
+            ]}"#,
+        )
+        .unwrap();
+        let err = run_args(&[
+            "veta",
+            "apply",
+            recipe.to_str().unwrap(),
+            file.to_str().unwrap(),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("stopped at step 2") && err.contains("isn't empty"),
+            "{err}"
+        );
     }
 
     #[test]

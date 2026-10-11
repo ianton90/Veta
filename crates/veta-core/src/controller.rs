@@ -948,10 +948,10 @@ mod tests {
         )
         .unwrap();
         doc.compute_all().unwrap();
-        let text = crate::recipe::to_toml(doc.steps()).unwrap();
+        let text = crate::recipe::to_json(doc.steps(), &Default::default()).unwrap();
 
         let mut other = mixed(&dir);
-        let steps = crate::recipe::from_toml(&text, &other.schema()).unwrap();
+        let steps = crate::recipe::from_json(&text, &other.schema()).unwrap();
         execute(&mut other, Command::AppendSteps { steps }).unwrap();
         other.compute_all().unwrap();
         let all = |d: &Document| format_batch(&d.read(0..1000).unwrap()).unwrap();

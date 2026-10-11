@@ -1161,7 +1161,7 @@ impl App {
                         .map(|d| {
                             let title = d.title();
                             let stem = title.rsplit_once('.').map_or(title.as_str(), |(s, _)| s);
-                            format!("{stem}.recipe.toml")
+                            format!("{stem}.recipe.json")
                         })
                         .unwrap_or_default();
                     return Task::perform(pick_recipe(Some(name)), move |path| {
@@ -1171,7 +1171,21 @@ impl App {
             }
             Message::SaveRecipeTo(id, Some(path)) => {
                 if let Some(doc) = self.workbook.get(id) {
-                    let result = veta_core::recipe::to_toml(doc.steps())
+                    let name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.trim_end_matches(".json").trim_end_matches(".recipe"))
+                        .unwrap_or_default()
+                        .to_owned();
+                    let info = veta_core::recipe::RecipeInfo {
+                        name,
+                        description: String::new(),
+                        source_file: doc
+                            .path()
+                            .and_then(|p| p.file_name())
+                            .map(|n| n.to_string_lossy().into_owned()),
+                    };
+                    let result = veta_core::recipe::to_json(doc.steps(), &info)
                         .map_err(|e| e.to_string())
                         .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
                     if let Err(e) = result {
@@ -1196,7 +1210,7 @@ impl App {
                     .and_then(|text| {
                         let schema = self.workbook.get(id).map(Document::schema);
                         let schema = schema.ok_or_else(|| "the document is closed".to_owned())?;
-                        veta_core::recipe::from_toml(&text, &schema).map_err(|e| e.to_string())
+                        veta_core::recipe::from_json(&text, &schema).map_err(|e| e.to_string())
                     });
                 match steps {
                     Ok(steps) if steps.is_empty() => {
@@ -2911,7 +2925,7 @@ async fn pick_save_path(name: String, dir: Option<PathBuf>) -> Option<PathBuf> {
 /// Asks where to save a recipe (with a suggested `name`), or which recipe
 /// to open when `name` is `None`.
 async fn pick_recipe(name: Option<String>) -> Option<PathBuf> {
-    let dialog = rfd::AsyncFileDialog::new().add_filter("Recipe", &["toml"]);
+    let dialog = rfd::AsyncFileDialog::new().add_filter("Recipe", &["json"]);
     let handle = match name {
         Some(name) => {
             dialog
@@ -4008,7 +4022,7 @@ mod tests {
         let _ = app.update(Message::Action(Action::SortDescending));
         finish_compute(&mut app, ida);
         let _ = app.update(Message::Action(Action::IndexColumn));
-        let recipe = dir.join("r.toml");
+        let recipe = dir.join("r.recipe.json");
         let _ = app.update(Message::SaveRecipeTo(ida, Some(recipe.clone())));
         assert!(app.errors.is_empty(), "{:?}", app.errors);
 

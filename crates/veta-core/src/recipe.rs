@@ -1,21 +1,28 @@
-//! Recipes: a document's steps saved as TOML, to apply to other files.
+//! Recipes: a document's steps saved as JSON, to apply to other files.
 //!
-//! ```toml
-//! version = 1
-//!
-//! [[steps]]
-//! kind = "rename_column"
-//! from = "name"
-//! to = "label"
-//!
-//! [[steps]]
-//! kind = "filter"
-//! match_all = true
-//! conditions = [{ column = "score", op = "greater", value = "5" }]
+//! ```json
+//! {
+//!   "format": "veta-recipe",
+//!   "version": 1,
+//!   "name": "sales",
+//!   "description": "",
+//!   "created_with": "veta 0.1.0",
+//!   "source_file": "sales.parquet",
+//!   "steps": [
+//!     {
+//!       "order": 1,
+//!       "description": "Renamed name to label",
+//!       "type": "rename_column",
+//!       "settings": { "from": "name", "to": "label" }
+//!     }
+//!   ]
+//! }
 //! ```
 //!
-//! Types are written as in `veta schema` (`int64`, `timestamp[us]`, …) and
-//! edited cell values as text, read back with the column's type.
+//! Steps run by `order`; `description` fields are for people and ignored
+//! when loading. Types are written as in `veta schema` (`int64`,
+//! `timestamp[us]`, …) and edited cell values as text, read back with the
+//! column's type.
 
 use std::sync::Arc;
 
@@ -31,19 +38,48 @@ use crate::steps::{
 };
 use crate::values::parse_value;
 
+/// Marks a JSON file as a recipe.
+const FORMAT: &str = "veta-recipe";
 /// Version written to new recipes.
 const VERSION: u32 = 1;
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Recipe {
+    format: String,
     version: u32,
     #[serde(default)]
-    steps: Vec<RecipeStep>,
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    created_with: String,
+    #[serde(default)]
+    source_file: Option<String>,
+    #[serde(default)]
+    steps: Vec<RecipeEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+struct RecipeEntry {
+    order: usize,
+    /// For people reading the file; ignored when loading.
+    #[serde(default)]
+    description: String,
+    #[serde(flatten)]
+    step: RecipeStep,
+}
+
+/// What describes a recipe besides its steps.
+#[derive(Debug, Clone, Default)]
+pub struct RecipeInfo {
+    pub name: String,
+    pub description: String,
+    /// File the steps were made on.
+    pub source_file: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", content = "settings", rename_all = "snake_case")]
 enum RecipeStep {
     EditCells {
         edits: Vec<RecipeEdit>,
@@ -91,9 +127,9 @@ enum RecipeStep {
         data_type: String,
         #[serde(default = "dot")]
         decimal: char,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         thousands: Option<char>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         format: Option<String>,
         #[serde(default = "null_on_error")]
         on_error: RecipeOnError,
@@ -101,10 +137,10 @@ enum RecipeStep {
     Replace {
         column: String,
         /// Missing: find nulls.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         find: Option<String>,
         /// Missing: replace with null.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         with: Option<String>,
         #[serde(default)]
         whole_cell: bool,
@@ -120,11 +156,11 @@ enum RecipeStep {
     },
     Split {
         column: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         delimiter: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         parts: Option<usize>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         positions: Option<Vec<usize>>,
     },
     Merge {
@@ -152,7 +188,7 @@ struct RecipeEdit {
     row: usize,
     column: String,
     /// Missing: null.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     value: Option<String>,
 }
 
@@ -495,33 +531,55 @@ impl RecipeStep {
     }
 }
 
-/// Writes steps as a TOML recipe.
-pub fn to_toml(steps: &[Step]) -> Result<String> {
+/// Writes steps as a JSON recipe.
+pub fn to_json(steps: &[Step], info: &RecipeInfo) -> Result<String> {
     let recipe = Recipe {
+        format: FORMAT.into(),
         version: VERSION,
+        name: info.name.clone(),
+        description: info.description.clone(),
+        created_with: format!("veta {}", env!("CARGO_PKG_VERSION")),
+        source_file: info.source_file.clone(),
         steps: steps
             .iter()
-            .map(RecipeStep::from_step)
+            .enumerate()
+            .map(|(i, step)| {
+                Ok(RecipeEntry {
+                    order: i + 1,
+                    description: step.describe(),
+                    step: RecipeStep::from_step(step)?,
+                })
+            })
             .collect::<Result<_>>()?,
     };
-    toml::to_string_pretty(&recipe).map_err(recipe_error)
+    serde_json::to_string_pretty(&recipe).map_err(recipe_error)
 }
 
-/// Reads a TOML recipe as steps to apply on data with `schema`.
-pub fn from_toml(text: &str, schema: &SchemaRef) -> Result<Vec<Step>> {
-    let recipe: Recipe = toml::from_str(text).map_err(recipe_error)?;
+/// Reads a JSON recipe as steps to apply on data with `schema`, in order.
+pub fn from_json(text: &str, schema: &SchemaRef) -> Result<Vec<Step>> {
+    let recipe: Recipe = serde_json::from_str(text).map_err(recipe_error)?;
+    if recipe.format != FORMAT {
+        return Err(recipe_error(format!(
+            "this is not a Veta recipe (format {:?})",
+            recipe.format
+        )));
+    }
     if recipe.version != VERSION {
         return Err(recipe_error(format!(
             "version {} is not supported (expected {VERSION})",
             recipe.version
         )));
     }
+    let mut entries = recipe.steps;
+    entries.sort_by_key(|e| e.order);
     let mut schema: SchemaRef = Arc::clone(schema);
-    let mut steps = Vec::with_capacity(recipe.steps.len());
-    for (i, step) in recipe.steps.into_iter().enumerate() {
-        let step = step
+    let mut steps = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let order = entry.order;
+        let step = entry
+            .step
             .into_step(&schema)
-            .map_err(|e| recipe_error(format!("step {}: {e}", i + 1)))?;
+            .map_err(|e| recipe_error(format!("step {order}: {e}")))?;
         // A step that doesn't apply keeps the schema; it shows as broken
         // once loaded.
         if let Ok(next) = schema_after(&schema, &step) {
@@ -632,9 +690,18 @@ mod tests {
     #[test]
     fn round_trips_every_step() {
         let steps = all_steps();
-        let text = to_toml(&steps).unwrap();
-        assert!(text.contains("kind = \"edit_cells\""), "{text}");
-        let back = from_toml(&text, &schema()).unwrap();
+        let info = RecipeInfo {
+            name: "test".into(),
+            source_file: Some("a.parquet".into()),
+            ..RecipeInfo::default()
+        };
+        let text = to_json(&steps, &info).unwrap();
+        assert!(text.contains("\"type\": \"edit_cells\""), "{text}");
+        assert!(
+            text.contains("\"description\": \"Renamed name to label\""),
+            "{text}"
+        );
+        let back = from_json(&text, &schema()).unwrap();
         assert_eq!(back.len(), steps.len());
         for (a, b) in steps.iter().zip(&back) {
             match (a, b) {
@@ -654,18 +721,45 @@ mod tests {
     }
 
     #[test]
+    fn steps_run_by_order() {
+        let text = r#"{
+          "format": "veta-recipe",
+          "version": 1,
+          "steps": [
+            { "order": 2, "type": "rename_column", "settings": { "from": "x", "to": "y" } },
+            { "order": 1, "type": "rename_column", "settings": { "from": "name", "to": "x" } }
+          ]
+        }"#;
+        let steps = from_json(text, &schema()).unwrap();
+        assert_eq!(
+            steps[0],
+            Step::RenameColumn {
+                from: "name".into(),
+                to: "x".into()
+            }
+        );
+    }
+
+    #[test]
     fn reports_bad_recipes() {
         let s = schema();
+        let recipe = |version: u32, steps: &str| {
+            format!(r#"{{"format": "veta-recipe", "version": {version}, "steps": [{steps}]}}"#)
+        };
         assert!(
-            from_toml("version = 2", &s)
+            from_json(&recipe(2, ""), &s)
                 .unwrap_err()
                 .to_string()
                 .contains("version")
         );
-        assert!(from_toml("version = 1\n[[steps]]\nkind = \"explode\"", &s).is_err());
-        let bad_value = "version = 1\n[[steps]]\nkind = \"edit_cells\"\nedits = [{ row = 0, column = \"id\", value = \"x\" }]";
-        let err = from_toml(bad_value, &s).unwrap_err().to_string();
+        assert!(from_json(r#"{"format": "x", "version": 1}"#, &s).is_err());
+        assert!(from_json(&recipe(1, r#"{"order": 1, "type": "explode"}"#), &s).is_err());
+        let bad_value = recipe(
+            1,
+            r#"{"order": 1, "type": "edit_cells", "settings": {"edits": [{"row": 0, "column": "id", "value": "x"}]}}"#,
+        );
+        let err = from_json(&bad_value, &s).unwrap_err().to_string();
         assert!(err.contains("step 1"), "{err}");
-        assert!(from_toml("version = 1", &s).unwrap().is_empty());
+        assert!(from_json(&recipe(1, ""), &s).unwrap().is_empty());
     }
 }

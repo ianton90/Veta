@@ -3852,7 +3852,7 @@ dependencies = [
  "arrow",
  "parquet",
  "serde",
- "toml",
+ "serde_json",
  "veta-testkit",
 ]
 

@@ -151,14 +151,16 @@ veta meta list|get|set|remove <file> [key [value]]
 veta writer-settings <file> [--column C]... [--compression ...] [--level N]
       [--encoding ...] [--dictionary on|off] [--statistics none|chunk|page]
       [--bloom-filter on|off] [--row-group-rows N] [--format-version 1|2]
-veta apply <recipe.toml> <file>        # run steps saved from the GUI
+veta apply <recipe.json> <file>        # run steps saved from the GUI
 ```
 
 Rows and positions are numbered from 1, as in the GUI. Commands that modify
 write in place unless `-o FILE` is given. Planned: `stats`, `convert`.
 
-Recipes (`veta_core::recipe`) are TOML: `version = 1` and a `[[steps]]`
-array, one table per step with a `kind` (`filter`, `sort`, `cast`, …).
+Recipes (`veta_core::recipe`) are JSON: metadata (`format`, `version`, `name`,
+`description`, `created_with`, `source_file`) and a `steps` array; each step
+has `order`, `type`, a readable `description` (ignored on load) and
+`settings`.
 
 ## Testing
 - `veta-core`: unit tests per module; integration tests on small parquet
