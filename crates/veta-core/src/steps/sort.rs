@@ -21,8 +21,7 @@ use super::checkpoint::{Checkpoint, TempFile, write_parquet};
 use super::invalid;
 use crate::error::{Error, Result};
 
-/// Sorts rows by `keys`, the first key first. The sort is stable and nulls
-/// come last.
+/// Sorts rows by `keys`, the first key first. The sort is stable.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sort {
     pub keys: Vec<SortKey>,
@@ -32,6 +31,8 @@ pub struct Sort {
 pub struct SortKey {
     pub column: String,
     pub descending: bool,
+    /// Nulls before other values (otherwise after).
+    pub nulls_first: bool,
 }
 
 /// Approximate decoded size of one sorted run.
@@ -50,7 +51,8 @@ impl Sort {
                 } else {
                     "ascending"
                 };
-                format!("{} {order}", k.column)
+                let nulls = if k.nulls_first { ", nulls first" } else { "" };
+                format!("{} {order}{nulls}", k.column)
             })
             .collect();
         format!("Sorted by {}", keys.join(", then "))
@@ -83,7 +85,7 @@ impl Sort {
             .map(|(i, k)| {
                 let options = SortOptions {
                     descending: k.descending,
-                    nulls_first: false,
+                    nulls_first: k.nulls_first,
                 };
                 SortField::new_with_options(schema.field(i).data_type().clone(), options)
             })
@@ -391,6 +393,7 @@ mod tests {
         SortKey {
             column: column.into(),
             descending,
+            nulls_first: false,
         }
     }
 
@@ -492,6 +495,38 @@ mod tests {
             drop(checkpoint);
             assert!(!path.exists(), "the checkpoint is deleted with its source");
         }
+    }
+
+    #[test]
+    fn nulls_first_per_key() {
+        let batch = input(100);
+        let read = |r: std::ops::Range<usize>| Ok(batch.slice(r.start, r.len()));
+        let sort = Sort {
+            keys: vec![SortKey {
+                column: "score".into(),
+                descending: true,
+                nulls_first: true,
+            }],
+        };
+        assert_eq!(sort.describe(), "Sorted by score descending, nulls first");
+        let sorted = sort_in_memory(&sort, &batch.schema(), 100, &read, 64, &mut |_| true).unwrap();
+        let scores = ints(&sorted, "score");
+        let nulls = scores.iter().filter(|s| s.is_none()).count();
+        assert!(nulls > 0);
+        assert!(scores[..nulls].iter().all(Option::is_none));
+        assert_eq!(scores[nulls], Some(10));
+        // The external sort agrees.
+        let checkpoint = sort_external(
+            &sort,
+            &batch.schema(),
+            100,
+            &read,
+            16,
+            Some(30),
+            &mut |_| true,
+        )
+        .unwrap();
+        assert_eq!(ints(&checkpoint.read(0..100).unwrap(), "score"), scores);
     }
 
     #[test]

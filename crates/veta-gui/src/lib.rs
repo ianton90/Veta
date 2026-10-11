@@ -358,11 +358,11 @@ enum Dialog {
         dialog: CustomDialog,
         replace: Option<usize>,
     },
-    /// Editing the sort step at `index`.
     Sort {
         document: DocumentId,
         dialog: SortDialog,
-        index: usize,
+        /// Editing the step at this index instead of adding a new one.
+        replace: Option<usize>,
     },
     /// "Later steps refer to rows by position" before changing a step.
     ConfirmStep {
@@ -1014,15 +1014,17 @@ impl App {
                 if let Some(Dialog::Sort {
                     document,
                     dialog,
-                    index,
+                    replace,
                 }) = &mut self.dialog
                 {
-                    let (id, index) = (*document, *index);
+                    let (id, replace) = (*document, *replace);
                     let cancel = matches!(message, SortMessage::Cancel);
                     if let Some(sort) = dialog.update(message) {
-                        self.dialog = None;
-                        let step = Step::Sort(sort);
-                        self.change_steps(id, index, Command::ReplaceStep { index, step });
+                        let command = Command::Sort(sort.clone());
+                        if let Err(e) = self.add_or_replace(id, replace, Step::Sort(sort), command)
+                        {
+                            self.errors.push(e);
+                        }
                     } else if cancel {
                         self.dialog = None;
                     }
@@ -1290,6 +1292,7 @@ impl App {
                 | Action::KeepColumns
                 | Action::SortAscending
                 | Action::SortDescending
+                | Action::CustomSort
                 | Action::DataType
                 | Action::ReplaceValues
                 | Action::FillDown
@@ -1441,6 +1444,37 @@ impl App {
             Action::DataType => {
                 if let Some(id) = self.active {
                     self.open_cast_dialog(id, None);
+                }
+            }
+            Action::CustomSort => {
+                if let Some(id) = self.active
+                    && let Some(doc) = self.workbook.get(id)
+                {
+                    let columns: Vec<String> = doc
+                        .schema()
+                        .fields()
+                        .iter()
+                        .map(|f| f.name().clone())
+                        .collect();
+                    let column = self
+                        .selected_column_names(id)
+                        .into_iter()
+                        .next()
+                        .or_else(|| columns.first().cloned())
+                        .unwrap_or_default();
+                    let sort = Sort {
+                        keys: vec![SortKey {
+                            column,
+                            descending: false,
+                            nulls_first: false,
+                        }],
+                    };
+                    self.edit = None;
+                    self.dialog = Some(Dialog::Sort {
+                        document: id,
+                        dialog: SortDialog::new(columns, &sort),
+                        replace: None,
+                    });
                 }
             }
             Action::SortAscending | Action::SortDescending => {
@@ -1649,7 +1683,7 @@ impl App {
                     Step::Sort(sort) => Dialog::Sort {
                         document: id,
                         dialog: SortDialog::new(columns, sort),
-                        index,
+                        replace: Some(index),
                     },
                     _ => return Task::none(),
                 });
@@ -2223,7 +2257,11 @@ impl App {
             return;
         };
         let sort = Sort {
-            keys: vec![SortKey { column, descending }],
+            keys: vec![SortKey {
+                column,
+                descending,
+                nulls_first: false,
+            }],
         };
         self.execute(id, Command::Sort(sort));
     }
@@ -3609,6 +3647,22 @@ mod tests {
         let _ = app.update(Message::Action(Action::SortDescending));
         finish_compute(&mut app, id);
         assert_eq!(id_at(&app, 0).as_deref(), Some("999"));
+
+        // Custom sort: score descending with nulls first, as a new step.
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 2 }));
+        let _ = app.update(Message::Action(Action::CustomSort));
+        let _ = app.update(Message::Sort(SortMessage::Direction(
+            0,
+            dialogs::Direction::Descending,
+        )));
+        let _ = app.update(Message::Sort(SortMessage::Nulls(0, dialogs::Nulls::First)));
+        let _ = app.update(Message::Sort(SortMessage::Apply));
+        finish_compute(&mut app, id);
+        assert_eq!(app.workbook.get(id).unwrap().steps().len(), 2);
+        let doc = app.workbook.get(id).unwrap();
+        let first = veta_core::display::format_batch(&doc.read(0..1).unwrap()).unwrap();
+        assert_eq!(first[0][2], None, "nulls first");
+        let _ = app.update(Message::Action(Action::Undo));
 
         // Edit it into a two-key sort: flag, then id ascending.
         let _ = app.update(Message::EditStep(0));

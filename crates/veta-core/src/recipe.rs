@@ -170,6 +170,8 @@ struct RecipeSortKey {
     column: String,
     #[serde(default)]
     descending: bool,
+    #[serde(default)]
+    nulls_first: bool,
 }
 
 /// Mirrors an enum of the steps module with snake_case names.
@@ -303,6 +305,7 @@ impl RecipeStep {
                     .map(|k| RecipeSortKey {
                         column: k.column.clone(),
                         descending: k.descending,
+                        nulls_first: k.nulls_first,
                     })
                     .collect(),
             },
@@ -409,6 +412,7 @@ impl RecipeStep {
                     .map(|k| SortKey {
                         column: k.column,
                         descending: k.descending,
+                        nulls_first: k.nulls_first,
                     })
                     .collect(),
             }),
@@ -571,6 +575,7 @@ mod tests {
                 keys: vec![SortKey {
                     column: "id".into(),
                     descending: true,
+                    nulls_first: false,
                 }],
             }),
             Step::Cast(Cast {

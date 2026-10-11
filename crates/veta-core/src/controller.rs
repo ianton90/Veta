@@ -701,10 +701,12 @@ mod tests {
                 SortKey {
                     column: "flag".into(),
                     descending: false,
+                    nulls_first: false,
                 },
                 SortKey {
                     column: "score".into(),
                     descending: true,
+                    nulls_first: false,
                 },
             ],
         };
@@ -930,6 +932,7 @@ mod tests {
                 keys: vec![SortKey {
                     column: "score".into(),
                     descending: true,
+                    nulls_first: false,
                 }],
             }),
         )

@@ -33,6 +33,7 @@ pub enum Action {
     DeleteRows,
     SortAscending,
     SortDescending,
+    CustomSort,
     DataType,
     ReplaceValues,
     FillDown,
@@ -90,6 +91,7 @@ impl Action {
             | Action::MergeColumns
             | Action::SortAscending
             | Action::SortDescending
+            | Action::CustomSort
             | Action::Undo
             | Action::Redo
             | Action::Close
@@ -250,6 +252,7 @@ fn groups(tab: Tab) -> Vec<Group> {
                 vec![
                     small(A::SortAscending, "Sort Ascending", Icon::SortAsc),
                     small(A::SortDescending, "Sort Descending", Icon::SortDesc),
+                    small(A::CustomSort, "Custom Sort", Icon::Sliders),
                 ],
             ),
             group(
