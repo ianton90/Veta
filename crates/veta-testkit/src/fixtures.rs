@@ -5,6 +5,7 @@
 //! | [`all_types`] | every primitive type we support, with nulls |
 //! | [`mixed_settings`] | several row groups, per-column compression, encoding, dictionary and statistics settings, key/value metadata |
 //! | [`large`] | many rows and row groups, for paging tests |
+//! | [`nested`] | struct, list, list of structs, map and struct-in-struct columns |
 
 use std::fs::File;
 use std::path::Path;
@@ -304,6 +305,69 @@ fn write(path: &Path, batches: &[RecordBatch], props: WriterProperties) {
         writer.write(batch).unwrap();
     }
     writer.close().unwrap();
+}
+
+/// Rows in [`nested`].
+pub const NESTED_ROWS: usize = 4;
+
+/// Schema of [`nested`].
+pub fn nested_schema() -> Arc<Schema> {
+    let point = DataType::Struct(
+        vec![
+            Field::new("x", DataType::Int64, true),
+            Field::new("y", DataType::Int64, true),
+        ]
+        .into(),
+    );
+    let map = DataType::Map(
+        Arc::new(Field::new(
+            "entries",
+            DataType::Struct(
+                vec![
+                    Field::new("keys", DataType::Utf8, false),
+                    Field::new("values", DataType::Int64, true),
+                ]
+                .into(),
+            ),
+            false,
+        )),
+        false,
+    );
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("point", point.clone(), true),
+        Field::new("tags", DataType::new_list(DataType::Utf8, true), true),
+        Field::new("path", DataType::new_list(point.clone(), true), true),
+        Field::new("scores", map, true),
+        Field::new(
+            "owner",
+            DataType::Struct(
+                vec![
+                    Field::new("name", DataType::Utf8, true),
+                    Field::new("home", point, true),
+                ]
+                .into(),
+            ),
+            true,
+        ),
+    ]))
+}
+
+/// Writes [`NESTED_ROWS`] rows of nested columns. Row 2 is null (or empty)
+/// in every nested column.
+pub fn nested(path: &Path) {
+    let json = r#"
+{"id": 0, "point": {"x": 1, "y": 2}, "tags": ["a", "b"], "path": [{"x": 0, "y": 0}, {"x": 3, "y": 4}], "scores": {"math": 9, "art": 7}, "owner": {"name": "Ana", "home": {"x": 5, "y": 6}}}
+{"id": 1, "point": {"x": -1, "y": null}, "tags": [], "path": [{"x": 1, "y": 1}], "scores": {}, "owner": {"name": "Bo", "home": null}}
+{"id": 2, "point": null, "tags": null, "path": null, "scores": null, "owner": null}
+{"id": 3, "point": {"x": 7, "y": 8}, "tags": ["c", null, "d"], "path": [], "scores": {"math": null}, "owner": {"name": null, "home": {"x": 0, "y": 0}}}
+"#;
+    let schema = nested_schema();
+    let mut reader = arrow::json::ReaderBuilder::new(schema.clone())
+        .build(std::io::Cursor::new(json))
+        .unwrap();
+    let batch = reader.next().unwrap().unwrap();
+    write(path, &[batch], WriterProperties::builder().build());
 }
 
 #[cfg(test)]

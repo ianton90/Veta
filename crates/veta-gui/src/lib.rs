@@ -14,7 +14,7 @@ mod ribbon;
 mod settings;
 mod theme;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -198,6 +198,8 @@ struct App {
     computing: Option<Computing>,
     /// Column statistics for the side pane.
     stats: Stats,
+    /// Nodes collapsed in the value tree, by path.
+    collapsed: HashSet<String>,
     /// Exports running in the background.
     exporting: usize,
     /// Last thing done worth telling (shown in the status bar).
@@ -318,6 +320,8 @@ enum SideTab {
     #[default]
     Steps,
     Stats,
+    /// The selected cell's value, as a tree for nested values.
+    Value,
     File,
 }
 
@@ -473,6 +477,8 @@ enum Message {
     ConfirmStep(bool),
     /// Save the active document's steps as a recipe.
     StatsProgress(DocumentId, u64, f32),
+    /// Collapse or expand a node of the value tree.
+    ToggleNode(String),
     StatsDone(DocumentId, u64, Result<Vec<ColumnStats>, String>),
     /// A file to import was chosen.
     ImportPicked(Option<PathBuf>),
@@ -546,6 +552,7 @@ impl App {
             stats: Stats::default(),
             exporting: 0,
             notice: None,
+            collapsed: HashSet::new(),
         };
         let open = app.open(files);
         let system = iced::system::theme().map(Message::SystemMode);
@@ -1206,6 +1213,11 @@ impl App {
             Message::EditStep(index) => {
                 if let Some(id) = self.active {
                     return self.edit_step(id, index);
+                }
+            }
+            Message::ToggleNode(path) => {
+                if !self.collapsed.remove(&path) {
+                    self.collapsed.insert(path);
                 }
             }
             Message::StatsProgress(id, revision, progress) => {
@@ -2659,6 +2671,21 @@ impl App {
         Task::run(receiver, |message| message)
     }
 
+    /// The selected cell's value as a tree, for the Value tab.
+    fn value_tree(&self, tab: &Tab, doc: &Document) -> Option<veta_core::display::ValueNode> {
+        if self.side_tab != SideTab::Value || !self.show_side_pane {
+            return None;
+        }
+        let (row, column) = tab.grid.selected()?;
+        let array = tab.grid.cell_array(row, column, doc)?;
+        let name = doc
+            .schema_at(doc.evaluated_steps())?
+            .field(column)
+            .name()
+            .clone();
+        Some(veta_core::display::value_tree(array.as_ref(), 0, &name))
+    }
+
     /// What the statistics pane shows for document `id`.
     fn stats_view(&self, id: DocumentId) -> panes::StatsView {
         let Some(doc) = self.workbook.get(id) else {
@@ -2883,7 +2910,7 @@ impl App {
     fn cell_value(&self, id: DocumentId) -> Option<Option<String>> {
         let tab = self.tabs.iter().find(|t| t.id == id)?;
         let (row, column) = tab.grid.selected()?;
-        match tab.grid.value(row, column) {
+        match tab.grid.edit_value(row, column) {
             Some(value) => Some(value.map(str::to_owned)),
             None => {
                 let batch = self.workbook.get(id)?.read(row..row + 1).ok()?;
@@ -3078,7 +3105,15 @@ impl App {
                     row![
                         grid,
                         divider(ui.tokens, true),
-                        panes::side_pane(tab, doc, self.side_tab, self.stats_view(id), ui)
+                        panes::side_pane(
+                            tab,
+                            doc,
+                            self.side_tab,
+                            self.stats_view(id),
+                            self.value_tree(tab, doc),
+                            &self.collapsed,
+                            ui
+                        )
                     ]
                     .into()
                 } else {
@@ -4153,6 +4188,29 @@ mod tests {
         assert_eq!(app.tabs.len(), 1);
         assert!(app.errors[0].contains("n (1)"), "{:?}", app.errors);
         assert_eq!(app.tabs[0].grid.value(1, 1), Some(Some("x")));
+    }
+
+    #[test]
+    fn nested_values_in_formula_bar_and_value_tab() {
+        let dir = TempDir::new();
+        let path = dir.join("n.parquet");
+        fixtures::nested(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 1 }));
+        assert_eq!(app.tabs[0].grid.value(0, 1), Some(Some("{x: 1, y: 2}")));
+        assert_eq!(
+            app.tabs[0].grid.edit_value(0, 1),
+            Some(Some(r#"{"x":1,"y":2}"#))
+        );
+        assert_eq!(app.cell_text(id).as_deref(), Some(r#"{"x":1,"y":2}"#));
+        let _ = app.update(Message::SideTab(SideTab::Value));
+        let tab = &app.tabs[0];
+        let doc = app.workbook.get(id).unwrap();
+        let tree = app.value_tree(tab, doc).unwrap();
+        assert_eq!((tree.label.as_str(), tree.children.len()), ("point", 2));
+        let _ = app.update(Message::ToggleNode("point".into()));
+        assert!(app.collapsed.contains("point"));
     }
 
     #[test]

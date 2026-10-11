@@ -14,6 +14,9 @@ use crate::icon::{Icon, icon};
 use crate::ribbon::Action;
 use crate::theme::Tokens;
 use crate::{Edit, FORMULA_ID, MenuItem, Message, SideTab, Tab, Ui, bold};
+use std::collections::HashSet;
+
+use veta_core::display::ValueNode;
 use veta_core::stats::ColumnStats;
 use veta_core::steps::Status;
 
@@ -93,6 +96,8 @@ pub fn side_pane<'a>(
     doc: &'a Document,
     side: SideTab,
     stats: StatsView,
+    value: Option<ValueNode>,
+    collapsed: &HashSet<String>,
     ui: Ui,
 ) -> Element<'a, Message> {
     let t = ui.tokens;
@@ -119,20 +124,90 @@ pub fn side_pane<'a>(
             .on_press(Message::SideTab(target))
     };
     let tabs = row![
-        tab_button("Applied steps", SideTab::Steps),
-        tab_button("Statistics", SideTab::Stats),
+        tab_button("Steps", SideTab::Steps),
+        tab_button("Stats", SideTab::Stats),
+        tab_button("Value", SideTab::Value),
         tab_button("File", SideTab::File)
     ]
     .spacing(4);
     let body = match side {
         SideTab::Steps => steps_pane(tab, doc, ui),
         SideTab::Stats => stats_pane(stats, ui),
+        SideTab::Value => value_pane(value, collapsed, ui),
         SideTab::File => file_details(doc, ui),
     };
     container(column![container(tabs).padding([8, 12]), body])
         .width(SIDE_PANE_WIDTH)
         .height(Length::Fill)
         .style(move |_theme: &Theme| container::Style::default().background(t.background))
+        .into()
+}
+
+/// The selected cell's value as an expandable tree.
+fn value_pane<'a>(
+    value: Option<ValueNode>,
+    collapsed: &HashSet<String>,
+    ui: Ui,
+) -> Element<'a, Message> {
+    let t = ui.tokens;
+    let Some(root) = value else {
+        return container(
+            text("Select a cell to see its value.")
+                .size(ui.small())
+                .color(t.muted_text),
+        )
+        .padding([0, 12])
+        .into();
+    };
+    let mut lines = column![].spacing(2);
+    let mut stack: Vec<(ValueNode, usize)> = vec![(root, 0)];
+    while let Some((node, depth)) = stack.pop() {
+        let has_children = !node.children.is_empty();
+        let open = !collapsed.contains(&node.path);
+        let marker: Element<'a, Message> = if has_children {
+            let glyph = if open { "▾" } else { "▸" };
+            button(text(glyph).size(ui.small()).color(t.muted_text))
+                .padding(0)
+                .style(move |_theme: &Theme, status| subtle_button(t, status))
+                .on_press(Message::ToggleNode(node.path.clone()))
+                .into()
+        } else {
+            iced::widget::Space::new().width(ui.small()).into()
+        };
+        let value_color = if node.null || has_children {
+            t.muted_text
+        } else {
+            t.text
+        };
+        lines = lines.push(
+            row![
+                iced::widget::Space::new().width(depth as f32 * 14.0),
+                marker,
+                text(node.label.clone()).size(ui.small()).font(bold()),
+                text(node.text.clone()).size(ui.small()).color(value_color),
+                // Containers say what they hold; leaves show their type.
+                text(if has_children {
+                    String::new()
+                } else {
+                    node.type_name.clone()
+                })
+                .size(ui.small() - 1.0)
+                .color(Color {
+                    a: 0.6,
+                    ..t.muted_text
+                }),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        );
+        if has_children && open {
+            for child in node.children.into_iter().rev() {
+                stack.push((child, depth + 1));
+            }
+        }
+    }
+    scrollable(container(lines).padding([0, 12]))
+        .height(Length::Fill)
         .into()
 }
 
@@ -606,7 +681,7 @@ pub fn formula_bar<'a>(
         }
         None => String::new(),
     };
-    let current = selected.and_then(|(r, c)| tab.grid.value(r, c));
+    let current = selected.and_then(|(r, c)| tab.grid.edit_value(r, c));
     let (value, placeholder) = match (edit, current) {
         (Some(edit), _) => (edit.text.as_str(), ""),
         (None, Some(Some(value))) => (value, ""),

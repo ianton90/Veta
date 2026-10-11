@@ -26,6 +26,9 @@ pub fn parse_value(text: Option<&str>, data_type: &DataType) -> Result<ArrayRef>
         Some(t) if is_text(data_type) => t,
         Some(t) => t.trim(),
     };
+    if data_type.is_nested() {
+        return parse_json(text, data_type);
+    }
     let input: ArrayRef = Arc::new(StringArray::from(vec![text]));
     let options = CastOptions {
         safe: false,
@@ -34,4 +37,97 @@ pub fn parse_value(text: Option<&str>, data_type: &DataType) -> Result<ArrayRef>
     cast_with_options(&input, data_type, &options).map_err(|_| {
         Error::InvalidCommand(format!("{text:?} is not a valid {}", type_name(data_type)))
     })
+}
+
+/// Parses JSON text (`{"x": 1}`, `[1, 2]`, …) as a one-element array of a
+/// nested type.
+fn parse_json(text: &str, data_type: &DataType) -> Result<ArrayRef> {
+    let invalid = |detail: String| {
+        Error::InvalidCommand(format!(
+            "not a valid {} (write it as JSON, e.g. {}): {detail}",
+            type_name(data_type),
+            json_example(data_type)
+        ))
+    };
+    // Reject trailing text and non-JSON early, with a clear message.
+    serde_json::from_str::<serde_json::Value>(text).map_err(|e| invalid(e.to_string()))?;
+    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("v", data_type.clone(), true),
+    ]));
+    let line = format!("{{\"v\": {text}}}");
+    let mut reader = arrow::json::ReaderBuilder::new(schema)
+        .with_strict_mode(true)
+        .build(std::io::Cursor::new(line))
+        .map_err(|e| invalid(e.to_string()))?;
+    let batch = reader
+        .next()
+        .ok_or_else(|| invalid("no value".into()))?
+        .map_err(|e| invalid(e.to_string()))?;
+    Ok(batch.column(0).clone())
+}
+
+/// A short JSON example for a nested type.
+pub fn json_example(data_type: &DataType) -> String {
+    match data_type {
+        DataType::Struct(fields) => {
+            let parts: Vec<String> = fields
+                .iter()
+                .map(|f| format!("\"{}\": {}", f.name(), json_example(f.data_type())))
+                .collect();
+            format!("{{{}}}", parts.join(", "))
+        }
+        DataType::List(item) | DataType::LargeList(item) | DataType::FixedSizeList(item, _) => {
+            format!("[{}]", json_example(item.data_type()))
+        }
+        DataType::Map(entries, _) => match entries.data_type() {
+            DataType::Struct(kv) if kv.len() == 2 => {
+                format!("{{\"key\": {}}}", json_example(kv[1].data_type()))
+            }
+            _ => "{}".into(),
+        },
+        t if is_text(t) => "\"text\"".into(),
+        DataType::Boolean => "true".into(),
+        t if t.is_floating() => "1.5".into(),
+        t if t.is_integer() => "1".into(),
+        DataType::Date32 | DataType::Date64 => "\"2024-01-31\"".into(),
+        DataType::Timestamp(..) => "\"2024-01-31T12:00:00\"".into(),
+        _ => "null".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::display::value_json;
+    use arrow::array::Array;
+
+    #[test]
+    fn nested_values_round_trip_through_json() {
+        let schema = veta_testkit::fixtures::nested_schema();
+        for field in schema.fields().iter().skip(1) {
+            let t = field.data_type();
+            let example = json_example(t);
+            let value = parse_value(Some(&example), t)
+                .unwrap_or_else(|e| panic!("{}: {example}: {e}", field.name()));
+            let back = value_json(value.as_ref(), 0).unwrap().unwrap();
+            let again = parse_value(Some(&back), t).unwrap();
+            assert_eq!(value.as_ref(), again.as_ref(), "{}", field.name());
+        }
+        let point = schema.field(1).data_type();
+        let p = parse_value(Some(r#"{"x": 3, "y": null}"#), point).unwrap();
+        assert_eq!(
+            value_json(p.as_ref(), 0).unwrap().unwrap(),
+            r#"{"x":3,"y":null}"#
+        );
+        assert!(parse_value(Some("{x: 3}"), point).is_err());
+        assert!(parse_value(Some(r#"{"x": "a"}"#), point).is_err());
+        assert!(parse_value(Some(r#"{"x": 1} junk"#), point).is_err());
+        assert!(parse_value(Some(""), point).unwrap().is_null(0));
+        let tags = schema.field(2).data_type();
+        let list = parse_value(Some(r#"["a", null]"#), tags).unwrap();
+        assert_eq!(
+            value_json(list.as_ref(), 0).unwrap().unwrap(),
+            r#"["a",null]"#
+        );
+    }
 }

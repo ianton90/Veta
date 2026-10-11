@@ -13,6 +13,7 @@ fn main() {
     std::fs::create_dir_all(&dir).expect("create output directory");
     fixtures::all_types(&dir.join("all_types.parquet"));
     fixtures::mixed_settings(&dir.join("mixed_settings.parquet"));
+    fixtures::nested(&dir.join("nested.parquet"));
     fixtures::large(&dir.join("large.parquet"), 5_000_000, 500_000);
     println!("Wrote fixtures to {}", dir.display());
 }

@@ -174,6 +174,9 @@ pub struct GridView {
     /// First row of `cells`.
     window_start: usize,
     cells: Vec<Vec<Option<String>>>,
+    /// JSON text of nested cells in `cells` (row-major, by column index),
+    /// for editing; other cells are edited as displayed.
+    json: Vec<Vec<Option<Option<String>>>>,
     error: Option<String>,
     /// A temporary filter over the document's output (not a step).
     filter: Option<FilterView>,
@@ -221,6 +224,7 @@ impl GridView {
             cols: None,
             window_start: 0,
             cells: Vec::new(),
+            json: Vec::new(),
             error: None,
             filter: None,
         };
@@ -377,6 +381,35 @@ impl GridView {
     /// Text of a loaded cell: `Some(None)` for null, `None` if not loaded.
     pub fn value(&self, row: usize, column: usize) -> Option<Option<&str>> {
         self.cell(row, column).map(Option::as_deref)
+    }
+
+    /// Text to edit a loaded cell with: JSON for nested values, otherwise
+    /// as displayed. `Some(None)` for null, `None` if not loaded.
+    pub fn edit_value(&self, row: usize, column: usize) -> Option<Option<&str>> {
+        let json = self
+            .json
+            .get(row.checked_sub(self.window_start)?)
+            .and_then(|r| r.get(column))
+            .and_then(Option::as_ref);
+        match json {
+            Some(value) => Some(value.as_deref()),
+            None => self.value(row, column),
+        }
+    }
+
+    /// The value of one cell, as a one-element array.
+    pub fn cell_array(
+        &self,
+        row: usize,
+        column: usize,
+        document: &Document,
+    ) -> Option<veta_core::arrow::array::ArrayRef> {
+        let batch = match self.view() {
+            Some(view) => view.read(row..row + 1).ok()?,
+            None => document.read_at(self.level(document), row..row + 1).ok()?,
+        };
+        (batch.num_rows() == 1 && column < batch.num_columns())
+            .then(|| batch.column(column).clone())
     }
 
     /// Re-reads the document after it changed: columns (keeping the widths
@@ -588,14 +621,17 @@ impl GridView {
             Some(view) => view.read(start..end),
             None => document.read_at(self.level(document), start..end),
         };
-        match batch.and_then(|batch| format_batch(&batch)) {
-            Ok(cells) => {
+        let formatted = batch.and_then(|batch| Ok((format_batch(&batch)?, nested_json(&batch)?)));
+        match formatted {
+            Ok((cells, json)) => {
                 self.window_start = start;
                 self.cells = cells;
+                self.json = json;
                 self.error = None;
             }
             Err(e) => {
                 self.cells.clear();
+                self.json.clear();
                 self.error = Some(e.to_string());
             }
         }
@@ -1885,4 +1921,35 @@ mod tests {
         assert!((offset - 450.0).abs() < 1e-3);
         assert!(thumb(400.0, 50.0, 100.0, 0.0).is_none());
     }
+}
+
+/// JSON text of the nested columns of `batch`: `result[row][column]` is
+/// `None` for columns that aren't nested.
+fn nested_json(
+    batch: &veta_core::arrow::record_batch::RecordBatch,
+) -> veta_core::Result<Vec<Vec<Option<Option<String>>>>> {
+    let nested: Vec<bool> = batch
+        .columns()
+        .iter()
+        .map(|c| c.data_type().is_nested())
+        .collect();
+    if !nested.contains(&true) {
+        return Ok(Vec::new());
+    }
+    (0..batch.num_rows())
+        .map(|row| {
+            batch
+                .columns()
+                .iter()
+                .zip(&nested)
+                .map(|(column, &is_nested)| {
+                    if is_nested {
+                        Ok(Some(veta_core::display::value_json(column.as_ref(), row)?))
+                    } else {
+                        Ok(None)
+                    }
+                })
+                .collect()
+        })
+        .collect()
 }
