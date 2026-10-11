@@ -61,10 +61,10 @@ impl Action {
         Some(match self {
             Action::Import => 45,
             Action::Export => 46,
-            Action::Statistics => 42,
-            Action::StatisticsPane => 43,
             Action::Open
             | Action::AppliedSteps
+            | Action::Statistics
+            | Action::StatisticsPane
             | Action::FileMetadata
             | Action::WriterSettings
             | Action::Save

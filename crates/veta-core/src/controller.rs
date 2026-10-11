@@ -16,6 +16,7 @@ use crate::values::parse_value;
 pub fn execute(document: &mut Document, command: Command) -> Result<()> {
     let (label, change) = plan(document, command)?;
     change.apply(document)?;
+    document.bump_revision();
     document.history.record(label, change);
     Ok(())
 }
@@ -26,6 +27,7 @@ pub fn execute(document: &mut Document, command: Command) -> Result<()> {
 pub fn amend(document: &mut Document, command: Command) -> Result<()> {
     let (_, change) = plan(document, command)?;
     change.apply(document)?;
+    document.bump_revision();
     document.history.amend(change);
     Ok(())
 }
@@ -36,6 +38,7 @@ pub fn undo(document: &mut Document) -> bool {
         return false;
     };
     change.revert(document);
+    document.bump_revision();
     true
 }
 
@@ -49,6 +52,7 @@ pub fn redo(document: &mut Document) -> Result<bool> {
         document.history.cancel_redo();
         return Err(e);
     }
+    document.bump_revision();
     Ok(true)
 }
 

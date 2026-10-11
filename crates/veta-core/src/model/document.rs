@@ -26,6 +26,8 @@ pub struct Document {
     pub(crate) info: Option<FileInfo>,
     /// Footer of the file the data comes from.
     footer: Option<Arc<parquet::file::metadata::ParquetMetaData>>,
+    /// Bumped whenever the data shown may have changed.
+    revision: u64,
     pub(crate) metadata: FileMetadata,
     pub(crate) writer: WriterSettings,
     pub(crate) history: History,
@@ -39,6 +41,7 @@ impl Default for Document {
             pipeline: Pipeline::new(Arc::new(MemorySource::empty())),
             info: None,
             footer: None,
+            revision: 0,
             metadata: FileMetadata::default(),
             writer: WriterSettings::default(),
             history: History::new(),
@@ -62,6 +65,7 @@ impl Document {
             pipeline: Pipeline::new(opened.source),
             info: Some(opened.info),
             footer: Some(opened.footer),
+            revision: 0,
             metadata: opened.metadata,
             writer: opened.writer,
             history: History::new(),
@@ -133,7 +137,11 @@ impl Document {
     /// Stores a computed result. Returns `false` if the steps changed since
     /// the job was created.
     pub fn install(&mut self, computed: Computed) -> bool {
-        self.pipeline.install(computed)
+        let installed = self.pipeline.install(computed);
+        if installed {
+            self.revision += 1;
+        }
+        installed
     }
 
     /// Identifies the pending full pass, if any; see
@@ -178,6 +186,16 @@ impl Document {
             return None;
         }
         crate::stats::quick_stats(self.footer.as_ref()?, &self.pipeline.schema(), column)
+    }
+
+    /// Changes whenever the document's data may have changed (edits, undo,
+    /// computed steps, saving), to tell when derived results are stale.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub(crate) fn bump_revision(&mut self) {
+        self.revision += 1;
     }
 
     /// Number of steps whose output is available.
@@ -247,6 +265,7 @@ impl Document {
     /// source file reloads it, which also clears the steps and undo history
     /// (they are now part of the file).
     pub fn finish_save(&mut self, result: SaveResult) {
+        self.revision += 1;
         if let Some(opened) = result.reopened {
             self.pipeline = Pipeline::new(opened.source);
             self.info = Some(opened.info);

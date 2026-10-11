@@ -13,6 +13,7 @@ mod ribbon;
 mod settings;
 mod theme;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,6 +24,7 @@ use iced::{
     window,
 };
 use veta_core::arrow::array::ArrayRef;
+use veta_core::stats::ColumnStats;
 use veta_core::steps::{
     Cast, ComputeJob, Computed, Condition, CustomColumn, Fill, Filter, FilterOp, Merge, OnError,
     Replace, Sort, SortKey, Split, Status, Step, TextOp,
@@ -190,6 +192,8 @@ struct App {
     closing: Option<Closing>,
     /// The full pass running in the background, if any.
     computing: Option<Computing>,
+    /// Column statistics for the side pane.
+    stats: Stats,
     /// A "remove the error column if empty" step just added after a cast,
     /// to drop again (keeping the errors) if the column isn't empty.
     error_check: Option<(DocumentId, usize)>,
@@ -203,6 +207,23 @@ struct Computing {
     /// The job's key; it is stale once the document's key differs.
     key: Vec<u64>,
     step: usize,
+    progress: f32,
+    cancel: Arc<AtomicBool>,
+}
+
+/// Statistics computed for the side pane, and the pass running.
+#[derive(Debug, Default)]
+struct Stats {
+    /// Results by document, data revision and column.
+    cache: HashMap<(DocumentId, u64, String), ColumnStats>,
+    running: Option<StatsRun>,
+}
+
+#[derive(Debug)]
+struct StatsRun {
+    document: DocumentId,
+    revision: u64,
+    columns: Vec<String>,
     progress: f32,
     cancel: Arc<AtomicBool>,
 }
@@ -288,6 +309,7 @@ struct Edit {
 enum SideTab {
     #[default]
     Steps,
+    Stats,
     File,
 }
 
@@ -435,6 +457,8 @@ enum Message {
     EditStep(usize),
     ConfirmStep(bool),
     /// Save the active document's steps as a recipe.
+    StatsProgress(DocumentId, u64, f32),
+    StatsDone(DocumentId, u64, Result<Vec<ColumnStats>, String>),
     /// Turn off the temporary row filter.
     ClearFilter,
     SaveRecipe,
@@ -497,6 +521,7 @@ impl App {
             closing: None,
             computing: None,
             error_check: None,
+            stats: Stats::default(),
         };
         let open = app.open(files);
         let system = iced::system::theme().map(Message::SystemMode);
@@ -565,7 +590,7 @@ impl App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.handle(message);
-        Task::batch([task, self.schedule_compute()])
+        Task::batch([task, self.schedule_compute(), self.schedule_stats()])
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
@@ -1148,6 +1173,40 @@ impl App {
                     return self.edit_step(id, index);
                 }
             }
+            Message::StatsProgress(id, revision, progress) => {
+                if let Some(run) = &mut self.stats.running
+                    && run.document == id
+                    && run.revision == revision
+                {
+                    run.progress = progress;
+                }
+            }
+            Message::StatsDone(id, revision, result) => {
+                if self
+                    .stats
+                    .running
+                    .as_ref()
+                    .is_some_and(|r| r.document == id && r.revision == revision)
+                {
+                    self.stats.running = None;
+                }
+                let current = self.workbook.get(id).map(Document::revision);
+                // Keep only results for the document's current data.
+                self.stats
+                    .cache
+                    .retain(|(d, r, _), _| *d != id || Some(*r) == current);
+                match result {
+                    Ok(stats) if current == Some(revision) => {
+                        for s in stats {
+                            self.stats.cache.insert((id, revision, s.column.clone()), s);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => self
+                        .errors
+                        .push(format!("Could not compute statistics: {e}")),
+                }
+            }
             Message::ClearFilter => {
                 if let Some(id) = self.active {
                     self.clear_filter(id);
@@ -1571,6 +1630,10 @@ impl App {
             Action::AppliedSteps => {
                 self.show_side_pane = true;
                 self.side_tab = SideTab::Steps;
+            }
+            Action::StatisticsPane | Action::Statistics => {
+                self.show_side_pane = true;
+                self.side_tab = SideTab::Stats;
             }
             Action::Mode(mode) => {
                 self.config.appearance.mode = mode;
@@ -2387,6 +2450,117 @@ impl App {
         }
     }
 
+    /// Columns the statistics pane shows: the selected ones.
+    fn stats_columns(&self, id: DocumentId) -> Vec<String> {
+        self.selected_column_names(id)
+    }
+
+    /// Starts computing statistics the pane needs and doesn't have, and
+    /// stops a pass that is no longer needed.
+    fn schedule_stats(&mut self) -> Task<Message> {
+        let visible = self.show_side_pane && self.side_tab == SideTab::Stats;
+        let wanted = self
+            .active
+            .filter(|_| visible)
+            .and_then(|id| {
+                let doc = self.workbook.get(id)?;
+                (doc.status() == &Status::Ready).then(|| (id, doc.revision()))
+            })
+            .map(|(id, revision)| {
+                let missing: Vec<String> = self
+                    .stats_columns(id)
+                    .into_iter()
+                    .filter(|c| !self.stats.cache.contains_key(&(id, revision, c.clone())))
+                    .collect();
+                (id, revision, missing)
+            })
+            .filter(|(_, _, missing)| !missing.is_empty());
+        if let Some(run) = &self.stats.running {
+            let still_needed = wanted.as_ref().is_some_and(|(id, revision, missing)| {
+                run.document == *id
+                    && run.revision == *revision
+                    && missing.iter().all(|c| run.columns.contains(c))
+            });
+            if still_needed {
+                return Task::none();
+            }
+            run.cancel.store(true, Ordering::Relaxed);
+            self.stats.running = None;
+        }
+        let Some((id, revision, columns)) = wanted else {
+            return Task::none();
+        };
+        let Some(job) = self
+            .workbook
+            .get(id)
+            .and_then(|d| d.stats_job(columns.clone()).ok())
+        else {
+            return Task::none();
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.stats.running = Some(StatsRun {
+            document: id,
+            revision,
+            columns,
+            progress: 0.0,
+            cancel: cancel.clone(),
+        });
+        let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
+        std::thread::spawn(move || {
+            let mut reported = 0.0;
+            let result = job.run(&mut |progress| {
+                if progress - reported >= 0.01 {
+                    reported = progress;
+                    let _ = sender.unbounded_send(Message::StatsProgress(id, revision, progress));
+                }
+                !cancel.load(Ordering::Relaxed)
+            });
+            if !cancel.load(Ordering::Relaxed) {
+                let result = result.map_err(|e| e.to_string());
+                let _ = sender.unbounded_send(Message::StatsDone(id, revision, result));
+            }
+        });
+        Task::run(receiver, |message| message)
+    }
+
+    /// What the statistics pane shows for document `id`.
+    fn stats_view(&self, id: DocumentId) -> panes::StatsView {
+        let Some(doc) = self.workbook.get(id) else {
+            return panes::StatsView::default();
+        };
+        let revision = doc.revision();
+        let columns = self
+            .stats_columns(id)
+            .into_iter()
+            .map(|c| {
+                let full = self.stats.cache.get(&(id, revision, c.clone())).cloned();
+                match full {
+                    Some(stats) => (c, Some(stats), false),
+                    None => {
+                        let quick = doc.quick_stats(&c);
+                        (c, quick, true)
+                    }
+                }
+            })
+            .collect();
+        let progress = self
+            .stats
+            .running
+            .as_ref()
+            .filter(|r| r.document == id && r.revision == revision)
+            .map(|r| r.progress);
+        let waiting = match doc.status() {
+            Status::Ready => None,
+            Status::Computing { .. } => Some("Waiting for the steps to be computed…"),
+            Status::Broken { .. } => Some("A step has an error; fix it to see statistics."),
+        };
+        panes::StatsView {
+            columns,
+            progress,
+            waiting,
+        }
+    }
+
     /// Starts the next pending full pass if none is running, and stops a
     /// running one whose result would no longer apply.
     fn schedule_compute(&mut self) -> Task<Message> {
@@ -2744,7 +2918,7 @@ impl App {
                     row![
                         grid,
                         divider(ui.tokens, true),
-                        panes::side_pane(tab, doc, self.side_tab, ui)
+                        panes::side_pane(tab, doc, self.side_tab, self.stats_view(id), ui)
                     ]
                     .into()
                 } else {
@@ -3670,6 +3844,94 @@ mod tests {
         finish_compute(&mut app, ida);
         let _ = app.update(Message::Action(Action::Undo));
         assert_eq!(steps(&app, ida), 0);
+    }
+
+    /// Runs the pending statistics pass here, as the worker would.
+    fn finish_stats(app: &mut App) {
+        let run = app.stats.running.as_ref().unwrap();
+        let (id, revision) = (run.document, run.revision);
+        let job = app
+            .workbook
+            .get(id)
+            .unwrap()
+            .stats_job(run.columns.clone())
+            .unwrap();
+        let result = job.run(&mut |_| true).map_err(|e| e.to_string());
+        let _ = app.update(Message::StatsDone(id, revision, result));
+    }
+
+    #[test]
+    fn statistics_pane_follows_selection_and_edits() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+
+        // Hidden: nothing computed.
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 0 }));
+        assert!(app.stats.running.is_none());
+
+        let _ = app.update(Message::Action(Action::StatisticsPane));
+        assert_eq!(app.side_tab, SideTab::Stats);
+        // Quick stats from the footer while the pass runs.
+        let view = app.stats_view(id);
+        assert_eq!(view.columns.len(), 1);
+        let (name, quick, partial) = &view.columns[0];
+        assert_eq!(name, "id");
+        assert!(*partial);
+        assert_eq!(quick.as_ref().unwrap().max.as_deref(), Some("999"));
+        assert_eq!(app.stats.running.as_ref().unwrap().columns, ["id"]);
+        finish_stats(&mut app);
+        let view = app.stats_view(id);
+        let (_, full, partial) = &view.columns[0];
+        assert!(!partial);
+        assert_eq!(full.as_ref().unwrap().distinct, Some(1000));
+
+        // Selecting more columns computes only the missing ones.
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 0,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 1,
+                extend: true,
+            },
+        ));
+        assert_eq!(app.stats.running.as_ref().unwrap().columns, ["name"]);
+        finish_stats(&mut app);
+        assert!(app.stats.running.is_none());
+
+        // After an edit the statistics are recomputed (once the step is).
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 2 }));
+        let _ = app.update(Message::Action(Action::DeleteRows));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 0,
+                extend: false,
+            },
+        ));
+        finish_stats(&mut app);
+        let view = app.stats_view(id);
+        assert_eq!(view.columns[0].1.as_ref().unwrap().count, 999);
+        assert!(
+            app.stats
+                .cache
+                .keys()
+                .all(|(_, r, _)| *r == app.workbook.get(id).unwrap().revision())
+        );
+
+        // Switching tabs stops a pass.
+        let _ = app.update(Message::Action(Action::Undo));
+        assert!(app.stats.running.is_some());
+        let _ = app.update(Message::SideTab(SideTab::Steps));
+        assert!(app.stats.running.is_none());
     }
 
     #[test]
