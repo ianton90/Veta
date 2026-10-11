@@ -1818,6 +1818,37 @@ fn single_line(value: &str) -> String {
     }
 }
 
+/// JSON text of the nested columns of `batch`: `result[row][column]` is
+/// `None` for columns that aren't nested.
+fn nested_json(
+    batch: &veta_core::arrow::record_batch::RecordBatch,
+) -> veta_core::Result<Vec<Vec<Option<Option<String>>>>> {
+    let nested: Vec<bool> = batch
+        .columns()
+        .iter()
+        .map(|c| c.data_type().is_nested())
+        .collect();
+    if !nested.contains(&true) {
+        return Ok(Vec::new());
+    }
+    (0..batch.num_rows())
+        .map(|row| {
+            batch
+                .columns()
+                .iter()
+                .zip(&nested)
+                .map(|(column, &is_nested)| {
+                    if is_nested {
+                        Ok(Some(veta_core::display::value_json(column.as_ref(), row)?))
+                    } else {
+                        Ok(None)
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1921,35 +1952,4 @@ mod tests {
         assert!((offset - 450.0).abs() < 1e-3);
         assert!(thumb(400.0, 50.0, 100.0, 0.0).is_none());
     }
-}
-
-/// JSON text of the nested columns of `batch`: `result[row][column]` is
-/// `None` for columns that aren't nested.
-fn nested_json(
-    batch: &veta_core::arrow::record_batch::RecordBatch,
-) -> veta_core::Result<Vec<Vec<Option<Option<String>>>>> {
-    let nested: Vec<bool> = batch
-        .columns()
-        .iter()
-        .map(|c| c.data_type().is_nested())
-        .collect();
-    if !nested.contains(&true) {
-        return Ok(Vec::new());
-    }
-    (0..batch.num_rows())
-        .map(|row| {
-            batch
-                .columns()
-                .iter()
-                .zip(&nested)
-                .map(|(column, &is_nested)| {
-                    if is_nested {
-                        Ok(Some(veta_core::display::value_json(column.as_ref(), row)?))
-                    } else {
-                        Ok(None)
-                    }
-                })
-                .collect()
-        })
-        .collect()
 }
