@@ -50,9 +50,10 @@ pub struct CsvOptions {
     pub encoding: TextEncoding,
     /// Decimal separator in numbers.
     pub decimal: char,
-    /// Column types; `None` guesses them from the first rows. Values that
-    /// don't fit a column's type become null.
+    /// Column types; `None` guesses them from the first rows.
     pub types: Option<Vec<DataType>>,
+    /// What to do with values that don't fit their column's type.
+    pub on_error: OnError,
 }
 
 impl Default for CsvOptions {
@@ -64,6 +65,7 @@ impl Default for CsvOptions {
             encoding: TextEncoding::Utf8,
             decimal: '.',
             types: None,
+            on_error: OnError::ErrorColumn,
         }
     }
 }
@@ -73,7 +75,10 @@ impl Default for CsvOptions {
 pub struct CsvPreview {
     /// Column names and types (guessed unless given).
     pub schema: SchemaRef,
+    /// The rows, converted to those types.
     pub rows: RecordBatch,
+    /// Per column, how many of the previewed values don't fit its type.
+    pub failures: Vec<usize>,
 }
 
 /// How to write a CSV file.
@@ -300,17 +305,23 @@ fn csv_format(options: &CsvOptions) -> arrow::csv::reader::Format {
         .with_truncated_rows(true)
 }
 
-/// Converts text columns to the wanted types (invalid values become null).
-fn convert_columns(batch: &RecordBatch, schema: &SchemaRef, decimal: char) -> Result<RecordBatch> {
-    let columns = batch
+/// Converts text columns to the types of `schema`. Returns the converted
+/// columns, the rows whose value didn't fit, per column, and the original
+/// text of those values.
+fn convert_columns(
+    batch: &RecordBatch,
+    schema: &SchemaRef,
+    decimal: char,
+) -> Result<Vec<(ArrayRef, Vec<usize>)>> {
+    batch
         .columns()
         .iter()
         .zip(schema.fields())
         .map(|(column, field)| {
             if field.data_type() == &DataType::Utf8 {
-                return Ok(column.clone());
+                return Ok((column.clone(), Vec::new()));
             }
-            Cast {
+            let converted = Cast {
                 column: field.name().clone(),
                 to: field.data_type().clone(),
                 options: CastOptions {
@@ -320,10 +331,125 @@ fn convert_columns(batch: &RecordBatch, schema: &SchemaRef, decimal: char) -> Re
                     on_error: OnError::Null,
                 },
             }
-            .convert(column)
+            .convert(column)?;
+            let failed = (0..column.len())
+                .filter(|&i| column.is_valid(i) && converted.is_null(i))
+                .collect();
+            Ok((converted, failed))
         })
-        .collect::<Result<Vec<ArrayRef>>>()?;
-    Ok(RecordBatch::try_new(schema.clone(), columns)?)
+        .collect()
+}
+
+/// Name of the column holding a column's invalid values.
+pub fn error_column_name(column: &str) -> String {
+    format!("{column} errors")
+}
+
+/// The imported layout: typed columns, each followed (with error columns)
+/// by a text column of the values that didn't fit. Returns the schema and,
+/// per output column, the input column it comes from and whether it is an
+/// error column.
+fn import_layout(schema: &SchemaRef, on_error: OnError) -> (SchemaRef, Vec<(usize, bool)>) {
+    let mut fields = Vec::new();
+    let mut layout = Vec::new();
+    for (i, field) in schema.fields().iter().enumerate() {
+        fields.push(field.as_ref().clone());
+        layout.push((i, false));
+        if on_error == OnError::ErrorColumn && field.data_type() != &DataType::Utf8 {
+            let mut name = error_column_name(field.name());
+            while schema.fields().iter().any(|f| f.name() == &name) {
+                name.push('_');
+            }
+            fields.push(Field::new(name, DataType::Utf8, true));
+            layout.push((i, true));
+        }
+    }
+    (Arc::new(Schema::new(fields)), layout)
+}
+
+/// Converts one batch of text into the imported layout, counting failures
+/// per input column; with [`OnError::Fail`], the first failure is an error.
+fn import_batch(
+    text: &RecordBatch,
+    schema: &SchemaRef,
+    layout: &(SchemaRef, Vec<(usize, bool)>),
+    options: &CsvOptions,
+    first_row: usize,
+    failures: &mut [u64],
+) -> Result<RecordBatch> {
+    let converted = convert_columns(text, schema, options.decimal)?;
+    for (i, (_, failed)) in converted.iter().enumerate() {
+        failures[i] += failed.len() as u64;
+        if options.on_error == OnError::Fail
+            && let Some(&row) = failed.first()
+        {
+            let value = array_text(text.column(i), row);
+            return Err(invalid(format!(
+                "row {}: {value:?} in column {} is not a valid {}",
+                first_row + row + 1,
+                schema.field(i).name(),
+                crate::display::type_name(schema.field(i).data_type())
+            )));
+        }
+    }
+    let columns = layout
+        .1
+        .iter()
+        .map(|&(i, error)| {
+            if !error {
+                return converted[i].0.clone();
+            }
+            let failed = &converted[i].1;
+            let mut values: Vec<Option<String>> = vec![None; text.num_rows()];
+            for &row in failed {
+                values[row] = Some(array_text(text.column(i), row));
+            }
+            Arc::new(StringArray::from(values)) as ArrayRef
+        })
+        .collect();
+    Ok(RecordBatch::try_new(layout.0.clone(), columns)?)
+}
+
+fn array_text(array: &ArrayRef, row: usize) -> String {
+    array
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .filter(|a| a.is_valid(row))
+        .map(|a| a.value(row).to_owned())
+        .unwrap_or_default()
+}
+
+/// What an import found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImportReport {
+    pub rows: u64,
+    /// Columns with values that didn't fit their type, and how many.
+    pub failures: Vec<(String, u64)>,
+    /// What happened to them.
+    pub on_error: Option<OnError>,
+}
+
+impl ImportReport {
+    /// A sentence for the user, if any values didn't fit.
+    pub fn summary(&self) -> Option<String> {
+        if self.failures.is_empty() {
+            return None;
+        }
+        let total: u64 = self.failures.iter().map(|(_, n)| n).sum();
+        let columns: Vec<String> = self
+            .failures
+            .iter()
+            .map(|(c, n)| format!("{c} ({n})"))
+            .collect();
+        let fate = match self.on_error {
+            Some(OnError::ErrorColumn) => "kept as text in the matching \"errors\" columns",
+            _ => "imported as null",
+        };
+        Some(format!(
+            "{total} values didn't fit their column's type and were {fate}: {}.",
+            columns.join(", ")
+        ))
+    }
 }
 
 fn text_schema(schema: &Schema) -> SchemaRef {
@@ -418,28 +544,107 @@ fn csv_schema(path: &Path, options: &CsvOptions) -> Result<SchemaRef> {
 pub fn preview_csv(path: &Path, options: &CsvOptions, rows: usize) -> Result<CsvPreview> {
     let schema = csv_schema(path, options)?;
     let text = read_csv_text(path, options, &text_schema(&schema), rows)?;
-    let rows = convert_columns(&text, &schema, options.decimal)?;
-    Ok(CsvPreview { schema, rows })
+    let converted = convert_columns(&text, &schema, options.decimal)?;
+    let failures = converted.iter().map(|(_, f)| f.len()).collect();
+    let columns = converted.into_iter().map(|(c, _)| c).collect();
+    let rows = RecordBatch::try_new(schema.clone(), columns)?;
+    Ok(CsvPreview {
+        schema,
+        rows,
+        failures,
+    })
 }
 
-/// Imports a CSV file as a new, unsaved document. Results larger than
+/// Imports a CSV file as a new, unsaved document, with a report of the
+/// values that didn't fit their column's type. Results larger than
 /// `memory_budget` bytes stay on disk and are paged.
 pub fn import_csv(
     path: &Path,
     options: &CsvOptions,
     memory_budget: usize,
     progress: &mut dyn FnMut(f32) -> bool,
-) -> Result<Document> {
+) -> Result<(Document, ImportReport)> {
     let schema = csv_schema(path, options)?;
+    let layout = import_layout(&schema, options.on_error);
+    let mut failures = vec![0u64; schema.fields().len()];
+    let mut rows = 0usize;
     let mut input = Input::open(path, options.encoding, Some(progress))?;
-    let reader = arrow::csv::ReaderBuilder::new(text_schema(&schema))
-        .with_format(csv_format(options))
-        .with_batch_size(BATCH_ROWS)
-        .build(&mut input)?;
-    let batches = reader.map(|batch| convert_columns(&batch?, &schema, options.decimal));
-    let source = store(&schema, batches, memory_budget);
+    let source = {
+        let reader = arrow::csv::ReaderBuilder::new(text_schema(&schema))
+            .with_format(csv_format(options))
+            .with_batch_size(BATCH_ROWS)
+            .build(&mut input)?;
+        let batches = reader.map(|text| {
+            let text = text?;
+            let batch = import_batch(&text, &schema, &layout, options, rows, &mut failures)?;
+            rows += text.num_rows();
+            Ok(batch)
+        });
+        store(&layout.0, batches, memory_budget)
+    };
     let source = cancelled(source, input.cancelled)?;
-    Ok(Document::imported(file_name(path), source))
+    // Error columns of columns where everything fitted are left out.
+    let keep: Vec<usize> = layout
+        .1
+        .iter()
+        .enumerate()
+        .filter(|(_, (i, error))| !error || failures[*i] > 0)
+        .map(|(k, _)| k)
+        .collect();
+    let source = if keep.len() == layout.1.len() {
+        source
+    } else {
+        Arc::new(Projected::new(source, keep)?)
+    };
+    let report = ImportReport {
+        rows: rows as u64,
+        failures: schema
+            .fields()
+            .iter()
+            .zip(&failures)
+            .filter(|(_, n)| **n > 0)
+            .map(|(f, n)| (f.name().clone(), *n))
+            .collect(),
+        on_error: Some(options.on_error),
+    };
+    Ok((Document::imported(file_name(path), source), report))
+}
+
+/// Some of a source's columns.
+#[derive(Debug)]
+struct Projected {
+    inner: Arc<dyn DataSource>,
+    schema: SchemaRef,
+    columns: Vec<usize>,
+}
+
+impl Projected {
+    fn new(inner: Arc<dyn DataSource>, columns: Vec<usize>) -> Result<Self> {
+        let schema = Arc::new(inner.schema().project(&columns)?);
+        Ok(Self {
+            inner,
+            schema,
+            columns,
+        })
+    }
+}
+
+impl DataSource for Projected {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn num_rows(&self) -> usize {
+        self.inner.num_rows()
+    }
+
+    fn mode(&self) -> crate::source::SourceMode {
+        self.inner.mode()
+    }
+
+    fn read(&self, range: std::ops::Range<usize>) -> Result<RecordBatch> {
+        Ok(self.inner.read(range)?.project(&self.columns)?)
+    }
 }
 
 // JSON.
@@ -775,7 +980,9 @@ mod tests {
             "\u{feff}id,name,score,ok,when\n1,Ana,1.5,true,2024-01-02\n2,\"Bo, Jr.\",,false,2024-02-03\n3,Cy,2,true,\n",
         )
         .unwrap();
-        let doc = import_csv(&path, &CsvOptions::default(), 1 << 30, &mut |_| true).unwrap();
+        let doc = import_csv(&path, &CsvOptions::default(), 1 << 30, &mut |_| true)
+            .unwrap()
+            .0;
         assert_eq!(doc.title(), "people.csv");
         assert!(doc.is_modified() && doc.path().is_none());
         assert_eq!(
@@ -814,13 +1021,71 @@ mod tests {
         // "abc" makes the third column text.
         assert_eq!(preview.schema.field(2).data_type(), &DataType::Utf8);
         options.types = Some(vec![DataType::Utf8, DataType::Utf8, DataType::Float64]);
-        let doc = import_csv(&path, &options, 1 << 30, &mut |_| true).unwrap();
+        let doc = import_csv(&path, &options, 1 << 30, &mut |_| true)
+            .unwrap()
+            .0;
         let c = cells(&doc);
         assert_eq!(c[0][1].as_deref(), Some("Café"));
         assert_eq!(c[0][2].as_deref(), Some("1.5"));
-        assert_eq!(c[1][2], None, "invalid values become null");
+        // The invalid value is kept as text in an error column.
+        assert_eq!(c[1][2], None);
+        assert_eq!(doc.schema().field(3).name(), "column_3 errors");
+        assert_eq!(c[1][3].as_deref(), Some("abc"));
         options.types = Some(vec![DataType::Utf8]);
         assert!(import_csv(&path, &options, 1 << 30, &mut |_| true).is_err());
+    }
+
+    #[test]
+    fn invalid_values_are_reported() {
+        let dir = TempDir::new();
+        let path = dir.join("bad.csv");
+        std::fs::write(&path, "n,m,s\n1,2,a\nx,3,b\n4,y,c\n5,6,d\n").unwrap();
+        let types = Some(vec![DataType::Int64, DataType::Int64, DataType::Utf8]);
+        let run = |on_error| {
+            let options = CsvOptions {
+                types: types.clone(),
+                on_error,
+                ..CsvOptions::default()
+            };
+            import_csv(&path, &options, 1 << 30, &mut |_| true)
+        };
+        let (doc, report) = run(OnError::ErrorColumn).unwrap();
+        let names: Vec<_> = doc
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(names, ["n", "n errors", "m", "m errors", "s"]);
+        assert_eq!(cells(&doc)[1][1].as_deref(), Some("x"));
+        assert_eq!(report.failures, [("n".to_owned(), 1), ("m".to_owned(), 1)]);
+        assert!(report.summary().unwrap().contains("errors"));
+
+        let (doc, report) = run(OnError::Null).unwrap();
+        assert_eq!(doc.num_columns(), 3);
+        assert!(report.summary().unwrap().contains("null"));
+
+        let err = run(OnError::Fail).unwrap_err().to_string();
+        assert!(err.contains("ow 2") && err.contains("\"x\""), "{err}");
+
+        // Nothing failed: no error columns.
+        let fine = dir.join("fine.csv");
+        std::fs::write(&fine, "n\n1\n2\n").unwrap();
+        let (doc, report) =
+            import_csv(&fine, &CsvOptions::default(), 1 << 30, &mut |_| true).unwrap();
+        assert_eq!(doc.num_columns(), 1);
+        assert_eq!(report.summary(), None);
+
+        let preview = preview_csv(
+            &path,
+            &CsvOptions {
+                types,
+                ..CsvOptions::default()
+            },
+            10,
+        )
+        .unwrap();
+        assert_eq!(preview.failures, [1, 1, 0]);
     }
 
     #[test]
@@ -834,7 +1099,11 @@ mod tests {
                 quote,
                 ..CsvOptions::default()
             };
-            cells(&import_csv(&path, &options, 1 << 30, &mut |_| true).unwrap())
+            cells(
+                &import_csv(&path, &options, 1 << 30, &mut |_| true)
+                    .unwrap()
+                    .0,
+            )
         };
         assert_eq!(
             read(Some(b'\'')),
@@ -856,7 +1125,8 @@ mod tests {
             1 << 30,
             &mut |_| true,
         )
-        .unwrap();
+        .unwrap()
+        .0;
         let export_with = |quote| {
             let options = CsvExportOptions {
                 delimiter: b'|',
@@ -885,7 +1155,9 @@ mod tests {
             text.push_str(&format!("{i},row {i}\n"));
         }
         std::fs::write(&path, text).unwrap();
-        let doc = import_csv(&path, &CsvOptions::default(), 1024, &mut |_| true).unwrap();
+        let doc = import_csv(&path, &CsvOptions::default(), 1024, &mut |_| true)
+            .unwrap()
+            .0;
         assert_eq!(doc.source_mode(), crate::SourceMode::Paged);
         assert_eq!(doc.num_rows(), 200_000);
         let last = format_batch(&doc.read(199_999..200_000).unwrap()).unwrap();
@@ -943,7 +1215,9 @@ mod tests {
             &mut |_| true,
         )
         .unwrap();
-        let back = import_csv(&csv, &CsvOptions::default(), 1 << 30, &mut |_| true).unwrap();
+        let back = import_csv(&csv, &CsvOptions::default(), 1 << 30, &mut |_| true)
+            .unwrap()
+            .0;
         assert_eq!(cells(&back), cells(&doc));
 
         let eu = dir.join("eu.csv");
@@ -965,7 +1239,8 @@ mod tests {
             1 << 30,
             &mut |_| true,
         )
-        .unwrap();
+        .unwrap()
+        .0;
         assert_eq!(cells(&back), cells(&doc));
 
         for format in [ExportFormat::JsonLines, ExportFormat::JsonArray] {

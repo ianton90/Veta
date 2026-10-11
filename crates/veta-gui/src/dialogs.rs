@@ -1400,6 +1400,7 @@ pub struct ImportDialog {
     decimal: DecimalMark,
     /// Column types chosen (initially the guessed ones).
     types: Vec<DataType>,
+    on_error: OnError,
     preview: Result<CsvPreview, String>,
 }
 
@@ -1412,6 +1413,7 @@ pub enum ImportMessage {
     Encoding(EncodingChoice),
     Decimal(DecimalMark),
     Type(usize, TypeChoice),
+    OnError(OnError),
     Import,
     Cancel,
 }
@@ -1434,6 +1436,7 @@ impl ImportDialog {
             encoding: EncodingChoice::Utf8,
             decimal: DecimalMark::Dot,
             types: Vec::new(),
+            on_error: OnError::ErrorColumn,
             preview: Err(String::new()),
         };
         if !tab {
@@ -1476,6 +1479,7 @@ impl ImportDialog {
             },
             decimal: self.decimal.char(),
             types: (!self.types.is_empty()).then(|| self.types.clone()),
+            on_error: self.on_error,
         }
     }
 
@@ -1533,6 +1537,7 @@ impl ImportDialog {
                 }
                 self.refresh(false);
             }
+            ImportMessage::OnError(e) => self.on_error = e,
             ImportMessage::Cancel => {}
             ImportMessage::Import => {
                 return self.preview.is_ok().then(|| self.options());
@@ -1631,9 +1636,21 @@ impl ImportDialog {
                         .width(WIDTH)
                         .into(),
                     };
+                    let failed = preview.failures.get(i).copied().unwrap_or(0);
+                    let note = if failed > 0 {
+                        text(format!("{failed} don't fit"))
+                            .size(11)
+                            .color(iced::Color::from_rgb8(0xd1, 0x43, 0x43))
+                    } else {
+                        text(" ").size(11)
+                    };
                     header = header.push(
-                        column![text(field.name().clone()).size(13).width(WIDTH), picker]
-                            .spacing(2),
+                        column![
+                            text(field.name().clone()).size(13).width(WIDTH),
+                            picker,
+                            note
+                        ]
+                        .spacing(2),
                     );
                 }
                 let mut grid = column![header].spacing(3);
@@ -1662,7 +1679,15 @@ impl ImportDialog {
             options,
             text("Preview").size(15),
             preview,
-            text("Values that don't fit a column's type are imported as null.")
+            row![
+                text("Values that don't fit their column's type:"),
+                pick_list(OnError::ALL, Some(self.on_error), ImportMessage::OnError)
+                    .width(Length::Fill),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+            text("You'll be told how many values didn't fit after importing.")
+                .size(12)
                 .color(tokens.muted_text),
             buttons("Import", ImportMessage::Cancel, ImportMessage::Import),
         ]

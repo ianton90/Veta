@@ -25,6 +25,7 @@ use iced::{
     window,
 };
 use veta_core::arrow::array::ArrayRef;
+use veta_core::convert::ImportReport;
 use veta_core::stats::ColumnStats;
 use veta_core::steps::{
     Cast, ComputeJob, Computed, Condition, CustomColumn, Fill, Filter, FilterOp, Merge, OnError,
@@ -429,6 +430,8 @@ enum Message {
     Ribbon(RibbonMessage),
     FilesPicked(Vec<PathBuf>),
     Opened(PathBuf, Result<Loaded, String>),
+    /// A CSV import finished, with what it found.
+    Imported(PathBuf, Result<Slot<(Document, ImportReport)>, String>),
     /// Save As dialog closed (with the chosen path, if any).
     SaveTo(DocumentId, Option<PathBuf>),
     Saved(DocumentId, Result<Slot<veta_core::SaveResult>, String>),
@@ -638,18 +641,26 @@ impl App {
             Message::Opened(path, result) => {
                 self.opening.retain(|p| p != &path);
                 match result.map(|loaded| loaded.take()) {
-                    Ok(Some(document)) => {
-                        let grid = GridView::new(&document, self.text_size);
-                        let id = self.workbook.add(document);
-                        self.tabs.push(Tab { id, grid });
-                        self.active = Some(id);
-                        self.config.add_recent(&path);
-                        self.save_config();
-                    }
+                    Ok(Some(document)) => self.add_document(&path, document),
                     Ok(None) => {}
                     Err(e) => self
                         .errors
                         .push(format!("Could not open {}: {e}", path.display())),
+                }
+            }
+            Message::Imported(path, result) => {
+                self.opening.retain(|p| p != &path);
+                match result.map(|slot| slot.take()) {
+                    Ok(Some((document, report))) => {
+                        self.add_document(&path, document);
+                        if let Some(summary) = report.summary() {
+                            self.errors.push(summary);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => self
+                        .errors
+                        .push(format!("Could not import {}: {e}", path.display())),
                 }
             }
             Message::SaveTo(id, Some(path)) => return self.start_save(id, Some(path)),
@@ -1250,10 +1261,10 @@ impl App {
                                     budget,
                                     &mut |_| true,
                                 )
-                                .map(Loaded::new)
+                                .map(Slot::new)
                                 .map_err(|e| e.to_string())
                             }),
-                            move |result| Message::Opened(path.clone(), result),
+                            move |result| Message::Imported(path.clone(), result),
                         );
                     } else if cancel {
                         self.dialog = None;
@@ -2977,6 +2988,16 @@ impl App {
         Task::batch(tasks)
     }
 
+    /// Adds a newly opened or imported document as the active tab.
+    fn add_document(&mut self, path: &Path, document: Document) {
+        let grid = GridView::new(&document, self.text_size);
+        let id = self.workbook.add(document);
+        self.tabs.push(Tab { id, grid });
+        self.active = Some(id);
+        self.config.add_recent(path);
+        self.save_config();
+    }
+
     fn find_open(&self, path: &Path) -> Option<DocumentId> {
         let target = path.canonicalize().ok()?;
         self.workbook
@@ -4072,7 +4093,7 @@ mod tests {
         let mut options = options;
         options.types = Some(vec![DataType::Utf8, DataType::Float64]);
         let doc = veta_core::convert::import_csv(&csv, &options, 1 << 30, &mut |_| true).unwrap();
-        let _ = app.update(Message::Opened(csv.clone(), Ok(Loaded::new(doc))));
+        let _ = app.update(Message::Imported(csv.clone(), Ok(Slot::new(doc))));
         let id = app.tabs[0].id;
         let doc = app.workbook.get(id).unwrap();
         assert_eq!(doc.title(), "eu.csv");
@@ -4107,6 +4128,31 @@ mod tests {
         dialog.update(ImportMessage::Quote(dialogs::Quote::Single));
         let options = dialog.update(ImportMessage::Import).unwrap();
         assert_eq!((options.delimiter, options.quote), (b'#', Some(b'\'')));
+    }
+
+    #[test]
+    fn import_reports_values_that_did_not_fit() {
+        let dir = TempDir::new();
+        let csv = dir.join("bad.csv");
+        std::fs::write(&csv, "n\n1\nx\n").unwrap();
+        let mut app = app();
+        let _ = app.update(Message::ImportPicked(Some(csv.clone())));
+        let _ = app.update(Message::Import(ImportMessage::Type(
+            0,
+            dialogs::TypeChoice::Integer,
+        )));
+        let Some(Dialog::Import(dialog)) = &app.dialog else {
+            panic!("import dialog");
+        };
+        let options = dialog.options();
+        assert_eq!(options.on_error, OnError::ErrorColumn);
+        let result = veta_core::convert::import_csv(&csv, &options, 1 << 30, &mut |_| true)
+            .map(Slot::new)
+            .map_err(|e| e.to_string());
+        let _ = app.update(Message::Imported(csv, result));
+        assert_eq!(app.tabs.len(), 1);
+        assert!(app.errors[0].contains("n (1)"), "{:?}", app.errors);
+        assert_eq!(app.tabs[0].grid.value(1, 1), Some(Some("x")));
     }
 
     #[test]

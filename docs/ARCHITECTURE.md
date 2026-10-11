@@ -154,7 +154,7 @@ veta writer-settings <file> [--column C]... [--compression ...] [--level N]
 veta stats <file> [-c NAME]... [--json]
 veta convert <in> <out> [--from F] [--format parquet|csv|json|ndjson]
       [--delimiter C] [--quote C|none] [--decimal C] [--no-header]
-      [--encoding utf8|latin1]
+      [--encoding utf8|latin1] [--on-error column|null|fail]
 veta apply <recipe.json> <file>        # run steps saved from the GUI
 ```
 

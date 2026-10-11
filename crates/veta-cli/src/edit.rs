@@ -169,6 +169,17 @@ impl FileFormat {
     }
 }
 
+/// What to do with CSV values that don't fit their column's type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OnErrorArg {
+    /// Keep them as text in a "<column> errors" column.
+    Column,
+    /// Import them as null.
+    Null,
+    /// Stop with an error.
+    Fail,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum InputEncoding {
     Utf8,
@@ -200,6 +211,9 @@ pub struct ConvertArgs {
     /// CSV input encoding.
     #[arg(long, value_enum, default_value = "utf8")]
     pub encoding: InputEncoding,
+    /// CSV values that don't fit their column's type.
+    #[arg(long, value_enum, default_value = "column")]
+    pub on_error: OnErrorArg,
 }
 
 /// Converts a file between formats.
@@ -244,22 +258,33 @@ pub fn convert(args: ConvertArgs, out: &mut impl Write) -> Result<(), Error> {
     let budget = veta_core::io::DEFAULT_MEMORY_BUDGET;
     let mut doc = match from {
         FileFormat::Parquet => crate::open(&args.input)?,
-        FileFormat::Csv => import_csv(
-            &args.input,
-            &CsvOptions {
-                delimiter: delimiter(&args.input)?,
-                quote,
-                header: !args.no_header,
-                encoding: match args.encoding {
-                    InputEncoding::Utf8 => TextEncoding::Utf8,
-                    InputEncoding::Latin1 => TextEncoding::Latin1,
+        FileFormat::Csv => {
+            let (doc, report) = import_csv(
+                &args.input,
+                &CsvOptions {
+                    delimiter: delimiter(&args.input)?,
+                    quote,
+                    header: !args.no_header,
+                    encoding: match args.encoding {
+                        InputEncoding::Utf8 => TextEncoding::Utf8,
+                        InputEncoding::Latin1 => TextEncoding::Latin1,
+                    },
+                    decimal: args.decimal,
+                    on_error: match args.on_error {
+                        OnErrorArg::Column => veta_core::steps::OnError::ErrorColumn,
+                        OnErrorArg::Null => veta_core::steps::OnError::Null,
+                        OnErrorArg::Fail => veta_core::steps::OnError::Fail,
+                    },
+                    ..CsvOptions::default()
                 },
-                decimal: args.decimal,
-                ..CsvOptions::default()
-            },
-            budget,
-            &mut |_| true,
-        )?,
+                budget,
+                &mut |_| true,
+            )?;
+            if let Some(summary) = report.summary() {
+                writeln!(out, "{summary}")?;
+            }
+            doc
+        }
         FileFormat::Json | FileFormat::Ndjson => import_json(&args.input, budget, &mut |_| true)?,
     };
     let format = match to {

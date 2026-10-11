@@ -698,6 +698,31 @@ mod tests {
         let round_trip = run_args(&["veta", "head", &p(&back), "-n", "5"]).unwrap();
         assert_eq!(original, round_trip);
 
+        let bad = dir.join("bad.csv");
+        // Types are guessed from the first 1000 rows; a late value doesn't fit.
+        let mut text = String::from("n\n");
+        for i in 0..1100 {
+            text.push_str(&format!("{i}\n"));
+        }
+        text.push_str("three\n");
+        std::fs::write(&bad, text).unwrap();
+        let out = run_args(&["veta", "convert", &p(&bad), &p(&dir.join("bad.parquet"))]).unwrap();
+        assert!(
+            out.contains("1 values didn't fit") && out.contains("n (1)"),
+            "{out}"
+        );
+        let head = run_args(&["veta", "schema", &p(&dir.join("bad.parquet"))]).unwrap();
+        assert!(head.contains("n errors"), "{head}");
+        let err = run_args(&[
+            "veta",
+            "convert",
+            &p(&bad),
+            &p(&dir.join("bad2.parquet")),
+            "--on-error",
+            "fail",
+        ]);
+        assert!(err.unwrap_err().contains("\"three\""));
+
         let piped = dir.join("p.csv");
         run_args(&[
             "veta",
