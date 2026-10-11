@@ -65,6 +65,9 @@ enum RecipeStep {
     RemoveColumns {
         names: Vec<String>,
     },
+    KeepColumns {
+        names: Vec<String>,
+    },
     RenameColumn {
         from: String,
         to: String,
@@ -263,6 +266,9 @@ impl RecipeStep {
                 data_type: type_name(data_type),
                 at: *at,
             },
+            Step::KeepColumns { names } => RecipeStep::KeepColumns {
+                names: names.clone(),
+            },
             Step::RemoveColumns { names } => RecipeStep::RemoveColumns {
                 names: names.clone(),
             },
@@ -374,6 +380,7 @@ impl RecipeStep {
                 at,
             },
             RecipeStep::RemoveColumns { names } => Step::RemoveColumns { names },
+            RecipeStep::KeepColumns { names } => Step::KeepColumns { names },
             RecipeStep::RenameColumn { from, to } => Step::RenameColumn { from, to },
             RecipeStep::MoveColumn { name, to } => Step::MoveColumn { name, to },
             RecipeStep::Filter {

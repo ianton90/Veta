@@ -49,6 +49,10 @@ pub enum Command {
     RemoveColumns {
         names: Vec<String>,
     },
+    /// Keeps only these columns.
+    KeepColumns {
+        names: Vec<String>,
+    },
     RenameColumn {
         from: String,
         to: String,

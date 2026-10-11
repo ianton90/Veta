@@ -373,7 +373,10 @@ impl Pipeline {
             Step::Filter(_) | Step::Sort(_) | Step::Fill(_) => {
                 Err(invalid("this step must be computed first".into()))
             }
-            Step::RemoveColumns { .. } | Step::RenameColumn { .. } | Step::MoveColumn { .. } => {
+            Step::RemoveColumns { .. }
+            | Step::KeepColumns { .. }
+            | Step::RenameColumn { .. }
+            | Step::MoveColumn { .. } => {
                 // Pick the previous columns by name in the new order; renames
                 // map the new name back to the old one.
                 let batch = self.read_level(previous, range)?;

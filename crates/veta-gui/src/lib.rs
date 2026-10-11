@@ -239,6 +239,7 @@ enum MenuItem {
     InsertColumnRight,
     RenameColumn,
     RemoveColumns,
+    KeepColumns,
     MoveColumnLeft,
     MoveColumnRight,
     FilterColumn,
@@ -731,7 +732,8 @@ impl App {
                         return self.open_column_dialog(id, ColumnDialog::add(at));
                     }
                     MenuItem::RenameColumn => return self.rename_column(id),
-                    MenuItem::RemoveColumns => self.remove_columns(id),
+                    MenuItem::RemoveColumns => self.keep_or_remove_columns(id, false, true),
+                    MenuItem::KeepColumns => self.keep_or_remove_columns(id, true, true),
                     MenuItem::FilterColumn => self.open_filter_dialog(id),
                     MenuItem::ChangeType => self.open_cast_dialog(id, None),
                     MenuItem::ReplaceValues => return self.open_replace_dialog(id, None),
@@ -1237,7 +1239,7 @@ impl App {
                 | Action::AddColumn
                 | Action::RenameColumn
                 | Action::RemoveColumns
-                | Action::ChooseColumns
+                | Action::KeepColumns
                 | Action::KeepRows
                 | Action::SortAscending
                 | Action::SortDescending
@@ -1397,25 +1399,9 @@ impl App {
                     return self.rename_column(id);
                 }
             }
-            Action::RemoveColumns => {
+            Action::RemoveColumns | Action::KeepColumns => {
                 if let Some(id) = self.active {
-                    self.remove_columns(id);
-                }
-            }
-            Action::ChooseColumns => {
-                if let Some(id) = self.active
-                    && let Some(doc) = self.workbook.get(id)
-                {
-                    let names = doc
-                        .schema()
-                        .fields()
-                        .iter()
-                        .map(|f| f.name().clone())
-                        .collect::<Vec<_>>();
-                    self.dialog = Some(Dialog::Choose {
-                        document: id,
-                        dialog: ChooseColumns::new(names),
-                    });
+                    self.keep_or_remove_columns(id, action == Action::KeepColumns, false);
                 }
             }
             Action::FileMetadata => {
@@ -2186,14 +2172,40 @@ impl App {
         }
     }
 
-    fn remove_columns(&mut self, id: DocumentId) {
+    /// Keeps or removes columns. From the ribbon, with at most one column
+    /// selected, a dialog asks which; otherwise the selected columns are
+    /// used directly.
+    fn keep_or_remove_columns(&mut self, id: DocumentId, keep: bool, from_menu: bool) {
         self.edit = None;
-        if let Some(columns) = self.selected_columns(id) {
-            let names = self.column_names(id, columns);
-            if !names.is_empty() {
-                self.execute(id, Command::RemoveColumns { names });
+        let selected = self
+            .selected_columns(id)
+            .map(|c| self.column_names(id, c))
+            .unwrap_or_default();
+        if from_menu || selected.len() > 1 {
+            if selected.is_empty() {
+                return;
             }
+            let command = if keep {
+                Command::KeepColumns { names: selected }
+            } else {
+                Command::RemoveColumns { names: selected }
+            };
+            self.execute(id, command);
+            return;
         }
+        let Some(doc) = self.workbook.get(id) else {
+            return;
+        };
+        let names: Vec<String> = doc
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        self.dialog = Some(Dialog::Choose {
+            document: id,
+            dialog: ChooseColumns::new(keep, names, &selected),
+        });
     }
 
     fn move_column(&mut self, id: DocumentId, from: usize, to: usize) {
@@ -2877,11 +2889,39 @@ mod tests {
         let _ = app.update(Message::Action(Action::RemoveColumns));
         assert_eq!(names(&app), ["memo", "id", "name"]);
 
-        // Choose columns keeps only the checked ones.
-        let _ = app.update(Message::Action(Action::ChooseColumns));
-        let _ = app.update(Message::Choose(ChooseMessage::Toggle(0, false)));
+        // With one column selected, the ribbon asks; the dialog keeps the
+        // checked ones.
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 1,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::KeepColumns));
+        assert!(matches!(app.dialog, Some(Dialog::Choose { .. })));
+        let _ = app.update(Message::Choose(ChooseMessage::Toggle(2, true)));
         let _ = app.update(Message::Choose(ChooseMessage::Apply));
         assert_eq!(names(&app), ["id", "name"]);
+
+        // The column menu keeps the selection directly.
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::ContextMenu {
+                target: MenuTarget::Column(1),
+                position: iced::Point::ORIGIN,
+            },
+        ));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 1,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Menu(MenuItem::KeepColumns));
+        assert!(app.dialog.is_none());
+        assert_eq!(names(&app), ["name"]);
 
         while app.workbook.get(id).unwrap().history().can_undo() {
             let _ = app.update(Message::Action(Action::Undo));

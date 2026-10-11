@@ -21,7 +21,7 @@ pub enum Action {
     Export,
     Undo,
     Redo,
-    ChooseColumns,
+    KeepColumns,
     RemoveColumns,
     AddColumn,
     DuplicateColumn,
@@ -67,7 +67,7 @@ impl Action {
             | Action::Save
             | Action::SaveAs
             | Action::AddColumn
-            | Action::ChooseColumns
+            | Action::KeepColumns
             | Action::RemoveColumns
             | Action::RenameColumn
             | Action::InsertRows
@@ -229,7 +229,7 @@ fn groups(tab: Tab) -> Vec<Group> {
             group(
                 "Manage Columns",
                 vec![
-                    large(A::ChooseColumns, "Choose Columns", Icon::Columns),
+                    large(A::KeepColumns, "Keep Columns", Icon::Columns),
                     large(A::RemoveColumns, "Remove Columns", Icon::Trash),
                 ],
             ),
@@ -376,14 +376,12 @@ impl Context {
         match action {
             Action::Close => self.has_document,
             Action::Undo => self.can_undo,
-            Action::InsertRows
-            | Action::RemoveRows
-            | Action::RemoveColumns
-            | Action::RenameColumn => self.has_selection,
+            Action::InsertRows | Action::RemoveRows | Action::RenameColumn => self.has_selection,
             Action::Save
             | Action::SaveAs
             | Action::AddColumn
-            | Action::ChooseColumns
+            | Action::KeepColumns
+            | Action::RemoveColumns
             | Action::WriterSettings => self.has_document,
             Action::Redo => self.can_redo,
             _ => true,

@@ -118,6 +118,19 @@ impl Level {
                 fields.insert(*at, Field::new(name, data_type.clone(), true));
                 Ok(with_fields(fields, self.num_rows))
             }
+            Step::KeepColumns { names } => {
+                if names.is_empty() {
+                    return Err(invalid("keep at least one column".into()));
+                }
+                for name in names {
+                    self.index(name)?;
+                }
+                let fields = fields
+                    .into_iter()
+                    .filter(|f| names.contains(f.name()))
+                    .collect();
+                Ok(with_fields(fields, self.num_rows))
+            }
             Step::RemoveColumns { names } => {
                 if names.is_empty() {
                     return Err(invalid("no columns to remove".into()));

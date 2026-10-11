@@ -64,6 +64,10 @@ pub enum Step {
     RemoveColumns {
         names: Vec<String>,
     },
+    /// Keeps only these columns, in their current order.
+    KeepColumns {
+        names: Vec<String>,
+    },
     RenameColumn {
         from: String,
         to: String,
@@ -128,6 +132,10 @@ impl Step {
             } => {
                 format!("Added column {name} ({})", type_name(data_type))
             }
+            Step::KeepColumns { names } => match names.as_slice() {
+                [one] => format!("Kept column {one}"),
+                _ => format!("Kept {} columns", names.len()),
+            },
             Step::RemoveColumns { names } => match names.as_slice() {
                 [one] => format!("Removed column {one}"),
                 _ => format!("Removed {} columns", names.len()),

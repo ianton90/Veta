@@ -164,6 +164,10 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
             };
             Ok((label, Change::PushStep(Step::RemoveColumns { names })))
         }
+        Command::KeepColumns { names } => {
+            let step = Step::KeepColumns { names };
+            Ok((step.describe(), Change::PushStep(step)))
+        }
         Command::RenameColumn { from, to } => {
             let label = format!("Rename {from} to {to}");
             let step = Change::PushStep(Step::RenameColumn {
@@ -941,6 +945,37 @@ mod tests {
         assert!(undo(&mut other));
         assert!(other.steps().is_empty());
         assert!(execute(&mut other, Command::AppendSteps { steps: vec![] }).is_err());
+    }
+
+    #[test]
+    fn keep_columns_keeps_table_order() {
+        let dir = TempDir::new();
+        let mut doc = mixed(&dir);
+        execute(
+            &mut doc,
+            Command::KeepColumns {
+                names: vec!["flag".into(), "id".into()],
+            },
+        )
+        .unwrap();
+        let names: Vec<_> = doc
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(names, ["id", "flag"]);
+        assert_eq!(cell(&doc, 3, "flag").as_deref(), Some("false"));
+        assert!(
+            execute(
+                &mut doc,
+                Command::KeepColumns {
+                    names: vec!["nope".into()]
+                }
+            )
+            .is_err()
+        );
+        assert!(execute(&mut doc, Command::KeepColumns { names: vec![] }).is_err());
     }
 
     #[test]

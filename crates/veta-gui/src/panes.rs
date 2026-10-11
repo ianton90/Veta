@@ -630,10 +630,16 @@ pub fn context_menu<'a>(
         )));
     }
     if let MenuTarget::Column(_) = target {
-        let remove = if columns == 1 {
-            "Remove column".to_owned()
+        let (keep, remove) = if columns == 1 {
+            (
+                "Keep only this column".to_owned(),
+                "Remove column".to_owned(),
+            )
         } else {
-            format!("Remove {columns} columns")
+            (
+                format!("Keep only these {columns} columns"),
+                format!("Remove {columns} columns"),
+            )
         };
         items.extend([
             Some((
@@ -704,6 +710,7 @@ pub fn context_menu<'a>(
                 MenuItem::MoveColumnRight,
             )),
             None,
+            Some((Icon::Columns, keep, "", MenuItem::KeepColumns)),
             Some((Icon::Trash, remove, "", MenuItem::RemoveColumns)),
         ]);
     }
