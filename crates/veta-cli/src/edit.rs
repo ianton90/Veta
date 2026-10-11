@@ -160,12 +160,25 @@ pub fn apply(
     if count > 0 {
         controller::execute(&mut doc, Command::AppendSteps { steps })?;
     }
-    if let veta_core::steps::Status::Broken { step, error } = doc.status() {
-        return Err(Error::Usage(format!(
-            "step {} ({}) doesn't apply: {error}",
+    let stop = |doc: &veta_core::Document, step: usize, error: &dyn std::fmt::Display| {
+        Error::Usage(format!(
+            "stopped at step {} ({}): {error}",
             step + 1,
-            doc.steps()[*step].describe()
-        )));
+            doc.steps()[step].describe()
+        ))
+    };
+    // Run full passes here so a failing step is reported by number.
+    while let Some(job) = doc.compute_job() {
+        let step = job.step();
+        match job.run(&mut |_| true) {
+            Ok(computed) => {
+                doc.install(computed);
+            }
+            Err(e) => return Err(stop(&doc, step, &e)),
+        }
+    }
+    if let veta_core::steps::Status::Broken { step, error } = doc.status() {
+        return Err(stop(&doc, *step, error));
     }
     doc.save(output.output.clone())?;
     let target = output.output.as_deref().unwrap_or(file);

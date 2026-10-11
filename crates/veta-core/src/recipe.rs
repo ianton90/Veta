@@ -137,6 +137,9 @@ enum RecipeStep {
         expression: String,
         at: usize,
     },
+    RemoveEmptyColumn {
+        name: String,
+    },
 }
 
 fn dot() -> char {
@@ -350,6 +353,9 @@ impl RecipeStep {
                 separator: m.separator.clone(),
                 name: m.name.clone(),
             },
+            Step::RemoveEmptyColumn { name } => {
+                RecipeStep::RemoveEmptyColumn { name: name.clone() }
+            }
             Step::CustomColumn(c) => RecipeStep::CustomColumn {
                 name: c.name.clone(),
                 expression: c.expression.clone(),
@@ -475,6 +481,7 @@ impl RecipeStep {
                 separator,
                 name,
             }),
+            RecipeStep::RemoveEmptyColumn { name } => Step::RemoveEmptyColumn { name },
             RecipeStep::CustomColumn {
                 name,
                 expression,

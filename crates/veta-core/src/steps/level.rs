@@ -30,6 +30,13 @@ impl Level {
             Step::Filter(filter) => filter.validate(&self.schema),
             Step::Sort(sort) => sort.validate(&self.schema),
             Step::Fill(fill) => fill.validate(&self.schema),
+            Step::RemoveEmptyColumn { name } => {
+                self.index(name)?;
+                if self.schema.fields().len() < 2 {
+                    return Err(invalid("at least one column must remain".into()));
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -40,6 +47,10 @@ impl Level {
             Cache::Rows(rows) => Level {
                 schema: self.schema.clone(),
                 num_rows: rows.total(),
+            },
+            Cache::Project(schema) => Level {
+                schema: schema.clone(),
+                num_rows: self.num_rows,
             },
             Cache::Data(source) => Level {
                 schema: source.schema(),
@@ -180,7 +191,7 @@ impl Level {
                 op.validate(&self.schema, columns)?;
                 Ok(self.clone())
             }
-            Step::Filter(_) | Step::Sort(_) | Step::Fill(_) => {
+            Step::Filter(_) | Step::Sort(_) | Step::Fill(_) | Step::RemoveEmptyColumn { .. } => {
                 Err(invalid("this step must be computed first".into()))
             }
             Step::MoveColumn { name, to } => {

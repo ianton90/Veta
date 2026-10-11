@@ -310,6 +310,16 @@ impl Pipeline {
                     concat(&schema, parts)
                 }
                 Cache::Data(source) => source.read(range),
+                Cache::Project(_) => {
+                    let batch = self.read_level(previous, range)?;
+                    let input = batch.schema();
+                    let columns = schema
+                        .fields()
+                        .iter()
+                        .map(|f| Ok(batch.column(input.index_of(f.name())?).clone()))
+                        .collect::<Result<Vec<_>>>()?;
+                    with_schema(schema, columns, batch.num_rows())
+                }
             };
         }
         match &self.steps[previous] {
@@ -370,7 +380,7 @@ impl Pipeline {
                     op.apply(c)
                 })
             }
-            Step::Filter(_) | Step::Sort(_) | Step::Fill(_) => {
+            Step::Filter(_) | Step::Sort(_) | Step::Fill(_) | Step::RemoveEmptyColumn { .. } => {
                 Err(invalid("this step must be computed first".into()))
             }
             Step::RemoveColumns { .. }

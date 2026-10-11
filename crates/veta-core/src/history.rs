@@ -168,6 +168,24 @@ impl History {
         self.undo.push(Entry { label, change });
     }
 
+    /// Adds `change` to the last recorded entry, so they undo together.
+    pub(crate) fn amend(&mut self, change: Change) {
+        if self.saved == Some(self.undo.len()) {
+            self.saved = None;
+        }
+        self.redo.clear();
+        match self.undo.last_mut() {
+            Some(entry) => {
+                let previous = std::mem::replace(&mut entry.change, Change::Batch(Vec::new()));
+                entry.change = Change::Batch(vec![previous, change]);
+            }
+            None => self.undo.push(Entry {
+                label: String::new(),
+                change,
+            }),
+        }
+    }
+
     pub(crate) fn pop_undo(&mut self) -> Option<(String, Change)> {
         let entry = self.undo.pop()?;
         let result = (entry.label.clone(), entry.change.clone());

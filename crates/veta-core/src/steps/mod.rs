@@ -93,13 +93,21 @@ pub enum Step {
     Split(Split),
     Merge(Merge),
     CustomColumn(CustomColumn),
+    /// Removes a column if every value in it is null; fails otherwise
+    /// (e.g. a cast's error column when nothing failed).
+    RemoveEmptyColumn {
+        name: String,
+    },
 }
 
 impl Step {
     /// Whether evaluating the step needs a full pass over its input (done in
     /// the background, then cached).
     pub fn needs_full_pass(&self) -> bool {
-        matches!(self, Step::Filter(_) | Step::Sort(_) | Step::Fill(_))
+        matches!(
+            self,
+            Step::Filter(_) | Step::Sort(_) | Step::Fill(_) | Step::RemoveEmptyColumn { .. }
+        )
     }
 
     /// Whether the step refers to rows by position, so changing an earlier
@@ -154,6 +162,7 @@ impl Step {
             Step::Split(split) => split.describe(),
             Step::Merge(merge) => merge.describe(),
             Step::CustomColumn(custom) => custom.describe(),
+            Step::RemoveEmptyColumn { name } => format!("Removed column {name} if empty"),
         }
     }
 }

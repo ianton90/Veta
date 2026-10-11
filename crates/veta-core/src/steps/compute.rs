@@ -5,7 +5,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use arrow::array::ArrayRef;
+use arrow::array::{Array, ArrayRef};
 use arrow::record_batch::RecordBatch;
 
 use super::checkpoint::{Checkpoint, TempFile, write_parquet};
@@ -25,6 +25,8 @@ pub(crate) enum Cache {
     Rows(RowMap),
     /// The step's whole output (sort, fill).
     Data(Arc<dyn DataSource>),
+    /// The input's rows with only these columns (a checked column removal).
+    Project(arrow::datatypes::SchemaRef),
 }
 
 /// Kept input rows as sorted, disjoint ranges, with each range's position in
@@ -157,6 +159,48 @@ impl ComputeJob {
                 Cache::Data(source)
             }
             Step::Fill(f) => Cache::Data(self.fill(f, input_rows, progress)?),
+            Step::RemoveEmptyColumn { name } => {
+                let mut values = 0;
+                let mut example = None;
+                let mut start = 0;
+                while start < input_rows {
+                    let end = (start + PASS_ROWS).min(input_rows);
+                    let batch = self.pipeline.read_at(self.step, start..end)?;
+                    let column = batch
+                        .column_by_name(name)
+                        .ok_or_else(|| invalid(format!("no column named {name:?}")))?;
+                    values += column.len() - column.null_count();
+                    if example.is_none()
+                        && let Some(i) = (0..column.len()).find(|&i| column.is_valid(i))
+                    {
+                        example = arrow::util::display::array_value_to_string(column, i).ok();
+                    }
+                    start = end;
+                    if !progress(start as f32 / input_rows as f32) {
+                        return Err(Error::Cancelled);
+                    }
+                }
+                if values > 0 {
+                    let example = example.map(|e| format!(", e.g. {e:?}")).unwrap_or_default();
+                    return Err(invalid(format!(
+                        "{name} isn't empty: {values} values{example}"
+                    )));
+                }
+                let schema = self
+                    .pipeline
+                    .schema_at(self.step)
+                    .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+                let fields: Vec<_> = schema
+                    .fields()
+                    .iter()
+                    .filter(|f| f.name() != name)
+                    .map(|f| f.as_ref().clone())
+                    .collect();
+                Cache::Project(Arc::new(arrow::datatypes::Schema::new_with_metadata(
+                    fields,
+                    schema.metadata().clone(),
+                )))
+            }
             other => {
                 return Err(invalid(format!(
                     "{} doesn't need computing",

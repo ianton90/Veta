@@ -20,6 +20,16 @@ pub fn execute(document: &mut Document, command: Command) -> Result<()> {
     Ok(())
 }
 
+/// Like [`execute`], but folds the change into the last one in the
+/// history, so they undo as one (for follow-up changes the app makes on its
+/// own).
+pub fn amend(document: &mut Document, command: Command) -> Result<()> {
+    let (_, change) = plan(document, command)?;
+    change.apply(document)?;
+    document.history.amend(change);
+    Ok(())
+}
+
 /// Reverts the last change. Returns `false` if there was nothing to undo.
 pub fn undo(document: &mut Document) -> bool {
     let Some((_, change)) = document.history.pop_undo() else {
@@ -981,6 +991,50 @@ mod tests {
             .is_err()
         );
         assert!(execute(&mut doc, Command::KeepColumns { names: vec![] }).is_err());
+    }
+
+    #[test]
+    fn remove_empty_column_checks_every_row() {
+        use crate::steps::{Cast, CastOptions, OnError, Status};
+        let dir = TempDir::new();
+        let cast = |column: &str, to| Cast {
+            column: column.into(),
+            to,
+            options: CastOptions {
+                on_error: OnError::ErrorColumn,
+                ..CastOptions::default()
+            },
+        };
+        let remove = |name: &str| Step::RemoveEmptyColumn { name: name.into() };
+
+        // No errors: the error column goes.
+        let mut doc = mixed(&dir);
+        let steps = vec![Step::Cast(cast("id", DataType::Utf8)), remove("id errors")];
+        execute(&mut doc, Command::AppendSteps { steps }).unwrap();
+        assert_eq!(doc.status(), &Status::Computing { step: 1 });
+        doc.compute_all().unwrap();
+        assert_eq!(doc.num_columns(), 4);
+        assert_eq!(cell(&doc, 2, "id").as_deref(), Some("2"));
+
+        // Errors: the check fails, saying why.
+        let mut doc = mixed(&dir);
+        let steps = vec![
+            Step::Cast(cast("name", DataType::Int64)),
+            remove("name errors"),
+        ];
+        execute(&mut doc, Command::AppendSteps { steps }).unwrap();
+        let err = doc.compute_all().unwrap_err().to_string();
+        assert!(
+            err.contains("errors isn't empty") && err.contains("\"bo\""),
+            "{err}"
+        );
+        // The app drops the check, folded into the same undo entry.
+        amend(&mut doc, Command::RemoveStep { index: 1 }).unwrap();
+        assert_eq!(doc.status(), &Status::Ready);
+        assert_eq!(doc.num_columns(), 5);
+        assert!(undo(&mut doc));
+        assert!(doc.steps().is_empty());
+        assert!(!doc.history().can_undo());
     }
 
     #[test]

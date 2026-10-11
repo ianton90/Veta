@@ -24,8 +24,8 @@ use iced::{
 };
 use veta_core::arrow::array::ArrayRef;
 use veta_core::steps::{
-    Cast, ComputeJob, Computed, Condition, CustomColumn, Fill, Filter, FilterOp, Merge, Replace,
-    Sort, SortKey, Split, Status, Step, TextOp,
+    Cast, ComputeJob, Computed, Condition, CustomColumn, Fill, Filter, FilterOp, Merge, OnError,
+    Replace, Sort, SortKey, Split, Status, Step, TextOp,
 };
 use veta_core::{Command, Document, DocumentId, OpenOptions, Workbook, controller};
 
@@ -190,6 +190,9 @@ struct App {
     closing: Option<Closing>,
     /// The full pass running in the background, if any.
     computing: Option<Computing>,
+    /// A "remove the error column if empty" step just added after a cast,
+    /// to drop again (keeping the errors) if the column isn't empty.
+    error_check: Option<(DocumentId, usize)>,
 }
 
 /// A step's full pass running on a worker thread.
@@ -493,6 +496,7 @@ impl App {
             saving: None,
             closing: None,
             computing: None,
+            error_check: None,
         };
         let open = app.open(files);
         let system = iced::system::theme().map(Message::SystemMode);
@@ -877,8 +881,28 @@ impl App {
                             self.change_steps(id, index, Command::ReplaceStep { index, step });
                         }
                         (Some(cast), None) => {
-                            if self.execute(id, Command::Cast(cast)) {
+                            // With an error column, a second step removes
+                            // it if nothing failed (checked on every row).
+                            let check = (cast.options.on_error == OnError::ErrorColumn)
+                                .then(|| cast.error_column());
+                            let command = match &check {
+                                Some(name) => Command::AppendSteps {
+                                    steps: vec![
+                                        Step::Cast(cast),
+                                        Step::RemoveEmptyColumn { name: name.clone() },
+                                    ],
+                                },
+                                None => Command::Cast(cast),
+                            };
+                            if self.execute(id, command) {
                                 self.dialog = None;
+                                if check.is_some() {
+                                    let index = self
+                                        .workbook
+                                        .get(id)
+                                        .map_or(0, |d| d.steps().len().saturating_sub(1));
+                                    self.error_check = Some((id, index));
+                                }
                             }
                         }
                         (None, _) if cancel => self.dialog = None,
@@ -1074,6 +1098,7 @@ impl App {
                     Err(e) => doc.fail_compute(&key, e),
                 };
                 if changed {
+                    self.after_compute(id);
                     self.refresh(id);
                 }
             }
@@ -1178,7 +1203,9 @@ impl App {
                         self.errors.push("The recipe has no steps.".into());
                     }
                     Ok(steps) => {
-                        self.execute(id, Command::AppendSteps { steps });
+                        if self.execute(id, Command::AppendSteps { steps }) {
+                            self.after_compute(id);
+                        }
                     }
                     Err(e) => self.errors.push(format!("Could not load the recipe: {e}")),
                 }
@@ -2305,6 +2332,44 @@ impl App {
         };
         if let Err(e) = self.set_view_filter(id, filter) {
             self.errors.push(e);
+        }
+    }
+
+    /// Reacts to a document's pass finishing: a failed error-column check
+    /// is dropped (keeping the errors); other failures are reported.
+    fn after_compute(&mut self, id: DocumentId) {
+        let Some(doc) = self.workbook.get_mut(id) else {
+            return;
+        };
+        let check = self.error_check.filter(|(d, _)| *d == id);
+        match doc.status().clone() {
+            Status::Broken { step, error } if check == Some((id, step)) => {
+                self.error_check = None;
+                let column = match doc.steps().get(step) {
+                    Some(Step::RemoveEmptyColumn { name }) => name.clone(),
+                    _ => return,
+                };
+                if controller::amend(doc, Command::RemoveStep { index: step }).is_ok() {
+                    let count = error
+                        .split_once(": ")
+                        .map_or(String::new(), |(_, rest)| format!(" ({rest})"));
+                    self.errors.push(format!(
+                        "Some values couldn't be converted{count}. They're kept in column \
+                         {column}."
+                    ));
+                }
+            }
+            Status::Broken { step, error } => {
+                let label = doc
+                    .steps()
+                    .get(step)
+                    .map(Step::describe)
+                    .unwrap_or_default();
+                self.errors
+                    .push(format!("Stopped at step {} ({label}): {error}", step + 1));
+            }
+            Status::Ready if check.is_some() => self.error_check = None,
+            _ => {}
         }
     }
 
@@ -3707,8 +3772,37 @@ mod tests {
         )));
         let _ = app.update(Message::Cast(CastMessage::Apply));
         assert!(app.dialog.is_none());
+        // The check finds errors, so it's dropped and the errors kept.
+        assert_eq!(app.workbook.get(id).unwrap().steps().len(), 2);
+        finish_compute(&mut app, id);
+        assert_eq!(app.workbook.get(id).unwrap().steps().len(), 1);
         assert_eq!(schema(&app).field(1).data_type(), &DataType::Int64);
         assert_eq!(schema(&app).field(2).name(), "name errors");
+        assert!(
+            app.errors
+                .iter()
+                .any(|e| e.contains("kept in column name errors"))
+        );
+
+        // Without errors the error column is removed.
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 0,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::DataType));
+        let _ = app.update(Message::Cast(CastMessage::Type(dialogs::TypeChoice::Text)));
+        let _ = app.update(Message::Cast(CastMessage::OnError(
+            veta_core::steps::OnError::ErrorColumn,
+        )));
+        let _ = app.update(Message::Cast(CastMessage::Apply));
+        finish_compute(&mut app, id);
+        assert_eq!(app.workbook.get(id).unwrap().steps().len(), 3);
+        assert_eq!(schema(&app).fields().len(), 5);
+        let _ = app.update(Message::Action(Action::Undo));
+        assert_eq!(app.workbook.get(id).unwrap().steps().len(), 1);
 
         // Edit it: back to null on error, so the error column goes away.
         let _ = app.update(Message::EditStep(0));
