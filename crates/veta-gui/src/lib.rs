@@ -6,6 +6,7 @@
 
 mod config;
 mod dialogs;
+mod files;
 mod grid;
 mod icon;
 mod panes;
@@ -41,6 +42,7 @@ use crate::dialogs::{
     MetadataDialog, MetadataMessage, ReplaceDialog, ReplaceMessage, SortDialog, SortMessage,
     SplitDialog, SplitMessage, WriterDialog, WriterMessage,
 };
+use crate::files::FileKind;
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav};
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
 use crate::settings::{Draft, Outcome, SettingsMessage};
@@ -1263,19 +1265,18 @@ impl App {
                     let id = *document;
                     let cancel = matches!(message, ExportMessage::Cancel);
                     let submitted = dialog.update(message).is_some();
-                    let extension = dialog.choice.extension();
+                    let kind = export_kind(dialog.choice);
                     if submitted {
                         let doc = self.workbook.get(id);
                         let name = doc
-                            .map(|d| with_extension(&d.title(), extension))
+                            .map(|d| files::suggested_name(&d.title(), kind))
                             .unwrap_or_default();
                         let dir = doc
                             .and_then(Document::path)
                             .and_then(Path::parent)
                             .map(Path::to_path_buf);
-                        return Task::perform(pick_export_path(name, extension, dir), move |p| {
-                            Message::ExportTo(id, p)
-                        });
+                        let save = files::save("Export".into(), kind, name, dir);
+                        return Task::perform(save, move |p| Message::ExportTo(id, p));
                     } else if cancel {
                         self.dialog = None;
                     }
@@ -1325,12 +1326,11 @@ impl App {
                         .map(|d| {
                             let title = d.title();
                             let stem = title.rsplit_once('.').map_or(title.as_str(), |(s, _)| s);
-                            format!("{stem}.recipe.json")
+                            format!("{stem}-recipe.json")
                         })
                         .unwrap_or_default();
-                    return Task::perform(pick_recipe(Some(name)), move |path| {
-                        Message::SaveRecipeTo(id, path)
-                    });
+                    let save = files::save("Save recipe".into(), FileKind::Recipe, name, None);
+                    return Task::perform(save, move |path| Message::SaveRecipeTo(id, path));
                 }
             }
             Message::SaveRecipeTo(id, Some(path)) => {
@@ -1363,9 +1363,8 @@ impl App {
                         self.not_editable(id);
                         return Task::none();
                     }
-                    return Task::perform(pick_recipe(None), move |path| {
-                        Message::LoadRecipeFrom(id, path)
-                    });
+                    let open = files::open_one("Load recipe".into(), vec![FileKind::Recipe]);
+                    return Task::perform(open, move |path| Message::LoadRecipeFrom(id, path));
                 }
             }
             Message::LoadRecipeFrom(id, Some(path)) => {
@@ -1519,7 +1518,11 @@ impl App {
         }
         match action {
             Action::Import => {
-                return Task::perform(pick_import_file(), Message::ImportPicked);
+                let open = files::open_one(
+                    "Import".into(),
+                    vec![FileKind::Csv, FileKind::Json, FileKind::JsonLines],
+                );
+                return Task::perform(open, Message::ImportPicked);
             }
             Action::Export => {
                 if let Some(id) = self.active {
@@ -1537,7 +1540,8 @@ impl App {
                 }
             }
             Action::Open => {
-                return Task::perform(pick_files(), |files| {
+                let open = files::open_many("Open".into(), vec![FileKind::Parquet]);
+                return Task::perform(open, |files| {
                     Message::FilesPicked(files.unwrap_or_default())
                 });
             }
@@ -2045,11 +2049,10 @@ impl App {
             return Task::none();
         };
         // Imported documents are saved as Parquet.
-        let name = with_extension(&doc.title(), "parquet");
+        let name = files::suggested_name(&doc.title(), FileKind::Parquet);
         let dir = doc.path().and_then(Path::parent).map(Path::to_path_buf);
-        Task::perform(pick_save_path(name, dir), move |path| {
-            Message::SaveTo(id, path)
-        })
+        let save = files::save("Save as".into(), FileKind::Parquet, name, dir);
+        Task::perform(save, move |path| Message::SaveTo(id, path))
     }
 
     /// Saves on a worker thread; `None` saves to the document's own path.
@@ -3225,87 +3228,13 @@ fn divider<'a>(tokens: Tokens, vertical: bool) -> Element<'a, Message> {
     }
 }
 
-async fn pick_save_path(name: String, dir: Option<PathBuf>) -> Option<PathBuf> {
-    let mut dialog = rfd::AsyncFileDialog::new()
-        .set_title("Save as")
-        .set_file_name(name)
-        .add_filter("Parquet", &["parquet"]);
-    if let Some(dir) = dir {
-        dialog = dialog.set_directory(dir);
+/// The file kind an export format writes.
+fn export_kind(choice: dialogs::ExportChoice) -> FileKind {
+    match choice {
+        dialogs::ExportChoice::Csv => FileKind::Csv,
+        dialogs::ExportChoice::JsonLines => FileKind::JsonLines,
+        dialogs::ExportChoice::JsonArray => FileKind::Json,
     }
-    let mut path = dialog.save_file().await?.path().to_path_buf();
-    if path.extension().is_none() {
-        path.set_extension("parquet");
-    }
-    Some(path)
-}
-
-/// Asks where to save a recipe (with a suggested `name`), or which recipe
-/// to open when `name` is `None`.
-async fn pick_recipe(name: Option<String>) -> Option<PathBuf> {
-    let dialog = rfd::AsyncFileDialog::new().add_filter("Recipe", &["json"]);
-    let handle = match name {
-        Some(name) => {
-            dialog
-                .set_title("Save recipe")
-                .set_file_name(name)
-                .save_file()
-                .await?
-        }
-        None => dialog.set_title("Load recipe").pick_file().await?,
-    };
-    Some(handle.path().to_path_buf())
-}
-
-/// `name` with its extension replaced by `extension`.
-fn with_extension(name: &str, extension: &str) -> String {
-    let stem = match name.rsplit_once('.') {
-        Some((stem, _)) if !stem.is_empty() => stem,
-        _ => name,
-    };
-    format!("{stem}.{extension}")
-}
-
-async fn pick_import_file() -> Option<PathBuf> {
-    let handle = rfd::AsyncFileDialog::new()
-        .set_title("Import")
-        .add_filter(
-            "CSV or JSON",
-            &["csv", "tsv", "txt", "json", "ndjson", "jsonl"],
-        )
-        .add_filter("All files", &["*"])
-        .pick_file()
-        .await?;
-    Some(handle.path().to_path_buf())
-}
-
-async fn pick_export_path(
-    name: String,
-    extension: &'static str,
-    dir: Option<PathBuf>,
-) -> Option<PathBuf> {
-    let mut dialog = rfd::AsyncFileDialog::new()
-        .set_title("Export")
-        .set_file_name(name)
-        .add_filter(extension.to_uppercase(), &[extension]);
-    if let Some(dir) = dir {
-        dialog = dialog.set_directory(dir);
-    }
-    let mut path = dialog.save_file().await?.path().to_path_buf();
-    if path.extension().is_none() {
-        path.set_extension(extension);
-    }
-    Some(path)
-}
-
-async fn pick_files() -> Option<Vec<PathBuf>> {
-    let handles = rfd::AsyncFileDialog::new()
-        .set_title("Open Parquet files")
-        .add_filter("Parquet", &["parquet", "parq", "pq"])
-        .add_filter("All files", &["*"])
-        .pick_files()
-        .await?;
-    Some(handles.iter().map(|h| h.path().to_path_buf()).collect())
 }
 
 /// Runs blocking work on its own thread so the UI stays responsive.
@@ -4149,7 +4078,10 @@ mod tests {
         assert_eq!(doc.title(), "eu.csv");
         assert!(doc.is_modified());
         assert_eq!(app.tabs[0].grid.value(1, 1), Some(Some("2.25")));
-        assert_eq!(with_extension(&doc.title(), "parquet"), "eu.parquet");
+        assert_eq!(
+            files::suggested_name(&doc.title(), FileKind::Parquet),
+            "eu.parquet"
+        );
 
         // JSON opens directly in the background.
         let json = dir.join("a.json");
@@ -4539,7 +4471,7 @@ mod tests {
         let _ = app.update(Message::Action(Action::SortDescending));
         finish_compute(&mut app, ida);
         let _ = app.update(Message::Action(Action::IndexColumn));
-        let recipe = dir.join("r.recipe.json");
+        let recipe = dir.join("r-recipe.json");
         let _ = app.update(Message::SaveRecipeTo(ida, Some(recipe.clone())));
         assert!(app.errors.is_empty(), "{:?}", app.errors);
 

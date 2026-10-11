@@ -1593,16 +1593,6 @@ pub enum ExportChoice {
     JsonArray,
 }
 
-impl ExportChoice {
-    pub fn extension(self) -> &'static str {
-        match self {
-            Self::Csv => "csv",
-            Self::JsonLines => "ndjson",
-            Self::JsonArray => "json",
-        }
-    }
-}
-
 impl std::fmt::Display for ExportChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
