@@ -36,9 +36,10 @@ use crate::config::Config;
 use crate::config::ModePreference;
 use crate::dialogs::{
     CastDialog, CastMessage, ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage,
-    CustomDialog, CustomMessage, FilterDialog, FilterMessage, FormatDialog, FormatMessage,
-    MergeDialog, MergeMessage, MetadataDialog, MetadataMessage, ReplaceDialog, ReplaceMessage,
-    SortDialog, SortMessage, SplitDialog, SplitMessage, WriterDialog, WriterMessage,
+    CustomDialog, CustomMessage, ExportDialog, ExportMessage, FilterDialog, FilterMessage,
+    FormatDialog, FormatMessage, ImportDialog, ImportMessage, MergeDialog, MergeMessage,
+    MetadataDialog, MetadataMessage, ReplaceDialog, ReplaceMessage, SortDialog, SortMessage,
+    SplitDialog, SplitMessage, WriterDialog, WriterMessage,
 };
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav};
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
@@ -194,6 +195,10 @@ struct App {
     computing: Option<Computing>,
     /// Column statistics for the side pane.
     stats: Stats,
+    /// Exports running in the background.
+    exporting: usize,
+    /// Last thing done worth telling (shown in the status bar).
+    notice: Option<String>,
     /// A "remove the error column if empty" step just added after a cast,
     /// to drop again (keeping the errors) if the column isn't empty.
     error_check: Option<(DocumentId, usize)>,
@@ -383,6 +388,11 @@ enum Dialog {
         dialog: CustomDialog,
         replace: Option<usize>,
     },
+    Import(ImportDialog),
+    Export {
+        document: DocumentId,
+        dialog: ExportDialog,
+    },
     Sort {
         document: DocumentId,
         dialog: SortDialog,
@@ -459,6 +469,13 @@ enum Message {
     /// Save the active document's steps as a recipe.
     StatsProgress(DocumentId, u64, f32),
     StatsDone(DocumentId, u64, Result<Vec<ColumnStats>, String>),
+    /// A file to import was chosen.
+    ImportPicked(Option<PathBuf>),
+    Import(ImportMessage),
+    Export(ExportMessage),
+    /// Where to export was chosen.
+    ExportTo(DocumentId, Option<PathBuf>),
+    Exported(Result<PathBuf, String>),
     /// Turn off the temporary row filter.
     ClearFilter,
     SaveRecipe,
@@ -522,6 +539,8 @@ impl App {
             computing: None,
             error_check: None,
             stats: Stats::default(),
+            exporting: 0,
+            notice: None,
         };
         let open = app.open(files);
         let system = iced::system::theme().map(Message::SystemMode);
@@ -607,7 +626,10 @@ impl App {
             return Task::none();
         }
         match message {
-            Message::Action(action) => return self.perform(action),
+            Message::Action(action) => {
+                self.notice = None;
+                return self.perform(action);
+            }
             Message::OpenDialog => return self.perform(Action::Open),
             Message::Ribbon(message) => self.ribbon.update(message),
             Message::FilesPicked(files) => return self.open(files),
@@ -1207,6 +1229,89 @@ impl App {
                         .push(format!("Could not compute statistics: {e}")),
                 }
             }
+            Message::ImportPicked(Some(path)) => return self.open(vec![path]),
+            Message::ImportPicked(None) => {}
+            Message::Import(message) => {
+                if let Some(Dialog::Import(dialog)) = &mut self.dialog {
+                    let cancel = matches!(message, ImportMessage::Cancel);
+                    if let Some(options) = dialog.update(message) {
+                        let path = dialog.path.clone();
+                        self.dialog = None;
+                        let budget = self.config.memory_budget();
+                        self.opening.push(path.clone());
+                        let worker_path = path.clone();
+                        return Task::perform(
+                            blocking(move || {
+                                veta_core::convert::import_csv(
+                                    &worker_path,
+                                    &options,
+                                    budget,
+                                    &mut |_| true,
+                                )
+                                .map(Loaded::new)
+                                .map_err(|e| e.to_string())
+                            }),
+                            move |result| Message::Opened(path.clone(), result),
+                        );
+                    } else if cancel {
+                        self.dialog = None;
+                    }
+                }
+            }
+            Message::Export(message) => {
+                if let Some(Dialog::Export { document, dialog }) = &mut self.dialog {
+                    let id = *document;
+                    let cancel = matches!(message, ExportMessage::Cancel);
+                    let submitted = dialog.update(message).is_some();
+                    let extension = dialog.choice.extension();
+                    if submitted {
+                        let doc = self.workbook.get(id);
+                        let name = doc
+                            .map(|d| with_extension(&d.title(), extension))
+                            .unwrap_or_default();
+                        let dir = doc
+                            .and_then(Document::path)
+                            .and_then(Path::parent)
+                            .map(Path::to_path_buf);
+                        return Task::perform(pick_export_path(name, extension, dir), move |p| {
+                            Message::ExportTo(id, p)
+                        });
+                    } else if cancel {
+                        self.dialog = None;
+                    }
+                }
+            }
+            Message::ExportTo(id, Some(path)) => {
+                let Some(Dialog::Export { dialog, .. }) = self.dialog.take() else {
+                    return Task::none();
+                };
+                let format = dialog.format();
+                let output = match self.workbook.get(id).map(Document::output) {
+                    Some(Ok(output)) => output,
+                    Some(Err(e)) => {
+                        self.errors.push(format!("Could not export: {e}"));
+                        return Task::none();
+                    }
+                    None => return Task::none(),
+                };
+                self.exporting += 1;
+                return Task::perform(
+                    blocking(move || {
+                        veta_core::convert::export(&output, &path, &format, &mut |_| true)
+                            .map(|()| path)
+                            .map_err(|e| e.to_string())
+                    }),
+                    Message::Exported,
+                );
+            }
+            Message::ExportTo(_, None) => {}
+            Message::Exported(result) => {
+                self.exporting = self.exporting.saturating_sub(1);
+                match result {
+                    Ok(path) => self.notice = Some(format!("Exported {}", path.display())),
+                    Err(e) => self.errors.push(format!("Could not export: {e}")),
+                }
+            }
             Message::ClearFilter => {
                 if let Some(id) = self.active {
                     self.clear_filter(id);
@@ -1413,6 +1518,24 @@ impl App {
             return Task::none();
         }
         match action {
+            Action::Import => {
+                return Task::perform(pick_import_file(), Message::ImportPicked);
+            }
+            Action::Export => {
+                if let Some(id) = self.active {
+                    match self.workbook.get(id).map(Document::output) {
+                        Some(Ok(_)) => {
+                            self.edit = None;
+                            self.dialog = Some(Dialog::Export {
+                                document: id,
+                                dialog: ExportDialog::default(),
+                            });
+                        }
+                        Some(Err(e)) => self.errors.push(format!("Could not export: {e}")),
+                        None => {}
+                    }
+                }
+            }
             Action::Open => {
                 return Task::perform(pick_files(), |files| {
                     Message::FilesPicked(files.unwrap_or_default())
@@ -1641,8 +1764,6 @@ impl App {
             }
             Action::Settings => self.dialog = Some(Dialog::Settings(Draft::new(&self.config))),
             Action::About => self.dialog = Some(Dialog::About),
-            // Not built yet; the ribbon shows these disabled.
-            _ => {}
         }
         Task::none()
     }
@@ -1923,7 +2044,8 @@ impl App {
         let Some(doc) = self.workbook.get(id) else {
             return Task::none();
         };
-        let name = doc.title();
+        // Imported documents are saved as Parquet.
+        let name = with_extension(&doc.title(), "parquet");
         let dir = doc.path().and_then(Path::parent).map(Path::to_path_buf);
         Task::perform(pick_save_path(name, dir), move |path| {
             Message::SaveTo(id, path)
@@ -2824,13 +2946,27 @@ impl App {
             if self.opening.contains(&path) {
                 continue;
             }
+            let format = veta_core::convert::ImportFormat::from_path(&path);
+            if format == Some(veta_core::convert::ImportFormat::Csv) {
+                // Asks how to read it; one dialog at a time.
+                if self.dialog.is_none() {
+                    self.edit = None;
+                    self.dialog = Some(Dialog::Import(ImportDialog::new(path)));
+                }
+                continue;
+            }
             self.opening.push(path.clone());
             let worker_path = path.clone();
+            let budget = options.memory_budget;
             tasks.push(Task::perform(
                 blocking(move || {
-                    Document::open(worker_path, options)
-                        .map(Loaded::new)
-                        .map_err(|e| e.to_string())
+                    let document = match format {
+                        Some(veta_core::convert::ImportFormat::Json) => {
+                            veta_core::convert::import_json(&worker_path, budget, &mut |_| true)
+                        }
+                        _ => Document::open(worker_path, options),
+                    };
+                    document.map(Loaded::new).map_err(|e| e.to_string())
                 }),
                 move |result| Message::Opened(path.clone(), result),
             ));
@@ -2964,7 +3100,13 @@ impl App {
                 self.active,
                 ui,
             ),
-            panes::status_bar(self.active_document(), self.opening.len(), ui),
+            panes::status_bar(
+                self.active_document(),
+                self.opening.len(),
+                self.exporting,
+                self.notice.as_deref(),
+                ui
+            ),
         ];
 
         if self.saving.is_some() {
@@ -3022,6 +3164,8 @@ impl App {
             Dialog::Column { dialog, .. } => dialog.view(ui.tokens).map(Message::ColumnDialog),
             Dialog::Filter { dialog, .. } => dialog.view(ui.tokens).map(Message::Filter),
             Dialog::Sort { dialog, .. } => dialog.view(ui.tokens).map(Message::Sort),
+            Dialog::Import(dialog) => dialog.view(ui.tokens).map(Message::Import),
+            Dialog::Export { dialog, .. } => dialog.view(ui.tokens).map(Message::Export),
             Dialog::Cast { dialog, .. } => dialog.view(ui.tokens).map(Message::Cast),
             Dialog::Replace { dialog, .. } => dialog.view(ui.tokens).map(Message::Replace),
             Dialog::Format { dialog, .. } => dialog.view(ui.tokens).map(Message::Format),
@@ -3111,6 +3255,47 @@ async fn pick_recipe(name: Option<String>) -> Option<PathBuf> {
         None => dialog.set_title("Load recipe").pick_file().await?,
     };
     Some(handle.path().to_path_buf())
+}
+
+/// `name` with its extension replaced by `extension`.
+fn with_extension(name: &str, extension: &str) -> String {
+    let stem = match name.rsplit_once('.') {
+        Some((stem, _)) if !stem.is_empty() => stem,
+        _ => name,
+    };
+    format!("{stem}.{extension}")
+}
+
+async fn pick_import_file() -> Option<PathBuf> {
+    let handle = rfd::AsyncFileDialog::new()
+        .set_title("Import")
+        .add_filter(
+            "CSV or JSON",
+            &["csv", "tsv", "txt", "json", "ndjson", "jsonl"],
+        )
+        .add_filter("All files", &["*"])
+        .pick_file()
+        .await?;
+    Some(handle.path().to_path_buf())
+}
+
+async fn pick_export_path(
+    name: String,
+    extension: &'static str,
+    dir: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let mut dialog = rfd::AsyncFileDialog::new()
+        .set_title("Export")
+        .set_file_name(name)
+        .add_filter(extension.to_uppercase(), &[extension]);
+    if let Some(dir) = dir {
+        dialog = dialog.set_directory(dir);
+    }
+    let mut path = dialog.save_file().await?.path().to_path_buf();
+    if path.extension().is_none() {
+        path.set_extension(extension);
+    }
+    Some(path)
 }
 
 async fn pick_files() -> Option<Vec<PathBuf>> {
@@ -3932,6 +4117,76 @@ mod tests {
         assert!(app.stats.running.is_some());
         let _ = app.update(Message::SideTab(SideTab::Steps));
         assert!(app.stats.running.is_none());
+    }
+
+    #[test]
+    fn import_csv_and_json_then_save_as_parquet() {
+        let dir = TempDir::new();
+        let csv = dir.join("eu.csv");
+        std::fs::write(&csv, "id;price\n1;1,5\n2;2,25\n").unwrap();
+        let mut app = app();
+        let _ = app.update(Message::ImportPicked(Some(csv.clone())));
+        let Some(Dialog::Import(dialog)) = &app.dialog else {
+            panic!("CSV files ask how to read them");
+        };
+        // Semicolons were detected, so decimal commas are assumed.
+        let options = dialog.options();
+        assert_eq!((options.delimiter, options.decimal), (b';', ','));
+        let _ = app.update(Message::Import(ImportMessage::Type(
+            0,
+            dialogs::TypeChoice::Text,
+        )));
+        let _ = app.update(Message::Import(ImportMessage::Import));
+        assert!(app.dialog.is_none());
+        assert_eq!(app.opening, std::slice::from_ref(&csv));
+        // The worker's result:
+        let mut options = options;
+        options.types = Some(vec![DataType::Utf8, DataType::Float64]);
+        let doc = veta_core::convert::import_csv(&csv, &options, 1 << 30, &mut |_| true).unwrap();
+        let _ = app.update(Message::Opened(csv.clone(), Ok(Loaded::new(doc))));
+        let id = app.tabs[0].id;
+        let doc = app.workbook.get(id).unwrap();
+        assert_eq!(doc.title(), "eu.csv");
+        assert!(doc.is_modified());
+        assert_eq!(app.tabs[0].grid.value(1, 1), Some(Some("2.25")));
+        assert_eq!(with_extension(&doc.title(), "parquet"), "eu.parquet");
+
+        // JSON opens directly in the background.
+        let json = dir.join("a.json");
+        std::fs::write(&json, "[{\"x\": 1}]").unwrap();
+        let _ = app.update(Message::FilesPicked(vec![json.clone()]));
+        assert!(app.dialog.is_none());
+        assert!(app.opening.contains(&json));
+    }
+
+    #[test]
+    fn export_dialog() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let _ = app.update(Message::Action(Action::Export));
+        let _ = app.update(Message::Export(ExportMessage::Delimiter(
+            dialogs::Delimiter::Semicolon,
+        )));
+        let Some(Dialog::Export { dialog, .. }) = &app.dialog else {
+            panic!("export asks for a format");
+        };
+        assert_eq!(
+            dialog.format(),
+            veta_core::convert::ExportFormat::Csv(veta_core::convert::CsvExportOptions {
+                delimiter: b';',
+                decimal: ',',
+                ..Default::default()
+            })
+        );
+        let _ = app.update(Message::ExportTo(id, Some(dir.join("out.csv"))));
+        assert!(app.dialog.is_none());
+        assert_eq!(app.exporting, 1);
+        let _ = app.update(Message::Exported(Ok(dir.join("out.csv"))));
+        assert_eq!(app.exporting, 0);
+        assert!(app.notice.as_deref().unwrap().starts_with("Exported"));
     }
 
     #[test]

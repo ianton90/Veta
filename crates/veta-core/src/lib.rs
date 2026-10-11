@@ -3,6 +3,7 @@
 
 pub mod command;
 pub mod controller;
+pub mod convert;
 pub mod display;
 pub mod error;
 pub mod history;

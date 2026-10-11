@@ -1,11 +1,15 @@
 //! Dialogs for column commands (add, rename, choose columns, change type,
-//! replace values, format text), filters, sorts and writer settings.
+//! replace values, format text), filters, sorts, writer settings, and CSV
+//! import / export.
 
 use iced::widget::{Space, button, checkbox, column, pick_list, row, scrollable, text, text_input};
 use iced::{Alignment, Element, Length};
 use veta_core::arrow::array::ArrayRef;
 use veta_core::arrow::datatypes::SchemaRef;
 use veta_core::arrow::datatypes::{DataType, TimeUnit};
+use veta_core::convert::{
+    CsvExportOptions, CsvOptions, CsvPreview, ExportFormat, TextEncoding, preview_csv,
+};
 use veta_core::display::type_name;
 use veta_core::io::ARROW_SCHEMA_KEY;
 use veta_core::model::KeyValue;
@@ -37,7 +41,7 @@ pub enum TypeChoice {
 }
 
 impl TypeChoice {
-    const ALL: [TypeChoice; 6] = [
+    pub const ALL: [TypeChoice; 6] = [
         Self::Text,
         Self::Integer,
         Self::Decimal,
@@ -1253,6 +1257,484 @@ impl CustomDialog {
         }
         body = body.push(buttons("OK", CustomMessage::Cancel, CustomMessage::Apply));
         card(body.into(), tokens, 620.0)
+    }
+}
+
+/// Field separators offered for CSV files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delimiter {
+    Comma,
+    Semicolon,
+    Tab,
+    Pipe,
+}
+
+impl Delimiter {
+    pub const ALL: [Delimiter; 4] = [Self::Comma, Self::Semicolon, Self::Tab, Self::Pipe];
+
+    fn byte(self) -> u8 {
+        match self {
+            Self::Comma => b',',
+            Self::Semicolon => b';',
+            Self::Tab => b'\t',
+            Self::Pipe => b'|',
+        }
+    }
+}
+
+impl std::fmt::Display for Delimiter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Comma => "comma ( , )",
+            Self::Semicolon => "semicolon ( ; )",
+            Self::Tab => "tab",
+            Self::Pipe => "pipe ( | )",
+        })
+    }
+}
+
+/// Decimal separators, for the pick lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecimalMark {
+    Dot,
+    Comma,
+}
+
+impl DecimalMark {
+    fn char(self) -> char {
+        match self {
+            Self::Dot => '.',
+            Self::Comma => ',',
+        }
+    }
+}
+
+impl std::fmt::Display for DecimalMark {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Dot => "dot (1.5)",
+            Self::Comma => "comma (1,5)",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncodingChoice {
+    Utf8,
+    Latin1,
+}
+
+impl std::fmt::Display for EncodingChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Utf8 => "UTF-8",
+            Self::Latin1 => "Latin-1 (Windows Western)",
+        })
+    }
+}
+
+/// Rows shown in the import preview.
+const PREVIEW_ROWS: usize = 12;
+
+/// Import a CSV file: options, a preview and column types.
+#[derive(Debug, Clone)]
+pub struct ImportDialog {
+    pub path: std::path::PathBuf,
+    delimiter: Delimiter,
+    header: bool,
+    encoding: EncodingChoice,
+    decimal: DecimalMark,
+    /// Column types chosen (initially the guessed ones).
+    types: Vec<DataType>,
+    preview: Result<CsvPreview, String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ImportMessage {
+    Delimiter(Delimiter),
+    Header(bool),
+    Encoding(EncodingChoice),
+    Decimal(DecimalMark),
+    Type(usize, TypeChoice),
+    Import,
+    Cancel,
+}
+
+impl ImportDialog {
+    pub fn new(path: std::path::PathBuf) -> Self {
+        let tab = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("tsv"));
+        let mut dialog = Self {
+            path,
+            delimiter: if tab {
+                Delimiter::Tab
+            } else {
+                Delimiter::Comma
+            },
+            header: true,
+            encoding: EncodingChoice::Utf8,
+            decimal: DecimalMark::Dot,
+            types: Vec::new(),
+            preview: Err(String::new()),
+        };
+        if !tab {
+            dialog.guess_delimiter();
+        }
+        dialog.refresh(true);
+        dialog
+    }
+
+    /// Picks the separator that splits the first line into most fields.
+    fn guess_delimiter(&mut self) {
+        let Ok(mut file) = std::fs::File::open(&self.path) else {
+            return;
+        };
+        let mut head = vec![0u8; 4096];
+        let n = std::io::Read::read(&mut file, &mut head).unwrap_or(0);
+        let first = head[..n].split(|&b| b == b'\n').next().unwrap_or_default();
+        if let Some(best) = Delimiter::ALL
+            .into_iter()
+            .max_by_key(|d| first.iter().filter(|&&b| b == d.byte()).count())
+            .filter(|d| first.contains(&d.byte()))
+        {
+            self.delimiter = best;
+            if best == Delimiter::Semicolon {
+                self.decimal = DecimalMark::Comma;
+            }
+        }
+    }
+
+    pub fn options(&self) -> CsvOptions {
+        CsvOptions {
+            delimiter: self.delimiter.byte(),
+            quote: b'"',
+            header: self.header,
+            encoding: match self.encoding {
+                EncodingChoice::Utf8 => TextEncoding::Utf8,
+                EncodingChoice::Latin1 => TextEncoding::Latin1,
+            },
+            decimal: self.decimal.char(),
+            types: (!self.types.is_empty()).then(|| self.types.clone()),
+        }
+    }
+
+    /// Re-reads the preview; `guess` drops chosen types and guesses again.
+    fn refresh(&mut self, guess: bool) {
+        if guess {
+            self.types.clear();
+        }
+        self.preview =
+            preview_csv(&self.path, &self.options(), PREVIEW_ROWS).map_err(|e| e.to_string());
+        if let Ok(preview) = &self.preview {
+            self.types = preview
+                .schema
+                .fields()
+                .iter()
+                .map(|f| f.data_type().clone())
+                .collect();
+        }
+    }
+
+    /// Handles a message. Returns the options to import with on submit.
+    pub fn update(&mut self, message: ImportMessage) -> Option<CsvOptions> {
+        match message {
+            ImportMessage::Delimiter(d) => {
+                self.delimiter = d;
+                self.refresh(true);
+            }
+            ImportMessage::Header(on) => {
+                self.header = on;
+                self.refresh(true);
+            }
+            ImportMessage::Encoding(e) => {
+                self.encoding = e;
+                self.refresh(false);
+            }
+            ImportMessage::Decimal(d) => {
+                self.decimal = d;
+                self.refresh(true);
+            }
+            ImportMessage::Type(i, choice) => {
+                if let Some(t) = self.types.get_mut(i) {
+                    *t = choice.data_type();
+                }
+                self.refresh(false);
+            }
+            ImportMessage::Cancel => {}
+            ImportMessage::Import => {
+                return self.preview.is_ok().then(|| self.options());
+            }
+        }
+        None
+    }
+
+    pub fn view(&self, tokens: Tokens) -> Element<'_, ImportMessage> {
+        let name = self
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let options = row![
+            column![
+                text("Separator").size(13),
+                pick_list(
+                    Delimiter::ALL,
+                    Some(self.delimiter),
+                    ImportMessage::Delimiter
+                )
+                .width(170),
+            ]
+            .spacing(4),
+            column![
+                text("Decimal").size(13),
+                pick_list(
+                    [DecimalMark::Dot, DecimalMark::Comma],
+                    Some(self.decimal),
+                    ImportMessage::Decimal
+                )
+                .width(140),
+            ]
+            .spacing(4),
+            column![
+                text("Encoding").size(13),
+                pick_list(
+                    [EncodingChoice::Utf8, EncodingChoice::Latin1],
+                    Some(self.encoding),
+                    ImportMessage::Encoding
+                )
+                .width(220),
+            ]
+            .spacing(4),
+            column![
+                text(" ").size(13),
+                checkbox(self.header)
+                    .label("First row has column names")
+                    .on_toggle(ImportMessage::Header),
+            ]
+            .spacing(8),
+        ]
+        .spacing(12)
+        .align_y(Alignment::End);
+        let preview: Element<'_, ImportMessage> = match &self.preview {
+            Err(e) => text(if e.is_empty() {
+                "Reading…"
+            } else {
+                e.as_str()
+            })
+            .color(iced::Color::from_rgb8(0xd1, 0x43, 0x43))
+            .into(),
+            Ok(preview) => {
+                const WIDTH: f32 = 150.0;
+                let cells = veta_core::display::format_batch(&preview.rows).unwrap_or_default();
+                let mut header = row![].spacing(6);
+                for (i, field) in preview.schema.fields().iter().enumerate() {
+                    let choice = TypeChoice::from_type(field.data_type());
+                    let picker: Element<'_, ImportMessage> = match choice {
+                        Some(c) => {
+                            pick_list(TypeChoice::ALL, Some(c), move |t| ImportMessage::Type(i, t))
+                                .text_size(12)
+                                .width(WIDTH)
+                                .into()
+                        }
+                        None => pick_list(TypeChoice::ALL, None::<TypeChoice>, move |t| {
+                            ImportMessage::Type(i, t)
+                        })
+                        .placeholder(veta_core::display::type_name(field.data_type()))
+                        .text_size(12)
+                        .width(WIDTH)
+                        .into(),
+                    };
+                    header = header.push(
+                        column![text(field.name().clone()).size(13).width(WIDTH), picker]
+                            .spacing(2),
+                    );
+                }
+                let mut grid = column![header].spacing(3);
+                for line in cells {
+                    let mut r = row![].spacing(6);
+                    for value in line {
+                        let (value, color) = match value {
+                            Some(v) => (v, tokens.text),
+                            None => ("null".into(), tokens.muted_text),
+                        };
+                        r = r.push(text(value).size(12).color(color).width(WIDTH));
+                    }
+                    grid = grid.push(r);
+                }
+                scrollable(grid)
+                    .direction(scrollable::Direction::Both {
+                        vertical: scrollable::Scrollbar::default(),
+                        horizontal: scrollable::Scrollbar::default(),
+                    })
+                    .height(Length::Fixed(300.0))
+                    .into()
+            }
+        };
+        let body = column![
+            text(format!("Import {name}")).size(20),
+            options,
+            text("Preview").size(15),
+            preview,
+            text("Values that don't fit a column's type are imported as null.")
+                .color(tokens.muted_text),
+            buttons("Import", ImportMessage::Cancel, ImportMessage::Import),
+        ]
+        .spacing(14);
+        card(body.into(), tokens, 820.0)
+    }
+}
+
+/// Formats offered for exporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportChoice {
+    Csv,
+    JsonLines,
+    JsonArray,
+}
+
+impl ExportChoice {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Csv => "csv",
+            Self::JsonLines => "ndjson",
+            Self::JsonArray => "json",
+        }
+    }
+}
+
+impl std::fmt::Display for ExportChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Csv => "CSV",
+            Self::JsonLines => "JSON, one object per line",
+            Self::JsonArray => "JSON array",
+        })
+    }
+}
+
+/// Export the document (after all steps) to CSV or JSON.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportDialog {
+    pub choice: ExportChoice,
+    delimiter: Delimiter,
+    decimal: DecimalMark,
+    header: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum ExportMessage {
+    Format(ExportChoice),
+    Delimiter(Delimiter),
+    Decimal(DecimalMark),
+    Header(bool),
+    Export,
+    Cancel,
+}
+
+impl Default for ExportDialog {
+    fn default() -> Self {
+        Self {
+            choice: ExportChoice::Csv,
+            delimiter: Delimiter::Comma,
+            decimal: DecimalMark::Dot,
+            header: true,
+        }
+    }
+}
+
+impl ExportDialog {
+    pub fn format(&self) -> ExportFormat {
+        match self.choice {
+            ExportChoice::Csv => ExportFormat::Csv(CsvExportOptions {
+                delimiter: self.delimiter.byte(),
+                quote: b'"',
+                header: self.header,
+                decimal: self.decimal.char(),
+            }),
+            ExportChoice::JsonLines => ExportFormat::JsonLines,
+            ExportChoice::JsonArray => ExportFormat::JsonArray,
+        }
+    }
+
+    /// Handles a message. Returns the format on submit.
+    pub fn update(&mut self, message: ExportMessage) -> Option<ExportFormat> {
+        match message {
+            ExportMessage::Format(c) => self.choice = c,
+            ExportMessage::Delimiter(d) => {
+                self.delimiter = d;
+                if d == Delimiter::Semicolon {
+                    self.decimal = DecimalMark::Comma;
+                }
+            }
+            ExportMessage::Decimal(d) => self.decimal = d,
+            ExportMessage::Header(on) => self.header = on,
+            ExportMessage::Cancel => {}
+            ExportMessage::Export => return Some(self.format()),
+        }
+        None
+    }
+
+    pub fn view(&self, tokens: Tokens) -> Element<'_, ExportMessage> {
+        let labelled = |label: &'static str, control: Element<'static, ExportMessage>| {
+            row![text(label).width(110), control]
+                .spacing(12)
+                .align_y(Alignment::Center)
+        };
+        let mut body = column![
+            text("Export").size(20),
+            labelled(
+                "Format",
+                pick_list(
+                    [
+                        ExportChoice::Csv,
+                        ExportChoice::JsonLines,
+                        ExportChoice::JsonArray
+                    ],
+                    Some(self.choice),
+                    ExportMessage::Format
+                )
+                .width(Length::Fill)
+                .into()
+            ),
+        ]
+        .spacing(14);
+        if self.choice == ExportChoice::Csv {
+            body = body
+                .push(labelled(
+                    "Separator",
+                    pick_list(
+                        Delimiter::ALL,
+                        Some(self.delimiter),
+                        ExportMessage::Delimiter,
+                    )
+                    .width(Length::Fill)
+                    .into(),
+                ))
+                .push(labelled(
+                    "Decimal",
+                    pick_list(
+                        [DecimalMark::Dot, DecimalMark::Comma],
+                        Some(self.decimal),
+                        ExportMessage::Decimal,
+                    )
+                    .width(Length::Fill)
+                    .into(),
+                ))
+                .push(
+                    checkbox(self.header)
+                        .label("Write column names in the first row")
+                        .on_toggle(ExportMessage::Header),
+                );
+        }
+        body = body
+            .push(text("Exports the data after all applied steps.").color(tokens.muted_text))
+            .push(buttons(
+                "Export…",
+                ExportMessage::Cancel,
+                ExportMessage::Export,
+            ));
+        card(body.into(), tokens, 460.0)
     }
 }
 

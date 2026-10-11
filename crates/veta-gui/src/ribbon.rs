@@ -56,52 +56,6 @@ pub enum Action {
 }
 
 impl Action {
-    /// Issue tracking a command that is not built yet.
-    pub fn planned(self) -> Option<u32> {
-        Some(match self {
-            Action::Import => 45,
-            Action::Export => 46,
-            Action::Open
-            | Action::AppliedSteps
-            | Action::Statistics
-            | Action::StatisticsPane
-            | Action::FileMetadata
-            | Action::WriterSettings
-            | Action::Save
-            | Action::SaveAs
-            | Action::AddColumn
-            | Action::KeepColumns
-            | Action::RemoveColumns
-            | Action::RenameColumn
-            | Action::InsertRows
-            | Action::RemoveRows
-            | Action::KeepRows
-            | Action::FilterRows
-            | Action::DeleteRows
-            | Action::DataType
-            | Action::ReplaceValues
-            | Action::FillDown
-            | Action::FormatText
-            | Action::SplitColumn
-            | Action::DuplicateColumn
-            | Action::Standard
-            | Action::DateTime
-            | Action::CustomColumn
-            | Action::IndexColumn
-            | Action::MergeColumns
-            | Action::SortAscending
-            | Action::SortDescending
-            | Action::CustomSort
-            | Action::Undo
-            | Action::Redo
-            | Action::Close
-            | Action::ToggleDetails
-            | Action::Mode(_)
-            | Action::Settings
-            | Action::About => return None,
-        })
-    }
-
     fn shortcut(self) -> Option<&'static str> {
         match self {
             Action::Open => Some("Ctrl+O"),
@@ -380,9 +334,6 @@ pub struct Context {
 
 impl Context {
     fn enabled(&self, action: Action) -> bool {
-        if action.planned().is_some() {
-            return false;
-        }
         match action {
             Action::Close => self.has_document,
             Action::Undo => self.can_undo,
@@ -593,10 +544,9 @@ fn item_button<'a, Message: Clone + 'a>(
         b = b.on_press(on_action(item.action));
     }
 
-    let tip_text = match (item.action.planned(), item.action.shortcut()) {
-        (Some(issue), _) => format!("{} — coming soon (#{issue})", item.label),
-        (None, Some(shortcut)) => format!("{} ({shortcut})", item.label),
-        (None, None) => item.label.to_owned(),
+    let tip_text = match item.action.shortcut() {
+        Some(shortcut) => format!("{} ({shortcut})", item.label),
+        None => item.label.to_owned(),
     };
     tooltip(b, tip(tip_text), tooltip::Position::Bottom)
         .gap(4)
@@ -700,15 +650,10 @@ mod tests {
     }
 
     #[test]
-    fn every_planned_action_points_at_an_issue() {
+    fn no_empty_groups() {
         for tab in Tab::ALL {
             for group in groups(tab) {
                 assert!(!group.items.is_empty(), "{} is empty", group.label);
-                for item in group.items {
-                    if let Some(issue) = item.action.planned() {
-                        assert!((21..=52).contains(&issue), "{:?}", item.action);
-                    }
-                }
             }
         }
     }

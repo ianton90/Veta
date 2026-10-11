@@ -9,7 +9,7 @@
 //! step's output.
 
 mod cast;
-mod checkpoint;
+pub(crate) mod checkpoint;
 mod compute;
 mod edits;
 mod expr;

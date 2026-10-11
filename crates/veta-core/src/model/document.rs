@@ -20,6 +20,8 @@ pub struct Document {
     /// Where the document is saved (the file it was opened from, until it
     /// is saved elsewhere).
     pub(crate) path: Option<PathBuf>,
+    /// Name of the file the data was imported from (never saved yet).
+    imported: Option<String>,
     /// The file the source data is read from, and how it was opened.
     pub(crate) source_file: Option<(PathBuf, OpenOptions)>,
     pub(crate) pipeline: Pipeline,
@@ -37,6 +39,7 @@ impl Default for Document {
     fn default() -> Self {
         Self {
             path: None,
+            imported: None,
             source_file: None,
             pipeline: Pipeline::new(Arc::new(MemorySource::empty())),
             info: None,
@@ -62,6 +65,7 @@ impl Document {
         Ok(Self {
             source_file: Some((path.clone(), options)),
             path: Some(path),
+            imported: None,
             pipeline: Pipeline::new(opened.source),
             info: Some(opened.info),
             footer: Some(opened.footer),
@@ -83,7 +87,33 @@ impl Document {
             .as_deref()
             .and_then(Path::file_name)
             .map(|name| name.to_string_lossy().into_owned())
+            .or_else(|| self.imported.clone())
             .unwrap_or_else(|| "Untitled".to_owned())
+    }
+
+    /// A new, unsaved document holding data imported from `name`.
+    pub fn imported(name: String, source: Arc<dyn crate::source::DataSource>) -> Self {
+        Self {
+            imported: Some(name),
+            pipeline: Pipeline::new(source),
+            history: History::unsaved(),
+            ..Self::default()
+        }
+    }
+
+    /// The output after all steps, for exporting. Fails while a step is
+    /// computing or broken.
+    pub fn output(&self) -> Result<Pipeline> {
+        match self.status() {
+            Status::Ready => Ok(self.pipeline.clone()),
+            Status::Computing { .. } => Err(Error::InvalidCommand(
+                "wait until the steps are computed".into(),
+            )),
+            Status::Broken { step, error } => Err(Error::InvalidCommand(format!(
+                "step {} has an error: {error}",
+                step + 1
+            ))),
+        }
     }
 
     /// Schema after all steps.

@@ -198,7 +198,7 @@ impl Cast {
     }
 
     /// Converts values; ones that can't be converted become null.
-    fn convert(&self, input: &ArrayRef) -> Result<ArrayRef> {
+    pub(crate) fn convert(&self, input: &ArrayRef) -> Result<ArrayRef> {
         let safe = ArrowCastOptions {
             safe: true,
             ..Default::default()

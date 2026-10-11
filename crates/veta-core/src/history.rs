@@ -159,6 +159,11 @@ impl History {
         }
     }
 
+    /// History of a document that has never been saved (e.g. imported).
+    pub(crate) fn unsaved() -> Self {
+        Self::default()
+    }
+
     pub(crate) fn record(&mut self, label: String, change: Change) {
         if self.saved.is_some_and(|s| s > self.undo.len()) {
             // The saved state was in the redo stack we are discarding.

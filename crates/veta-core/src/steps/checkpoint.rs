@@ -18,12 +18,12 @@ const CHECKPOINT_BUDGET: usize = 256 * 1024 * 1024;
 
 /// A file in the temp directory, deleted when dropped.
 #[derive(Debug)]
-pub(super) struct TempFile {
+pub(crate) struct TempFile {
     path: PathBuf,
 }
 
 impl TempFile {
-    pub(super) fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!("veta-{}-{n}.parquet", std::process::id()));
@@ -31,7 +31,7 @@ impl TempFile {
         Ok(Self { path })
     }
 
-    pub(super) fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 }
@@ -53,7 +53,7 @@ pub(crate) struct Checkpoint {
 
 impl Checkpoint {
     /// Opens `file`, whose columns must match `schema`.
-    pub(super) fn open(file: TempFile, schema: SchemaRef) -> Result<Self> {
+    pub(crate) fn open(file: TempFile, schema: SchemaRef) -> Result<Self> {
         let handle = File::open(file.path())?;
         let metadata = ArrowReaderMetadata::load(&handle, ArrowReaderOptions::new())?;
         Ok(Self {
@@ -93,7 +93,7 @@ impl DataSource for Checkpoint {
 }
 
 /// Writes `batches` (with the columns of `schema`) to `file`.
-pub(super) fn write_parquet(
+pub(crate) fn write_parquet(
     file: &TempFile,
     schema: &SchemaRef,
     batches: impl Iterator<Item = Result<RecordBatch>>,

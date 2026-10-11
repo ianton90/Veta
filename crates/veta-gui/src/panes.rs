@@ -496,6 +496,8 @@ pub fn tab_bar(
 pub fn status_bar(
     active: Option<(&Tab, &Document)>,
     opening: usize,
+    exporting: usize,
+    notice: Option<&str>,
     ui: Ui,
 ) -> Element<'static, Message> {
     let mut parts: Vec<String> = Vec::new();
@@ -537,6 +539,11 @@ pub fn status_bar(
     }
     if opening > 0 {
         parts.push(format!("Opening {opening} file(s)…"));
+    }
+    if exporting > 0 {
+        parts.push("Exporting…".into());
+    } else if let Some(notice) = notice {
+        parts.push(notice.to_owned());
     }
     let t = ui.tokens;
     container(
