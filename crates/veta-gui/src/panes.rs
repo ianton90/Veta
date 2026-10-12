@@ -50,14 +50,25 @@ pub fn empty_state(opening: bool, recent: &[PathBuf], ui: Ui) -> Element<'_, Mes
         let mut col = column![
             icon(Icon::TableProperties, 48).color(t.muted_text),
             text("No file open").size(ui.size * 1.7),
-            text("Open a Parquet file or drop one on the window.").color(t.muted_text),
-            button(
-                row![icon(Icon::FolderOpen, ui.size), text("Open…")]
-                    .spacing(8)
-                    .align_y(Alignment::Center)
-            )
-            .padding([6, 14])
-            .on_press(Message::OpenDialog),
+            text("Start a new file, open a Parquet file or drop one on the window.")
+                .color(t.muted_text),
+            row![
+                button(
+                    row![icon(Icon::FilePlus, ui.size), text("New")]
+                        .spacing(8)
+                        .align_y(Alignment::Center)
+                )
+                .padding([6, 14])
+                .on_press(Message::Action(crate::ribbon::Action::New)),
+                button(
+                    row![icon(Icon::FolderOpen, ui.size), text("Open…")]
+                        .spacing(8)
+                        .align_y(Alignment::Center)
+                )
+                .padding([6, 14])
+                .on_press(Message::OpenDialog),
+            ]
+            .spacing(8),
         ]
         .spacing(12)
         .align_x(Alignment::Center);
@@ -611,7 +622,7 @@ pub fn tab_bar(
         button(icon(Icon::Plus, ui.size))
             .style(move |_theme: &Theme, status| subtle_button(t, status))
             .padding([4, 10])
-            .on_press(Message::OpenDialog),
+            .on_press(Message::Action(crate::ribbon::Action::New)),
     );
     container(bar)
         .padding(iced::Padding::from([0, 6]).bottom(2))
@@ -936,6 +947,20 @@ pub fn context_menu<'a>(
             MenuItem::ExcludeValue,
         )));
         items.push(None);
+    }
+    if target == MenuTarget::Blank {
+        items.push(Some((
+            Icon::InsertRows,
+            "Add row".into(),
+            "Ctrl++",
+            MenuItem::AddRow,
+        )));
+        items.push(Some((
+            Icon::Plus,
+            "Add column…".into(),
+            "",
+            MenuItem::AddColumn,
+        )));
     }
     if matches!(target, MenuTarget::Cell | MenuTarget::Rows) {
         items.push(Some((

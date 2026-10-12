@@ -20,7 +20,8 @@ pub struct Document {
     /// Where the document is saved (the file it was opened from, until it
     /// is saved elsewhere).
     pub(crate) path: Option<PathBuf>,
-    /// Name of the file the data was imported from (never saved yet).
+    /// Name shown until the document is first saved: the file the data was
+    /// imported from, or e.g. `Untitled 2` for a new file.
     imported: Option<String>,
     /// The file the source data is read from, and how it was opened.
     pub(crate) source_file: Option<(PathBuf, OpenOptions)>,
@@ -89,6 +90,14 @@ impl Document {
             .map(|name| name.to_string_lossy().into_owned())
             .or_else(|| self.imported.clone())
             .unwrap_or_else(|| "Untitled".to_owned())
+    }
+
+    /// A new, blank document shown as `name` until it is saved.
+    pub fn untitled(name: String) -> Self {
+        Self {
+            imported: Some(name),
+            ..Self::default()
+        }
     }
 
     /// A new, unsaved document holding data imported from `name`.

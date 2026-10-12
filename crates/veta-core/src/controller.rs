@@ -1125,4 +1125,34 @@ mod tests {
         assert!(err.is_err());
         assert!(!doc.history().can_undo());
     }
+
+    #[test]
+    fn blank_document_takes_rows_and_columns() {
+        let mut doc = Document::new();
+        execute(&mut doc, Command::InsertRows { at: 0, count: 3 }).unwrap();
+        assert_eq!(doc.num_rows(), 3);
+        execute(
+            &mut doc,
+            Command::AddColumn {
+                name: "a".into(),
+                data_type: DataType::Int64,
+                at: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!((doc.num_rows(), doc.num_columns()), (3, 1));
+        execute(
+            &mut doc,
+            Command::SetCell {
+                row: 1,
+                column: "a".into(),
+                value: Some("7".into()),
+            },
+        )
+        .unwrap();
+        let dir = TempDir::new();
+        doc.save(Some(dir.join("new.parquet"))).unwrap();
+        let back = Document::open(dir.join("new.parquet"), OpenOptions::default()).unwrap();
+        assert_eq!((back.num_rows(), back.num_columns()), (3, 1));
+    }
 }

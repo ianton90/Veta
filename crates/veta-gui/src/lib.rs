@@ -305,6 +305,10 @@ enum MenuItem {
     ClearCell,
     InsertRowsAbove,
     InsertRowsBelow,
+    /// Appends a row (blank area menu).
+    AddRow,
+    /// Adds a column at the end (blank area menu).
+    AddColumn,
     KeepRows,
     DeleteRows,
     InsertColumnLeft,
@@ -645,6 +649,7 @@ impl App {
                         Some(Message::Action(Action::SaveAs))
                     }
                     keyboard::Key::Character("s") => Some(Message::Action(Action::Save)),
+                    keyboard::Key::Character("n") => Some(Message::Action(Action::New)),
                     keyboard::Key::Character("o") => Some(Message::Action(Action::Open)),
                     keyboard::Key::Character("w") => Some(Message::Action(Action::Close)),
                     keyboard::Key::Character(",") => Some(Message::Action(Action::Settings)),
@@ -867,6 +872,11 @@ impl App {
                     }
                     MenuItem::InsertRowsAbove => self.insert_rows(id, false),
                     MenuItem::InsertRowsBelow => self.insert_rows(id, true),
+                    MenuItem::AddRow => self.append_row(id),
+                    MenuItem::AddColumn => {
+                        let at = self.workbook.get(id).map_or(0, Document::num_columns);
+                        return self.open_column_dialog(id, ColumnDialog::add(at));
+                    }
                     MenuItem::DeleteRows => self.delete_rows(id),
                     MenuItem::InsertColumnLeft | MenuItem::InsertColumnRight => {
                         let columns = self.selected_columns(id);
@@ -1654,6 +1664,7 @@ impl App {
                     }
                 }
             }
+            Action::New => self.new_document(),
             Action::Open => {
                 let open = files::open_many("Open".into(), vec![FileKind::Parquet]);
                 return Task::perform(open, |files| {
@@ -2082,6 +2093,7 @@ impl App {
     fn insert_rows(&mut self, id: DocumentId, below: bool) {
         self.commit_edit();
         let Some(rows) = self.selected_rows(id) else {
+            self.append_row(id);
             return;
         };
         let at = if below { rows.end } else { rows.start };
@@ -2094,6 +2106,38 @@ impl App {
         {
             tab.grid.select_rows(at..at + count, doc);
         }
+    }
+
+    /// Adds one row at the end and selects it.
+    fn append_row(&mut self, id: DocumentId) {
+        self.commit_edit();
+        let Some(at) = self.workbook.get(id).map(Document::num_rows) else {
+            return;
+        };
+        if self.execute(id, Command::InsertRows { at, count: 1 })
+            && let (Some(doc), Some(tab)) = (
+                self.workbook.get(id),
+                self.tabs.iter_mut().find(|t| t.id == id),
+            )
+        {
+            tab.grid.select_rows(at..at + 1, doc);
+        }
+    }
+
+    /// Opens a blank document named `Untitled`, `Untitled 2`, … in a new tab.
+    fn new_document(&mut self) {
+        let titles: Vec<String> = self.workbook.iter().map(|(_, d)| d.title()).collect();
+        let name = (1..)
+            .map(|n| {
+                if n == 1 {
+                    "Untitled".to_owned()
+                } else {
+                    format!("Untitled {n}")
+                }
+            })
+            .find(|name| !titles.contains(name))
+            .unwrap_or_default();
+        self.add_tab(Document::untitled(name));
     }
 
     /// Closes documents, asking about unsaved changes first. With `exit`,
@@ -3168,12 +3212,16 @@ impl App {
 
     /// Adds a newly opened or imported document as the active tab.
     fn add_document(&mut self, path: &Path, document: Document) {
+        self.add_tab(document);
+        self.config.add_recent(path);
+        self.save_config();
+    }
+
+    fn add_tab(&mut self, document: Document) {
         let grid = GridView::new(&document, self.text_size);
         let id = self.workbook.add(document);
         self.tabs.push(Tab { id, grid });
         self.active = Some(id);
-        self.config.add_recent(path);
-        self.save_config();
     }
 
     fn find_open(&self, path: &Path) -> Option<DocumentId> {
@@ -4895,5 +4943,36 @@ mod tests {
         let _ = app.update(Message::Action(Action::About));
         let _ = app.update(Message::CloseDialog);
         assert!(app.dialog.is_none());
+    }
+
+    #[test]
+    fn new_file_takes_columns_and_rows() {
+        let mut app = app();
+        let _ = app.update(Message::Action(Action::New));
+        let _ = app.update(Message::Action(Action::New));
+        let titles: Vec<String> = app.workbook.iter().map(|(_, d)| d.title()).collect();
+        assert_eq!(titles, ["Untitled", "Untitled 2"]);
+        let id = app.active.unwrap();
+        assert!(!app.workbook.get(id).unwrap().is_modified());
+
+        let blank = |app: &mut App| {
+            app.menu = Some(ContextMenu {
+                document: id,
+                target: MenuTarget::Blank,
+                position: iced::Point::ORIGIN,
+            });
+        };
+        blank(&mut app);
+        let _ = app.update(Message::Menu(MenuItem::AddColumn));
+        let _ = app.update(Message::ColumnDialog(ColumnMessage::Name("a".into())));
+        let _ = app.update(Message::ColumnDialog(ColumnMessage::Submit));
+        blank(&mut app);
+        let _ = app.update(Message::Menu(MenuItem::AddRow));
+        blank(&mut app);
+        let _ = app.update(Message::Menu(MenuItem::AddRow));
+        let doc = app.workbook.get(id).unwrap();
+        assert_eq!((doc.num_rows(), doc.num_columns()), (2, 1));
+        assert_eq!(app.selected_rows(id), Some(1..2));
+        assert!(doc.path().is_none(), "Save asks for a path");
     }
 }

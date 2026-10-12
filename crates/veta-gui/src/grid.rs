@@ -126,6 +126,8 @@ pub enum GridEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuTarget {
     Cell,
+    /// The empty area around the cells (e.g. a table with no rows).
+    Blank,
     Rows,
     Column(usize),
 }
@@ -1221,7 +1223,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                         MenuTarget::Column(column)
                     })
                 } else {
-                    None
+                    Some(MenuTarget::Blank)
                 };
                 if let Some(target) = target {
                     shell.publish((self.on_event)(GridEvent::ContextMenu { target, position }));
@@ -1729,7 +1731,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         if view.columns.is_empty() {
             draw_text(
                 renderer,
-                "This file has no columns.".into(),
+                "No columns yet. Right-click here to add one.".into(),
                 regions.body,
                 false,
                 m.text_size,

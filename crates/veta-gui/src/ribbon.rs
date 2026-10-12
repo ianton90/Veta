@@ -13,6 +13,7 @@ use crate::theme::Tokens;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
+    New,
     Open,
     Save,
     SaveAs,
@@ -60,6 +61,7 @@ pub enum Action {
 impl Action {
     fn shortcut(self) -> Option<&'static str> {
         match self {
+            Action::New => Some("Ctrl+N"),
             Action::Open => Some("Ctrl+O"),
             Action::Close => Some("Ctrl+W"),
             Action::Save => Some("Ctrl+S"),
@@ -168,6 +170,7 @@ fn groups(tab: Tab) -> Vec<Group> {
             group(
                 "File",
                 vec![
+                    large(A::New, "New", Icon::FilePlus),
                     large(A::Open, "Open", Icon::FolderOpen),
                     large(A::Save, "Save", Icon::Save),
                     small(A::SaveAs, "Save As", Icon::SaveAll),
@@ -346,7 +349,9 @@ impl Context {
         match action {
             Action::Close => self.has_document,
             Action::Undo => self.can_undo,
-            Action::InsertRows | Action::DeleteRows | Action::RenameColumn => self.has_selection,
+            Action::DeleteRows | Action::RenameColumn => self.has_selection,
+            // Without a selection, appends a row.
+            Action::InsertRows => self.has_document,
             Action::KeepRows | Action::RemoveRows => self.filter_active,
             Action::FilterRows => self.has_document,
             Action::Save
