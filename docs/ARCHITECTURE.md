@@ -133,6 +133,19 @@ undone one edit at a time.
 - Themes: TOML files with font family/size, palette and light/dark flag,
   converted to an iced `Theme` plus Veta's own style tokens.
 
+## Single instance
+
+A second `veta` launch hands its files to the running window and exits
+(`veta-gui::instance`). The first instance listens on a Unix domain socket,
+`veta.sock`, in a per-user private directory: `$XDG_RUNTIME_DIR/veta` or the
+config dir on Linux, the config dir on macOS, `%LOCALAPPDATA%\veta` on
+Windows (`$VETA_INSTANCE_DIR` overrides it). On Unix the directory is mode
+0700; on Windows it inherits the user-only ACL. The client sends `veta 1\n`
+then NUL-terminated absolute paths; the server answers `ok`, opens them as
+tabs and focuses the window. A socket left by a crash is replaced. If
+anything fails, the launch simply opens its own window. Windows uses
+`uds_windows` until `std::os::windows::net` is stable.
+
 ## CLI
 
 The desktop app is `veta [FILE]...`. Headless commands are a separate

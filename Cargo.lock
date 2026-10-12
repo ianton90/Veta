@@ -3864,6 +3864,7 @@ dependencies = [
  "rfd",
  "serde",
  "toml",
+ "uds_windows",
  "veta-core",
  "veta-testkit",
 ]

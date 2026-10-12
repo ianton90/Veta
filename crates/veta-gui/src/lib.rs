@@ -9,6 +9,7 @@ mod dialogs;
 mod files;
 mod grid;
 mod icon;
+mod instance;
 mod panes;
 mod ribbon;
 mod settings;
@@ -58,8 +59,16 @@ const EDITOR_ID: iced::widget::Id = iced::widget::Id::new("cell-editor");
 /// Rows dialogs sample (to preview cast failures, suggest split parts).
 const SAMPLE_ROWS: usize = 1000;
 
-/// Opens the main window with `files` and blocks until it is closed.
+/// Opens the main window with `files` and blocks until it is closed. If
+/// Veta is already running, hands `files` to it and returns at once.
 pub fn run(files: Vec<PathBuf>) -> iced::Result {
+    if let Some(dir) = instance::default_dir() {
+        match instance::claim(&dir, &files) {
+            instance::Claim::Forwarded => return Ok(()),
+            instance::Claim::First(listener) => instance::listen(listener),
+            instance::Claim::Alone => {}
+        }
+    }
     let startup = Startup::load();
     let (font, size) = startup.font();
     iced::application(
@@ -172,6 +181,8 @@ impl Ui {
 #[derive(Debug)]
 struct App {
     workbook: Workbook,
+    /// Files from other launches, opened once no save is running.
+    queued_files: Vec<PathBuf>,
     /// GUI state per open document, in tab order.
     tabs: Vec<Tab>,
     active: Option<DocumentId>,
@@ -451,6 +462,8 @@ enum Message {
     Action(Action),
     Ribbon(RibbonMessage),
     FilesPicked(Vec<PathBuf>),
+    /// Files sent by another `veta` launch.
+    Remote(Vec<PathBuf>),
     Opened(PathBuf, Result<Loaded, String>),
     /// A CSV import finished, with what it found.
     Imported(PathBuf, Result<Slot<(Document, ImportReport)>, String>),
@@ -554,6 +567,7 @@ impl App {
     fn new(startup: Startup, files: Vec<PathBuf>) -> (Self, Task<Message>) {
         let (_, text_size) = startup.font();
         let mut app = Self {
+            queued_files: Vec::new(),
             workbook: Workbook::new(),
             tabs: Vec::new(),
             active: None,
@@ -643,12 +657,20 @@ impl App {
             events,
             window::close_requests().map(|_| Message::CloseRequested),
             iced::system::theme_changes().map(Message::SystemMode),
+            Subscription::run(instance::incoming).map(Message::Remote),
         ])
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.handle(message);
-        Task::batch([task, self.schedule_compute(), self.schedule_stats()])
+        // Files sent by another launch wait until a save is done.
+        let queued = if self.saving.is_none() && !self.queued_files.is_empty() {
+            let files = std::mem::take(&mut self.queued_files);
+            self.open(files)
+        } else {
+            Task::none()
+        };
+        Task::batch([task, queued, self.schedule_compute(), self.schedule_stats()])
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
@@ -659,6 +681,7 @@ impl App {
                     | Message::ComputeProgress(..)
                     | Message::ComputeDone(..)
                     | Message::SystemMode(_)
+                    | Message::Remote(_)
                     | Message::Grid(_, GridEvent::Resized { .. } | GridEvent::Scroll { .. })
             )
         {
@@ -672,6 +695,10 @@ impl App {
             Message::OpenDialog => return self.perform(Action::Open),
             Message::Ribbon(message) => self.ribbon.update(message),
             Message::FilesPicked(files) => return self.open(files),
+            Message::Remote(files) => {
+                self.queued_files.extend(files);
+                return window::latest().and_then(window::gain_focus);
+            }
             Message::Opened(path, result) => {
                 self.opening.retain(|p| p != &path);
                 match result.map(|loaded| loaded.take()) {
