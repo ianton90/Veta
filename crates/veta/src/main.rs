@@ -1,8 +1,7 @@
 //! The `veta` binary: the desktop app. Command-line use is `veta-cli`.
 
-// No console window behind the app on Windows (debug builds keep it for
-// logs).
-#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+// A Windows GUI app: no console window behind it, in every build.
+#![windows_subsystem = "windows"]
 
 use std::path::PathBuf;
 use std::process::ExitCode;
