@@ -47,9 +47,10 @@ interface that exposes the same editing capabilities.
   files; a default light and dark theme ship with the app.
 
 ### CLI
-- The same `veta` binary: with no arguments it opens the GUI; with a
-  subcommand it runs headless (e.g. `veta info file.parquet`,
-  `veta set-cell ...`, `veta apply recipe.toml ...`, `veta convert ...`).
+- Two binaries: `veta` is the desktop app (`veta [FILE]...`); `veta-cli`
+  runs headless commands (e.g. `veta-cli info file.parquet`,
+  `veta-cli set-cell ...`, `veta-cli apply recipe.json ...`,
+  `veta-cli convert ...`).
 
 ### Platforms
 - Windows, macOS, Linux. Mobile is out of scope.

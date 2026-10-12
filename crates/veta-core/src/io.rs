@@ -36,7 +36,7 @@ pub struct OpenOptions {
     /// the same budget.
     pub memory_budget: usize,
     /// Always page, regardless of size. Useful when only a few rows are
-    /// needed (e.g. `veta head`).
+    /// needed (e.g. `veta-cli head`).
     pub force_paged: bool,
 }
 

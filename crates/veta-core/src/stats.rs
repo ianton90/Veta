@@ -399,7 +399,7 @@ pub fn format_distinct(stats: &ColumnStats) -> Option<String> {
     })
 }
 
-/// Statistics as pretty JSON (for `veta stats --json`).
+/// Statistics as pretty JSON (for `veta-cli stats --json`).
 pub fn to_json(stats: &[ColumnStats]) -> Result<String> {
     serde_json::to_string_pretty(stats).map_err(|e| Error::InvalidCommand(e.to_string()))
 }

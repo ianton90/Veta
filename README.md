@@ -37,7 +37,7 @@ Sample files for trying the app by hand:
 
 ```sh
 cargo run -p veta-testkit --example fixtures -- /tmp/veta-fixtures
-cargo run -- open /tmp/veta-fixtures/*.parquet
+cargo run -p veta -- /tmp/veta-fixtures/*.parquet
 ```
 
 Before pushing:

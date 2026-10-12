@@ -135,27 +135,29 @@ undone one edit at a time.
 
 ## CLI
 
+The desktop app is `veta [FILE]...`. Headless commands are a separate
+binary, `veta-cli` (crate `veta-cli`), so any number can run in parallel
+and the app needs no console window:
+
 ```
-veta [FILE]...                         # open GUI (with files)
-veta open <file>...                    # same
-veta info | schema <file>
-veta head <file> [-n N]
-veta set-cell <file> --row R --column C (--value V | --null)
-veta insert-rows <file> --at R [--count N]
-veta delete-rows <file> --rows 5,10-20
-veta add-column <file> <name> --type T [--at P]
-veta remove-column <file> <name>...
-veta rename-column <file> <from> <to>
-veta move-column <file> <name> --to P
-veta meta list|get|set|remove <file> [key [value]]
-veta writer-settings <file> [--column C]... [--compression ...] [--level N]
-      [--encoding ...] [--dictionary on|off] [--statistics none|chunk|page]
-      [--bloom-filter on|off] [--row-group-rows N] [--format-version 1|2]
-veta stats <file> [-c NAME]... [--json]
-veta convert <in> <out> [--from F] [--format parquet|csv|json|ndjson]
-      [--delimiter C] [--quote C|none] [--decimal C] [--no-header]
-      [--encoding utf8|latin1] [--on-error column|null|fail]
-veta apply <recipe.json> <file>        # run steps saved from the GUI
+veta-cli info | schema <file>
+veta-cli head <file> [-n N]
+veta-cli set-cell <file> --row R --column C (--value V | --null)
+veta-cli insert-rows <file> --at R [--count N]
+veta-cli delete-rows <file> --rows 5,10-20
+veta-cli add-column <file> <name> --type T [--at P]
+veta-cli remove-column <file> <name>...
+veta-cli rename-column <file> <from> <to>
+veta-cli move-column <file> <name> --to P
+veta-cli meta list|get|set|remove <file> [key [value]]
+veta-cli writer-settings <file> [--column C]... [--compression ...] [--level N]
+          [--encoding ...] [--dictionary on|off] [--statistics none|chunk|page]
+          [--bloom-filter on|off] [--row-group-rows N] [--format-version 1|2]
+veta-cli stats <file> [-c NAME]... [--json]
+veta-cli convert <in> <out> [--from F] [--format parquet|csv|json|ndjson]
+          [--delimiter C] [--quote C|none] [--decimal C] [--no-header]
+          [--encoding utf8|latin1] [--on-error column|null|fail]
+veta-cli apply <recipe.json> <file>        # run steps saved from the GUI
 ```
 
 Rows and positions are numbered from 1, as in the GUI. Commands that modify

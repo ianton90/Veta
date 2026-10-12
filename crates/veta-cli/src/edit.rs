@@ -86,7 +86,7 @@ pub enum FormatArg {
     V2,
 }
 
-/// Options of `veta writer-settings`.
+/// Options of `veta-cli writer-settings`.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct WriterArgs {
     pub file: PathBuf,

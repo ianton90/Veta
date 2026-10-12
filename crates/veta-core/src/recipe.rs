@@ -20,7 +20,7 @@
 //! ```
 //!
 //! Steps run by `order`; `description` fields are for people and ignored
-//! when loading. Types are written as in `veta schema` (`int64`,
+//! when loading. Types are written as in `veta-cli schema` (`int64`,
 //! `timestamp[us]`, …) and edited cell values as text, read back with the
 //! column's type.
 

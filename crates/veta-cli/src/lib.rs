@@ -1,37 +1,31 @@
-//! Veta's command-line interface. Parses arguments with clap and runs
-//! headless commands through `veta-core`.
+//! Veta's command-line interface (the `veta-cli` binary). Parses arguments
+//! with clap and runs headless commands through `veta-core`.
 
 mod edit;
 mod table;
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use veta_core::arrow::datatypes::{DataType, Field};
 use veta_core::display::{abbreviate, format_batch, human_bytes, type_name};
 use veta_core::{Command as CoreCommand, Document, OpenOptions};
 
-/// Parquet viewer and editor.
-///
-/// Run without arguments to open the desktop app.
+/// Read and edit Parquet files from the command line. The desktop app is
+/// `veta`.
 #[derive(Debug, Parser)]
-#[command(name = "veta", version, about, long_about)]
+#[command(name = "veta-cli", version)]
 struct Cli {
     #[command(subcommand)]
-    command: Option<Command>,
+    command: Command,
 }
 
 /// A headless command.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum Command {
-    /// Open files in the desktop app.
-    Open {
-        /// Parquet files to open.
-        files: Vec<PathBuf>,
-    },
     /// Show file layout, writer settings and metadata.
     Info { file: PathBuf },
     /// Show the schema.
@@ -145,70 +139,31 @@ pub enum Command {
     },
 }
 
-/// What the `veta` binary should do for the given arguments.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Invocation {
-    /// Open the desktop app with these files.
-    Gui { files: Vec<PathBuf> },
-    /// Run a headless command.
-    Cli(Command),
-}
-
 /// Parses the process arguments. Prints help/version or an argument error
 /// and exits the process when clap requires it.
-pub fn parse() -> Invocation {
+pub fn parse() -> Command {
     parse_from(std::env::args_os())
 }
 
 /// Like [`parse`], for the given arguments (the first is the program name).
-///
-/// Arguments that start with a file path instead of a subcommand open the
-/// GUI with those files: this is how file managers launch the app
-/// (`veta C:\data\sales.parquet`).
-pub fn parse_from<I, T>(args: I) -> Invocation
+pub fn parse_from<I, T>(args: I) -> Command
 where
     I: IntoIterator<Item = T>,
-    T: Into<OsString>,
+    T: Into<OsString> + Clone,
 {
-    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
-    if args.get(1).is_some_and(|first| is_file_argument(first)) {
-        return Invocation::Gui {
-            files: args[1..].iter().map(PathBuf::from).collect(),
-        };
-    }
-    invocation(Cli::parse_from(args))
+    Cli::parse_from(args).command
 }
 
-/// Whether `arg` is neither an option nor a subcommand name.
-fn is_file_argument(arg: &OsStr) -> bool {
-    let arg = arg.to_string_lossy();
-    if arg.starts_with('-') || arg == "help" {
-        return false;
-    }
-    !Cli::command()
-        .get_subcommands()
-        .any(|c| c.get_name() == arg || c.get_all_aliases().any(|a| a == arg))
-}
-
-fn invocation(cli: Cli) -> Invocation {
-    match cli.command {
-        None => Invocation::Gui { files: Vec::new() },
-        Some(Command::Open { files }) => Invocation::Gui { files },
-        Some(command) => Invocation::Cli(command),
-    }
-}
-
-/// Runs a headless command, printing to stdout and errors to stderr.
 pub fn run(command: Command) -> ExitCode {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     match execute(command, &mut out) {
         Ok(()) => ExitCode::SUCCESS,
-        // Broken pipe (e.g. `veta head f | head -1`) is not an error.
+        // Broken pipe (e.g. `veta-cli head f | head -1`) is not an error.
         Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(e) => {
             let _ = out.flush();
-            eprintln!("veta: {e}");
+            eprintln!("veta-cli: {e}");
             ExitCode::FAILURE
         }
     }
@@ -245,7 +200,6 @@ impl From<std::io::Error> for Error {
 
 fn execute(command: Command, out: &mut impl Write) -> Result<(), Error> {
     match command {
-        Command::Open { .. } => Err(Error::Usage("`open` starts the desktop app".into())),
         Command::Info { file } => info(&open(&file)?, out),
         Command::Schema { file } => schema(&open(&file)?, out),
         Command::Head { file, rows } => head(&open(&file)?, rows, out),
@@ -524,10 +478,11 @@ fn stats(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
     use veta_testkit::{TempDir, fixtures};
 
-    fn parse_args(args: &[&str]) -> Invocation {
-        invocation(Cli::try_parse_from(args).unwrap())
+    fn parse_args(args: &[&str]) -> Command {
+        Cli::try_parse_from(args).unwrap().command
     }
 
     fn output(command: Command) -> String {
@@ -542,45 +497,19 @@ mod tests {
     }
 
     #[test]
-    fn invocations() {
-        assert_eq!(parse_args(&["veta"]), Invocation::Gui { files: vec![] });
+    fn parses_subcommands() {
         assert_eq!(
-            parse_args(&["veta", "open", "a.parquet", "b.parquet"]),
-            Invocation::Gui {
-                files: vec!["a.parquet".into(), "b.parquet".into()]
-            }
-        );
-        assert_eq!(
-            parse_args(&["veta", "head", "a.parquet", "-n", "3"]),
-            Invocation::Cli(Command::Head {
+            parse_args(&["veta-cli", "head", "a.parquet", "-n", "3"]),
+            Command::Head {
                 file: "a.parquet".into(),
                 rows: 3
-            })
-        );
-    }
-
-    #[test]
-    fn bare_file_paths_open_the_gui() {
-        // File managers launch `veta <path>` without the `open` subcommand.
-        assert_eq!(
-            parse_from(["veta", r"C:\Users\me\data.parquet"]),
-            Invocation::Gui {
-                files: vec![r"C:\Users\me\data.parquet".into()]
             }
         );
-        assert_eq!(
-            parse_from(["veta", "a.parquet", "b.parquet"]),
-            Invocation::Gui {
-                files: vec!["a.parquet".into(), "b.parquet".into()]
-            }
+        assert!(
+            Cli::try_parse_from(["veta-cli"]).is_err(),
+            "a subcommand is required"
         );
-        assert_eq!(
-            parse_from(["veta", "schema", "a.parquet"]),
-            Invocation::Cli(Command::Schema {
-                file: "a.parquet".into()
-            })
-        );
-        assert_eq!(parse_from(["veta"]), Invocation::Gui { files: vec![] });
+        assert!(Cli::try_parse_from(["veta-cli", "a.parquet"]).is_err());
     }
 
     #[test]
@@ -627,9 +556,7 @@ mod tests {
     }
 
     fn run_args(args: &[&str]) -> Result<String, String> {
-        let Invocation::Cli(command) = parse_args(args) else {
-            panic!("not a CLI command");
-        };
+        let command = parse_args(args);
         let mut out = Vec::new();
         execute(command, &mut out).map_err(|e| e.to_string())?;
         Ok(String::from_utf8(out).unwrap())

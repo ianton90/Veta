@@ -1,18 +1,49 @@
-//! The `veta` binary: no arguments open the GUI, a subcommand runs the CLI.
+//! The `veta` binary: the desktop app. Command-line use is `veta-cli`.
 
+// No console window behind the app on Windows (debug builds keep it for
+// logs).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-use veta_cli::Invocation;
+use clap::Parser;
+
+/// Parquet viewer and editor (desktop app). For command-line use, run
+/// `veta-cli`.
+#[derive(Debug, Parser)]
+#[command(name = "veta", version)]
+struct Args {
+    /// Files to open.
+    files: Vec<PathBuf>,
+}
 
 fn main() -> ExitCode {
-    match veta_cli::parse() {
-        Invocation::Gui { files } => match veta_gui::run(files) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("veta: {e}");
-                ExitCode::FAILURE
-            }
-        },
-        Invocation::Cli(command) => veta_cli::run(command),
+    let args = Args::parse();
+    match veta_gui::run(args.files) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("veta: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn arguments_are_files() {
+        Args::command().debug_assert();
+        let args = Args::try_parse_from(["veta", r"C:\Users\me\data.parquet", "b.parquet"]);
+        assert_eq!(
+            args.map(|a| a.files).ok(),
+            Some(vec![r"C:\Users\me\data.parquet".into(), "b.parquet".into()])
+        );
+        // Subcommand names are just file names now.
+        let args = Args::try_parse_from(["veta", "info"]);
+        assert_eq!(args.map(|a| a.files).ok(), Some(vec!["info".into()]));
     }
 }
