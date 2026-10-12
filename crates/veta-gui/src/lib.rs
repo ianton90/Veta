@@ -4975,4 +4975,21 @@ mod tests {
         assert_eq!(app.selected_rows(id), Some(1..2));
         assert!(doc.path().is_none(), "Save asks for a path");
     }
+
+    #[test]
+    fn rows_before_columns_in_a_new_file() {
+        let mut app = app();
+        let _ = app.update(Message::Action(Action::New));
+        let id = app.active.unwrap();
+        app.menu = Some(ContextMenu {
+            document: id,
+            target: MenuTarget::Blank,
+            position: iced::Point::ORIGIN,
+        });
+        let _ = app.update(Message::Menu(MenuItem::AddRow));
+        let _ = app.update(Message::Action(Action::InsertRows));
+        let _ = app.update(Message::Action(Action::DeleteRows));
+        let _ = app.view();
+        assert_eq!(app.workbook.get(id).unwrap().num_rows(), 1);
+    }
 }

@@ -574,8 +574,13 @@ impl GridView {
         } else if row >= first_row + self.visible_rows {
             first_row = row + 1 - self.visible_rows;
         }
+        let Some(width) = self.columns.get(column).map(|c| c.width) else {
+            // No columns (a new file with rows only): scroll rows only.
+            self.set_scroll(first_row, self.scroll_x);
+            return;
+        };
         let left: f32 = self.columns[..column].iter().map(|c| c.width).sum();
-        let right = left + self.columns[column].width;
+        let right = left + width;
         let mut scroll_x = self.scroll_x;
         if left < scroll_x {
             scroll_x = left;

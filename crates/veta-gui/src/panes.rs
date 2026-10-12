@@ -654,9 +654,9 @@ pub fn status_bar(
                 .schema()
                 .fields()
                 .get(c)
-                .map(|f| f.name().clone())
+                .map(|f| format!(", {}", f.name()))
                 .unwrap_or_default();
-            parts.push(format!("Row {}, {name}", r + 1));
+            parts.push(format!("Row {}{name}", r + 1));
         }
         parts.push(
             if doc.is_modified() {
@@ -738,9 +738,9 @@ pub fn formula_bar<'a>(
                 .schema()
                 .fields()
                 .get(column)
-                .map(|f| f.name().clone())
+                .map(|f| format!("{} · ", f.name()))
                 .unwrap_or_default();
-            format!("{name} · row {}", row + 1)
+            format!("{name}row {}", row + 1)
         }
         None => String::new(),
     };
