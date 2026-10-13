@@ -62,6 +62,35 @@ pub fn value_json(array: &dyn Array, row: usize) -> Result<Option<String>> {
     Ok(Some(inner.to_owned()))
 }
 
+/// Every value of `array` as JSON text (nulls stay null), written in one
+/// pass. Used to filter and search nested columns.
+pub fn json_column(array: &dyn Array) -> Result<arrow::array::StringArray> {
+    let column = arrow::array::make_array(array.to_data());
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "v",
+        column.data_type().clone(),
+        true,
+    )]));
+    let batch = RecordBatch::try_new(schema, vec![column])?;
+    let mut writer = arrow::json::WriterBuilder::new()
+        .with_explicit_nulls(true)
+        .build::<_, arrow::json::writer::LineDelimited>(Vec::new());
+    writer.write(&batch)?;
+    writer.finish()?;
+    let text = String::from_utf8(writer.into_inner()).unwrap_or_default();
+    // One `{"v":<value>}` line per row; JSON escapes newlines in strings.
+    Ok(text
+        .lines()
+        .map(|line| {
+            let inner = line
+                .strip_prefix("{\"v\":")
+                .and_then(|rest| rest.strip_suffix('}'))
+                .unwrap_or_default();
+            (inner != "null").then(|| inner.to_owned())
+        })
+        .collect())
+}
+
 /// A value laid out as a tree, for showing nested values.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValueNode {

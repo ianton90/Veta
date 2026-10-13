@@ -67,6 +67,10 @@ impl FilterOp {
         Self::IsNotNull,
     ];
 
+    pub fn is_equality(self) -> bool {
+        matches!(self, Self::Equals | Self::NotEquals)
+    }
+
     pub fn needs_value(self) -> bool {
         !matches!(self, Self::IsNull | Self::IsNotNull)
     }
@@ -101,7 +105,10 @@ impl std::fmt::Display for FilterOp {
 
 impl Condition {
     pub fn describe(&self) -> String {
-        if self.op.needs_value() {
+        if self.op.needs_value() && self.value.contains('"') {
+            // JSON values read better unescaped.
+            format!("{} {} {}", self.column, self.op, self.value)
+        } else if self.op.needs_value() {
             format!("{} {} {:?}", self.column, self.op, self.value)
         } else {
             format!("{} {}", self.column, self.op)
@@ -126,6 +133,19 @@ impl Filter {
             let field = schema
                 .field_with_name(&c.column)
                 .map_err(|_| invalid(format!("no column named {:?}", c.column)))?;
+            let nested = field.data_type().is_nested();
+            if nested && !c.op.is_text_test() && c.op.needs_value() && !c.op.is_equality() {
+                return Err(invalid(format!(
+                    "\"{}\" doesn't apply to {}: use equals, contains, starts/ends with or null tests",
+                    c.op, c.column
+                )));
+            }
+            if nested && c.op.is_equality() {
+                // The value is JSON, checked against the column's type.
+                parse_value(Some(&c.value), field.data_type())
+                    .map_err(|e| invalid(format!("value for {}: {e}", c.column)))?;
+                continue;
+            }
             if c.op.needs_value() && !c.op.is_text_test() && !is_text(field.data_type()) {
                 parse_value(Some(&c.value), field.data_type()).map_err(|_| {
                     invalid(format!(
@@ -179,9 +199,24 @@ impl Condition {
             _ => {}
         }
 
+        // Nested values compare and match as JSON text. Equality uses the
+        // value written back as JSON, so spacing doesn't matter.
+        let nested = data_type.is_nested();
+        if nested && self.op.is_equality() {
+            let parsed = parse_value(Some(&self.value), &data_type)?;
+            let value = crate::display::value_json(parsed.as_ref(), 0)?.unwrap_or_default();
+            let strings: ArrayRef = Arc::new(crate::display::json_column(column.as_ref())?);
+            let scalar = Scalar::new(StringArray::from(vec![value]));
+            return compare(self.op, &strings, &scalar);
+        }
+
         // Text tests, and comparisons on text columns, work on strings.
         if self.op.is_text_test() || is_text(&data_type) {
-            let mut strings = cast(column, &DataType::Utf8)?;
+            let mut strings: ArrayRef = if nested {
+                Arc::new(crate::display::json_column(column.as_ref())?)
+            } else {
+                cast(column, &DataType::Utf8)?
+            };
             let mut value = self.value.clone();
             if !self.case_sensitive {
                 strings = lowercase(&strings);
@@ -373,5 +408,49 @@ mod tests {
             .validate(&schema)
             .is_err()
         );
+    }
+
+    #[test]
+    fn nested_columns_filter_as_json() {
+        let dir = veta_testkit::TempDir::new();
+        let path = dir.join("n.parquet");
+        veta_testkit::fixtures::nested(&path);
+        let doc = crate::Document::open(&path, crate::OpenOptions::default()).unwrap();
+        let batch = doc.read(0..4).unwrap();
+        let kept = |column: &str, op: FilterOp, value: &str| -> Vec<usize> {
+            let filter = Filter {
+                conditions: vec![Condition {
+                    column: column.into(),
+                    op,
+                    value: value.into(),
+                    case_sensitive: false,
+                }],
+                match_all: true,
+                exclude: false,
+            };
+            filter.validate(&batch.schema()).unwrap();
+            let mask = filter.evaluate(&batch).unwrap();
+            (0..mask.len()).filter(|&i| mask.value(i)).collect()
+        };
+        assert_eq!(kept("tags", FilterOp::Contains, "\"A\""), [0]);
+        assert_eq!(kept("tags", FilterOp::Equals, r#"[ "c", null, "d" ]"#), [3]);
+        assert_eq!(kept("point", FilterOp::Equals, r#"{"y": 2, "x": 1}"#), [0]);
+        assert_eq!(
+            kept("point", FilterOp::NotEquals, r#"{"x": 1, "y": 2}"#),
+            [1, 3]
+        );
+        assert_eq!(kept("scores", FilterOp::Contains, "math"), [0, 3]);
+        assert_eq!(kept("owner", FilterOp::IsNull, ""), [2]);
+        let less = Filter {
+            conditions: vec![Condition {
+                column: "tags".into(),
+                op: FilterOp::Less,
+                value: "[]".into(),
+                case_sensitive: false,
+            }],
+            match_all: true,
+            exclude: false,
+        };
+        assert!(less.validate(&batch.schema()).is_err());
     }
 }

@@ -298,10 +298,28 @@ impl ChooseColumns {
     }
 }
 
+/// Id of the first condition's value field, focused when the dialog opens.
+pub const FILTER_VALUE_ID: iced::widget::Id = iced::widget::Id::new("filter-value");
+
+/// Operators that apply to nested (struct, list, map) columns: equality on
+/// the JSON value, text tests on its JSON text, and null tests.
+const NESTED_OPS: [FilterOp; 8] = [
+    FilterOp::Equals,
+    FilterOp::NotEquals,
+    FilterOp::Contains,
+    FilterOp::NotContains,
+    FilterOp::StartsWith,
+    FilterOp::EndsWith,
+    FilterOp::IsNull,
+    FilterOp::IsNotNull,
+];
+
 /// Keep rows that match conditions (Power Query's "Filter Rows").
 #[derive(Debug, Clone, PartialEq)]
 pub struct FilterDialog {
     columns: Vec<String>,
+    /// Columns with nested types.
+    nested: Vec<String>,
     conditions: Vec<Condition>,
     matching: Matching,
     /// Kept from an edited step: remove the matching rows.
@@ -346,6 +364,7 @@ impl FilterDialog {
             .unwrap_or_default();
         Self {
             columns,
+            nested: Vec::new(),
             conditions: vec![Condition {
                 column,
                 op: FilterOp::Equals,
@@ -362,6 +381,7 @@ impl FilterDialog {
     pub fn edit(columns: Vec<String>, filter: &Filter) -> Self {
         Self {
             columns,
+            nested: Vec::new(),
             conditions: filter.conditions.clone(),
             matching: if filter.match_all {
                 Matching::All
@@ -373,6 +393,16 @@ impl FilterDialog {
         }
     }
 
+    /// Marks the columns with nested types (they offer fewer operators).
+    pub fn with_nested(mut self, nested: Vec<String>) -> Self {
+        self.nested = nested;
+        self
+    }
+
+    fn is_nested(&self, column: &str) -> bool {
+        self.nested.iter().any(|n| n == column)
+    }
+
     pub fn set_error(&mut self, error: String) {
         self.error = Some(error);
     }
@@ -381,7 +411,15 @@ impl FilterDialog {
     pub fn update(&mut self, message: FilterMessage) -> Option<Filter> {
         self.error = None;
         match message {
-            FilterMessage::Column(i, column) => self.edit_condition(i, |c| c.column = column),
+            FilterMessage::Column(i, column) => {
+                let nested = self.is_nested(&column);
+                self.edit_condition(i, |c| {
+                    c.column = column;
+                    if nested && !NESTED_OPS.contains(&c.op) {
+                        c.op = FilterOp::Equals;
+                    }
+                });
+            }
             FilterMessage::Op(i, op) => self.edit_condition(i, |c| c.op = op),
             FilterMessage::Value(i, value) => self.edit_condition(i, |c| c.value = value),
             FilterMessage::CaseSensitive(i, on) => {
@@ -419,7 +457,17 @@ impl FilterDialog {
     pub fn view(&self, tokens: Tokens) -> Element<'_, FilterMessage> {
         let mut list = column![].spacing(8);
         for (i, c) in self.conditions.iter().enumerate() {
-            let mut value = text_input("Value", &c.value).width(Length::Fill);
+            let nested = self.is_nested(&c.column);
+            let placeholder = if nested { "JSON, e.g. [1, 2]" } else { "Value" };
+            let mut value = text_input(placeholder, &c.value).width(Length::Fill);
+            if i == 0 {
+                value = value.id(FILTER_VALUE_ID);
+            }
+            let ops: Vec<FilterOp> = if nested {
+                NESTED_OPS.to_vec()
+            } else {
+                FilterOp::ALL.to_vec()
+            };
             if c.op.needs_value() {
                 value = value
                     .on_input(move |v| FilterMessage::Value(i, v))
@@ -435,10 +483,7 @@ impl FilterDialog {
                         FilterMessage::Column(i, col)
                     })
                     .width(160),
-                    pick_list(FilterOp::ALL, Some(c.op), move |op| FilterMessage::Op(
-                        i, op
-                    ))
-                    .width(190),
+                    pick_list(ops, Some(c.op), move |op| FilterMessage::Op(i, op)).width(190),
                     value,
                     checkbox(c.case_sensitive)
                         .label("Aa")
@@ -465,8 +510,11 @@ impl FilterDialog {
             button(text("+ Add condition"))
                 .style(button::text)
                 .on_press(FilterMessage::Add),
-            text("Values are read as the column's type. \"Aa\" matches text case-sensitively.")
-                .color(tokens.muted_text),
+            text(
+                "Values are read as the column's type; nested columns compare as JSON. \
+                 \"Aa\" matches text case-sensitively."
+            )
+            .color(tokens.muted_text),
         ]
         .spacing(14);
         if let Some(error) = &self.error {

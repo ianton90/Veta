@@ -90,6 +90,16 @@ pub fn run(files: Vec<PathBuf>) -> iced::Result {
     .run()
 }
 
+/// Names of the columns with nested types.
+fn nested_columns(schema: &veta_core::arrow::datatypes::Schema) -> Vec<String> {
+    schema
+        .fields()
+        .iter()
+        .filter(|f| f.data_type().is_nested())
+        .map(|f| f.name().clone())
+        .collect()
+}
+
 /// Each top-level column with its metadata: as edited in Veta, otherwise
 /// the column's own (sorted by key).
 fn column_metadata(doc: &Document) -> Vec<(String, Vec<veta_core::model::KeyValue>)> {
@@ -936,7 +946,7 @@ impl App {
                     MenuItem::RenameColumn => return self.rename_column(id),
                     MenuItem::RemoveColumns => self.keep_or_remove_columns(id, false, true),
                     MenuItem::KeepColumns => self.keep_or_remove_columns(id, true, true),
-                    MenuItem::FilterColumn => self.open_filter_dialog(id),
+                    MenuItem::FilterColumn => return self.open_filter_dialog(id),
                     MenuItem::ChangeType => self.open_cast_dialog(id, None),
                     MenuItem::ReplaceValues => return self.open_replace_dialog(id, None),
                     MenuItem::FillDown | MenuItem::FillUp => {
@@ -1777,7 +1787,7 @@ impl App {
             }
             Action::FilterRows => {
                 if let Some(id) = self.active {
-                    self.open_filter_dialog(id);
+                    return self.open_filter_dialog(id);
                 }
             }
             Action::KeepRows | Action::RemoveRows => {
@@ -2079,17 +2089,17 @@ impl App {
                 return Task::none();
             }
             Step::Filter(_) | Step::Sort(_) => {
-                let columns = self
-                    .workbook
-                    .get(id)
-                    .and_then(|d| d.schema_at(index))
+                let schema = self.workbook.get(id).and_then(|d| d.schema_at(index));
+                let columns = schema
+                    .as_ref()
                     .map(|schema| schema.fields().iter().map(|f| f.name().clone()).collect())
                     .unwrap_or_default();
+                let nested = schema.as_deref().map(nested_columns).unwrap_or_default();
                 self.edit = None;
                 self.dialog = Some(match &step {
                     Step::Filter(filter) => Dialog::Filter {
                         document: id,
-                        dialog: FilterDialog::edit(columns, filter),
+                        dialog: FilterDialog::edit(columns, filter).with_nested(nested),
                         replace: Some(index),
                     },
                     Step::Sort(sort) => Dialog::Sort {
@@ -2325,10 +2335,11 @@ impl App {
     }
 
     /// Opens the filter dialog on the selected column.
-    fn open_filter_dialog(&mut self, id: DocumentId) {
+    fn open_filter_dialog(&mut self, id: DocumentId) -> Task<Message> {
         let Some(doc) = self.workbook.get(id) else {
-            return;
+            return Task::none();
         };
+        let nested = nested_columns(&doc.schema());
         let columns: Vec<String> = doc
             .schema()
             .fields()
@@ -2346,13 +2357,15 @@ impl App {
         let dialog = match current {
             Some(filter) => FilterDialog::edit(columns, &filter),
             None => FilterDialog::new(columns, selected),
-        };
+        }
+        .with_nested(nested);
         self.edit = None;
         self.dialog = Some(Dialog::Filter {
             document: id,
             dialog,
             replace: None,
         });
+        iced::widget::operation::focus(dialogs::FILTER_VALUE_ID)
     }
 
     /// Filters the rows shown (not a step). The filter is computed in the
