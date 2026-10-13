@@ -300,24 +300,18 @@ impl Document {
         })
     }
 
-    /// Updates the document after its save job succeeded. Saving over the
-    /// source file reloads it, which also clears the steps and undo history
-    /// (they are now part of the file).
+    /// Updates the document after its save job succeeded. The steps and the
+    /// undo history are kept, also when saving over the source file: the
+    /// source data is still read from the old file through its open handle
+    /// (or from memory), so undoing past the save works.
     pub fn finish_save(&mut self, result: SaveResult) {
         self.revision += 1;
         if let Some(opened) = result.reopened {
-            self.pipeline = Pipeline::new(opened.source);
+            // File details describe the new file; the footer stays the one
+            // of the data the steps read.
             self.info = Some(opened.info);
-            self.footer = Some(opened.footer);
-            self.metadata = opened.metadata;
-            self.writer = opened.writer;
-            self.history = History::new();
-            if let Some((source, _)) = &mut self.source_file {
-                *source = result.target.clone();
-            }
-        } else {
-            self.history.mark_saved();
         }
+        self.history.mark_saved();
         self.path = Some(result.target);
     }
 
@@ -411,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn save_in_place_applies_edits_and_reloads() {
+    fn save_in_place_keeps_steps_and_undo() {
         for options in [OpenOptions::default(), OpenOptions::paged()] {
             let dir = TempDir::new();
             let path = dir.join("mixed.parquet");
@@ -438,8 +432,9 @@ mod tests {
             .unwrap();
             doc.save(None).unwrap();
 
-            assert!(doc.steps().is_empty());
-            assert!(!doc.history().can_undo());
+            // Steps and undo survive the save (#61).
+            assert_eq!(doc.steps().len(), 3);
+            assert!(doc.history().can_undo());
             assert!(!doc.is_modified());
             assert_eq!(doc.num_rows(), rows + 1);
             let reloaded = reopen(&path);
@@ -449,6 +444,20 @@ mod tests {
             let points = reloaded.writer_settings().column("points");
             assert_eq!(points.statistics, StatisticsLevel::None);
             assert!(matches!(points.compression, crate::Compression::Gzip(_)));
+
+            // Undo past the save reads the original data, not the new file.
+            crate::controller::undo(&mut doc);
+            crate::controller::undo(&mut doc);
+            crate::controller::undo(&mut doc);
+            assert!(doc.is_modified());
+            assert_eq!(doc.num_rows(), rows);
+            assert!(doc.schema().field_with_name("score").is_ok());
+            doc.save(None).unwrap();
+            let reloaded = reopen(&path);
+            assert_eq!(reloaded.num_rows(), rows);
+            assert!(reloaded.schema().field_with_name("score").is_ok());
+            crate::controller::redo(&mut doc).unwrap();
+            assert!(doc.is_modified());
         }
     }
 

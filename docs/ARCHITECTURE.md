@@ -110,6 +110,10 @@ undone one edit at a time.
 - Save in place writes to a temp file in the same directory and atomically
   renames it over the original once complete (the original is still being
   read during the write).
+  Steps and undo history survive the save: the document keeps reading its
+  source data from the old file through the open handle (or from memory),
+  so undoing past the save works. The old file's disk space is freed when
+  the document is closed.
 
 ## GUI layout
 
