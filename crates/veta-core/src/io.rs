@@ -1,5 +1,6 @@
 //! Reading and writing Parquet files.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,7 +18,10 @@ use parquet::file::metadata::{
 };
 use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
 
-use crate::error::Result;
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::record_batch::RecordBatch;
+
+use crate::error::{Error, Result};
 use crate::model::{
     ColumnSettings, Compression, Encoding, FileInfo, FileMetadata, FormatVersion, KeyValue,
     RowGroupInfo, StatisticsLevel, WriterSettings,
@@ -136,6 +140,7 @@ fn file_metadata(metadata: &ParquetMetaData) -> FileMetadata {
             })
             .unwrap_or_default(),
         created_by: fm.created_by().map(str::to_owned),
+        columns: Vec::new(),
     }
 }
 
@@ -313,19 +318,82 @@ pub fn write_parquet(
     settings: &WriterSettings,
     path: &Path,
 ) -> Result<()> {
-    let schema = pipeline.schema();
+    let schema = with_column_metadata(&pipeline.schema(), metadata);
     let props = writer_properties(&schema, metadata, settings)?;
     let file = File::create(path)?;
-    let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
+    let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props))?;
     let rows = pipeline.num_rows();
     let mut start = 0;
     while start < rows {
         let end = (start + WRITE_BATCH_ROWS).min(rows);
-        writer.write(&pipeline.read(start..end)?)?;
+        let batch = pipeline.read(start..end)?;
+        writer.write(&RecordBatch::try_new(
+            schema.clone(),
+            batch.columns().to_vec(),
+        )?)?;
         start = end;
     }
     writer.close()?;
     Ok(())
+}
+
+/// `schema` with the column metadata edited in Veta in place of the
+/// columns' own.
+fn with_column_metadata(schema: &SchemaRef, metadata: &FileMetadata) -> SchemaRef {
+    if metadata.columns.is_empty() {
+        return schema.clone();
+    }
+    let fields: Vec<Field> = schema
+        .fields()
+        .iter()
+        .map(|field| match metadata.column(field.name()) {
+            Some(entries) => field.as_ref().clone().with_metadata(
+                entries
+                    .iter()
+                    .map(|kv| (kv.key.clone(), kv.value.clone().unwrap_or_default()))
+                    .collect::<HashMap<_, _>>(),
+            ),
+            None => field.as_ref().clone(),
+        })
+        .collect();
+    Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
+}
+
+/// Leaf columns as Parquet stores them (dotted paths such as
+/// `point.x` or `tags.list.item`) with their Arrow types. These are the
+/// keys of [`WriterSettings::columns`].
+pub fn leaf_columns(schema: &Schema) -> Result<Vec<(String, DataType)>> {
+    fn leaves(data_type: &DataType, out: &mut Vec<DataType>) {
+        match data_type {
+            DataType::Struct(fields) => {
+                for f in fields {
+                    leaves(f.data_type(), out);
+                }
+            }
+            DataType::List(f)
+            | DataType::LargeList(f)
+            | DataType::FixedSizeList(f, _)
+            | DataType::ListView(f)
+            | DataType::LargeListView(f)
+            | DataType::Map(f, _) => leaves(f.data_type(), out),
+            DataType::Dictionary(_, value) => leaves(value, out),
+            other => out.push(other.clone()),
+        }
+    }
+    let descriptor = ArrowSchemaConverter::new().convert(schema)?;
+    let mut types = Vec::new();
+    for field in schema.fields() {
+        leaves(field.data_type(), &mut types);
+    }
+    let paths: Vec<String> = descriptor
+        .columns()
+        .iter()
+        .map(|c| c.path().string())
+        .collect();
+    if paths.len() != types.len() {
+        return Err(Error::InvalidCommand("unexpected nested schema".into()));
+    }
+    Ok(paths.into_iter().zip(types).collect())
 }
 
 /// Builds parquet writer properties from Veta's settings for `schema`.

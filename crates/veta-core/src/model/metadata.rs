@@ -5,11 +5,23 @@ pub struct FileMetadata {
     pub key_value: Vec<KeyValue>,
     /// The `created_by` string of the writer that produced the file.
     pub created_by: Option<String>,
+    /// Column (field) metadata edited in Veta, by top-level column name. It
+    /// replaces the column's own metadata on save; columns not listed keep
+    /// theirs.
+    pub columns: Vec<(String, Vec<KeyValue>)>,
 }
 
 impl FileMetadata {
     pub fn get(&self, key: &str) -> Option<&KeyValue> {
         self.key_value.iter().find(|kv| kv.key == key)
+    }
+
+    /// Metadata edited for `column`, if any.
+    pub fn column(&self, column: &str) -> Option<&[KeyValue]> {
+        self.columns
+            .iter()
+            .find(|(name, _)| name == column)
+            .map(|(_, entries)| entries.as_slice())
     }
 }
 
@@ -204,6 +216,36 @@ impl Compression {
         Compression::Zstd(None),
     ];
 
+    /// Levels the codec accepts, if it takes one.
+    pub fn level_range(self) -> Option<std::ops::RangeInclusive<i32>> {
+        match self {
+            Compression::Gzip(_) => Some(0..=10),
+            Compression::Brotli(_) => Some(0..=11),
+            Compression::Zstd(_) => Some(1..=22),
+            _ => None,
+        }
+    }
+
+    /// The level, `None` for the codec's default (or no level).
+    pub fn level(self) -> Option<i32> {
+        match self {
+            Compression::Gzip(l) | Compression::Brotli(l) => l.and_then(|l| i32::try_from(l).ok()),
+            Compression::Zstd(l) => l,
+            _ => None,
+        }
+    }
+
+    /// The same codec with `level` (ignored by codecs without levels).
+    pub fn with_level(self, level: Option<i32>) -> Compression {
+        let unsigned = level.and_then(|l| u32::try_from(l).ok());
+        match self {
+            Compression::Gzip(_) => Compression::Gzip(unsigned),
+            Compression::Brotli(_) => Compression::Brotli(unsigned),
+            Compression::Zstd(_) => Compression::Zstd(level),
+            other => other,
+        }
+    }
+
     /// The same codec without a level.
     pub fn without_level(self) -> Compression {
         match self {
@@ -211,6 +253,62 @@ impl Compression {
             Compression::Brotli(_) => Compression::Brotli(None),
             Compression::Zstd(_) => Compression::Zstd(None),
             other => other,
+        }
+    }
+}
+
+impl std::str::FromStr for Compression {
+    type Err = String;
+
+    /// Parses the [`Display`](std::fmt::Display) form: `zstd`, `zstd(3)`.
+    fn from_str(s: &str) -> Result<Self, String> {
+        let s = s.trim().to_ascii_lowercase();
+        let (name, level) = match s.strip_suffix(')').and_then(|s| s.split_once('(')) {
+            Some((name, level)) => {
+                let level: i32 = level
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("bad compression level in {s:?}"))?;
+                (name.trim().to_owned(), Some(level))
+            }
+            None => (s.clone(), None),
+        };
+        let codec = Compression::CHOICES
+            .into_iter()
+            .find(|c| c.to_string() == name)
+            .ok_or_else(|| format!("unknown compression {name:?}"))?;
+        if let (Some(level), Some(range)) = (level, codec.level_range())
+            && !range.contains(&level)
+        {
+            return Err(format!(
+                "{name} level must be {} to {}",
+                range.start(),
+                range.end()
+            ));
+        }
+        Ok(codec.with_level(level))
+    }
+}
+
+impl std::str::FromStr for StatisticsLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        Self::ALL
+            .into_iter()
+            .find(|l| l.to_string() == s.trim())
+            .ok_or_else(|| format!("unknown statistics level {s:?}"))
+    }
+}
+
+impl std::str::FromStr for FormatVersion {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s.trim() {
+            "1" | "1.0" => Ok(Self::V1),
+            "2" | "2.x" | "2.0" => Ok(Self::V2),
+            _ => Err(format!("unknown format version {s:?}")),
         }
     }
 }
@@ -255,5 +353,28 @@ impl Encoding {
             _ => {}
         }
         choices
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compression_round_trips_through_text() {
+        for c in [
+            Compression::Snappy,
+            Compression::Zstd(Some(3)),
+            Compression::Gzip(None),
+            Compression::Brotli(Some(11)),
+        ] {
+            assert_eq!(c.to_string().parse::<Compression>(), Ok(c));
+        }
+        assert!("zstd(30)".parse::<Compression>().is_err());
+        assert!("lzo".parse::<Compression>().is_err(), "can't be written");
+        assert_eq!(Compression::Zstd(Some(3)).level(), Some(3));
+        assert_eq!(Compression::Snappy.with_level(Some(3)), Compression::Snappy);
+        assert_eq!("2.x".parse(), Ok(FormatVersion::V2));
+        assert_eq!("chunk".parse(), Ok(StatisticsLevel::Chunk));
     }
 }

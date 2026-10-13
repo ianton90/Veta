@@ -2,10 +2,12 @@
 
 use std::path::Path;
 
-use iced::widget::{button, column, container, pick_list, row, text, text_input};
+use iced::widget::{button, checkbox, column, container, pick_list, row, text, text_input};
 use iced::{Alignment, Border, Element, Length, Theme};
+use veta_core::{Compression, FormatVersion, StatisticsLevel, WriterSettings};
 
-use crate::config::{Config, ModePreference};
+use crate::config::{Config, ModePreference, NewFiles};
+use crate::dialogs::{Level, level_picker};
 use crate::theme::{Mode, Tokens, VetaTheme};
 
 /// Settings being edited; applied to [`Config`] on save.
@@ -17,6 +19,9 @@ pub struct Draft {
     font_family: String,
     font_size: String,
     memory_mib: String,
+    /// Defaults for new files; `row_group` is the text being typed.
+    new_files: WriterSettings,
+    row_group: String,
     error: Option<String>,
 }
 
@@ -28,6 +33,12 @@ pub enum SettingsMessage {
     FontFamily(String),
     FontSize(String),
     Memory(String),
+    Compression(Compression),
+    Level(Level),
+    Dictionary(bool),
+    Statistics(StatisticsLevel),
+    Version(FormatVersion),
+    RowGroup(String),
     Save,
     Cancel,
 }
@@ -36,7 +47,7 @@ pub enum SettingsMessage {
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
     Editing,
-    Saved(Config),
+    Saved(Box<Config>),
     Cancelled,
 }
 
@@ -50,6 +61,8 @@ impl Draft {
             font_family: a.font_family.clone().unwrap_or_default(),
             font_size: a.font_size.map(|s| s.to_string()).unwrap_or_default(),
             memory_mib: config.data.memory_budget_mib.to_string(),
+            new_files: config.new_files.settings(),
+            row_group: config.new_files.settings().max_row_group_rows.to_string(),
             error: None,
         }
     }
@@ -62,9 +75,25 @@ impl Draft {
             SettingsMessage::FontFamily(family) => self.font_family = family,
             SettingsMessage::FontSize(size) => self.font_size = size,
             SettingsMessage::Memory(mib) => self.memory_mib = mib,
+            SettingsMessage::Compression(c) => {
+                let d = &mut self.new_files.default_column;
+                let level = d
+                    .compression
+                    .level()
+                    .filter(|l| c.level_range().is_some_and(|r| r.contains(l)));
+                d.compression = c.with_level(level);
+            }
+            SettingsMessage::Level(level) => {
+                let d = &mut self.new_files.default_column;
+                d.compression = d.compression.with_level(level.0);
+            }
+            SettingsMessage::Dictionary(on) => self.new_files.default_column.dictionary = on,
+            SettingsMessage::Statistics(s) => self.new_files.default_column.statistics = s,
+            SettingsMessage::Version(v) => self.new_files.format_version = v,
+            SettingsMessage::RowGroup(rows) => self.row_group = rows,
             SettingsMessage::Cancel => return Outcome::Cancelled,
             SettingsMessage::Save => match self.apply(config) {
-                Ok(config) => return Outcome::Saved(config),
+                Ok(config) => return Outcome::Saved(Box::new(config)),
                 Err(e) => self.error = Some(e),
             },
         }
@@ -91,6 +120,12 @@ impl Draft {
         if memory < 16 {
             return Err("Memory budget must be at least 16 MiB.".into());
         }
+        let row_group: usize = match self.row_group.trim().parse() {
+            Ok(rows) if rows > 0 => rows,
+            _ => return Err("Rows per row group must be a whole number above 0.".into()),
+        };
+        let mut new_files = self.new_files.clone();
+        new_files.max_row_group_rows = row_group;
 
         let mut config = config.clone();
         let a = &mut config.appearance;
@@ -100,6 +135,7 @@ impl Draft {
         a.font_family = Some(self.font_family.trim().to_owned()).filter(|f| !f.is_empty());
         a.font_size = font_size;
         config.data.memory_budget_mib = memory;
+        config.new_files = NewFiles::from_settings(&new_files);
         Ok(config)
     }
 }
@@ -191,7 +227,71 @@ pub fn view<'a>(
     ]
     .spacing(10);
 
-    let mut body = column![text("Settings").size(20), appearance, data].spacing(22);
+    let d = &draft.new_files.default_column;
+    let new_files = column![
+        section("New files"),
+        field_row(
+            "Compression",
+            row![
+                pick_list(
+                    Compression::CHOICES,
+                    Some(d.compression.without_level()),
+                    SettingsMessage::Compression
+                )
+                .width(130),
+                level_picker(d.compression, 82.0, SettingsMessage::Level),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
+        ),
+        field_row(
+            "Statistics",
+            pick_list(
+                StatisticsLevel::ALL,
+                Some(d.statistics),
+                SettingsMessage::Statistics
+            )
+            .width(220)
+            .into()
+        ),
+        field_row(
+            "Format version",
+            pick_list(
+                FormatVersion::ALL,
+                Some(draft.new_files.format_version),
+                SettingsMessage::Version
+            )
+            .width(220)
+            .into()
+        ),
+        field_row(
+            "Rows per row group",
+            text_input("1048576", &draft.row_group)
+                .on_input(SettingsMessage::RowGroup)
+                .width(220)
+                .into()
+        ),
+        field_row(
+            "Dictionary",
+            checkbox(d.dictionary)
+                .on_toggle(SettingsMessage::Dictionary)
+                .into()
+        ),
+        note("Writer settings for new and imported files. Opened files keep their own.".into()),
+    ]
+    .spacing(10);
+
+    let mut body = column![
+        text("Settings").size(20),
+        iced::widget::scrollable(
+            column![appearance, data, new_files]
+                .spacing(22)
+                .padding(iced::Padding::ZERO.right(18))
+        )
+        .height(Length::Fixed(520.0)),
+    ]
+    .spacing(22);
     if let Some(error) = &draft.error {
         body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
     }
@@ -351,5 +451,38 @@ mod tests {
             draft.update(SettingsMessage::Cancel, &config),
             Outcome::Cancelled
         );
+    }
+
+    #[test]
+    fn writer_defaults_for_new_files() {
+        let config = Config::default();
+        let mut draft = Draft::new(&config);
+        draft.update(
+            SettingsMessage::Compression(Compression::Zstd(None)),
+            &config,
+        );
+        draft.update(SettingsMessage::Level(Level(Some(5))), &config);
+        draft.update(SettingsMessage::Statistics(StatisticsLevel::Chunk), &config);
+        draft.update(SettingsMessage::RowGroup("0".into()), &config);
+        assert_eq!(
+            draft.update(SettingsMessage::Save, &config),
+            Outcome::Editing
+        );
+        draft.update(SettingsMessage::RowGroup("5000".into()), &config);
+        let Outcome::Saved(saved) = draft.update(SettingsMessage::Save, &config) else {
+            panic!("expected save");
+        };
+        assert_eq!(saved.new_files.compression, "zstd(5)");
+        let settings = saved.new_files.settings();
+        assert_eq!(
+            settings.default_column.compression,
+            Compression::Zstd(Some(5))
+        );
+        assert_eq!(settings.default_column.statistics, StatisticsLevel::Chunk);
+        assert_eq!(settings.max_row_group_rows, 5000);
+        // Round trip through config.toml text.
+        let text = toml::to_string(&saved).unwrap();
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.new_files, saved.new_files);
     }
 }

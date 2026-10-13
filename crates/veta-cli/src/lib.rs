@@ -853,6 +853,25 @@ mod tests {
             "{list}"
         );
         assert!(run_args(&["veta", "meta", "get", f, "owner"]).is_err());
+
+        // Column metadata.
+        run_args(&["veta", "meta", "set", f, "unit", "m", "--column", "score"]).unwrap();
+        run_args(&["veta", "meta", "set", f, "note", "x", "-c", "score"]).unwrap();
+        assert_eq!(
+            run_args(&["veta", "meta", "get", f, "unit", "-c", "score"]).unwrap(),
+            "m\n"
+        );
+        run_args(&["veta", "meta", "remove", f, "note", "-c", "score"]).unwrap();
+        assert_eq!(
+            run_args(&["veta", "meta", "list", f, "-c", "score"]).unwrap(),
+            "unit = m\n"
+        );
+        assert!(run_args(&["veta", "meta", "list", f, "-c", "missing"]).is_err());
+        assert!(
+            !run_args(&["veta", "meta", "list", f])
+                .unwrap()
+                .contains("unit")
+        );
     }
 
     #[test]

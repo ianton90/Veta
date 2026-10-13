@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use veta_core::WriterSettings;
 use veta_core::io::DEFAULT_MEMORY_BUDGET;
 
 use crate::theme::{self, Mode};
@@ -16,7 +17,59 @@ const MIB: u64 = 1024 * 1024;
 pub struct Config {
     pub appearance: Appearance,
     pub data: Data,
+    /// Writer settings for new and imported files.
+    pub new_files: NewFiles,
     pub recent_files: Vec<PathBuf>,
+}
+
+/// Writer settings given to new and imported files, as text (as shown in
+/// the app, e.g. `zstd(3)`); invalid values fall back to the defaults.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NewFiles {
+    pub compression: String,
+    pub dictionary: bool,
+    pub statistics: String,
+    pub format_version: String,
+    pub row_group_rows: usize,
+}
+
+impl Default for NewFiles {
+    fn default() -> Self {
+        Self::from_settings(&WriterSettings::default())
+    }
+}
+
+impl NewFiles {
+    pub fn from_settings(settings: &WriterSettings) -> Self {
+        let d = &settings.default_column;
+        Self {
+            compression: d.compression.to_string(),
+            dictionary: d.dictionary,
+            statistics: d.statistics.to_string(),
+            format_version: settings.format_version.to_string(),
+            row_group_rows: settings.max_row_group_rows,
+        }
+    }
+
+    pub fn settings(&self) -> WriterSettings {
+        let mut settings = WriterSettings::default();
+        let d = &mut settings.default_column;
+        if let Ok(c) = self.compression.parse() {
+            d.compression = c;
+        }
+        d.dictionary = self.dictionary;
+        if let Ok(s) = self.statistics.parse() {
+            d.statistics = s;
+        }
+        if let Ok(v) = self.format_version.parse() {
+            settings.format_version = v;
+        }
+        if self.row_group_rows > 0 {
+            settings.max_row_group_rows = self.row_group_rows;
+        }
+        settings
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

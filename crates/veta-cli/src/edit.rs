@@ -24,14 +24,25 @@ pub struct Output {
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum MetaCommand {
     /// List all key/value metadata.
-    List { file: PathBuf },
+    List {
+        file: PathBuf,
+        #[command(flatten)]
+        scope: Scope,
+    },
     /// Print one value.
-    Get { file: PathBuf, key: String },
+    Get {
+        file: PathBuf,
+        key: String,
+        #[command(flatten)]
+        scope: Scope,
+    },
     /// Set a value, adding the key if needed.
     Set {
         file: PathBuf,
         key: String,
         value: String,
+        #[command(flatten)]
+        scope: Scope,
         #[command(flatten)]
         output: Output,
     },
@@ -40,8 +51,18 @@ pub enum MetaCommand {
         file: PathBuf,
         key: String,
         #[command(flatten)]
+        scope: Scope,
+        #[command(flatten)]
         output: Output,
     },
+}
+
+/// Which metadata a `meta` command works on.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct Scope {
+    /// A column's metadata (stored in the schema) instead of the file's.
+    #[arg(short, long, value_name = "NAME")]
+    pub column: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -394,16 +415,19 @@ pub fn parse_type(name: &str) -> Result<veta_core::arrow::datatypes::DataType, E
 
 pub fn meta(command: MetaCommand, out: &mut impl Write) -> Result<(), Error> {
     match command {
-        MetaCommand::List { file } => {
+        MetaCommand::List { file, scope } => {
             let doc = crate::open(&file)?;
-            for kv in &doc.metadata().key_value {
+            for kv in metadata_of(&doc, &scope)? {
                 writeln!(out, "{} = {}", kv.key, kv.value.as_deref().unwrap_or(""))?;
             }
             Ok(())
         }
-        MetaCommand::Get { file, key } => {
+        MetaCommand::Get { file, key, scope } => {
             let doc = crate::open(&file)?;
-            match doc.metadata().get(&key) {
+            match metadata_of(&doc, &scope)?
+                .into_iter()
+                .find(|kv| kv.key == key)
+            {
                 Some(KeyValue { value, .. }) => {
                     writeln!(out, "{}", value.as_deref().unwrap_or(""))?;
                     Ok(())
@@ -415,17 +439,73 @@ pub fn meta(command: MetaCommand, out: &mut impl Write) -> Result<(), Error> {
             file,
             key,
             value,
+            scope,
             output,
-        } => edit(&file, &output, out, |_| {
-            Ok(vec![Command::SetMetadata {
+        } => edit(&file, &output, out, |doc| match &scope.column {
+            None => Ok(vec![Command::SetMetadata {
                 key,
                 value: Some(value),
-            }])
+            }]),
+            Some(column) => {
+                let mut entries = metadata_of(doc, &scope)?;
+                match entries.iter_mut().find(|kv| kv.key == key) {
+                    Some(kv) => kv.value = Some(value),
+                    None => entries.push(KeyValue {
+                        key,
+                        value: Some(value),
+                    }),
+                }
+                Ok(vec![Command::ReplaceColumnMetadata {
+                    column: column.clone(),
+                    entries,
+                }])
+            }
         }),
-        MetaCommand::Remove { file, key, output } => edit(&file, &output, out, |_| {
-            Ok(vec![Command::RemoveMetadata { key }])
+        MetaCommand::Remove {
+            file,
+            key,
+            scope,
+            output,
+        } => edit(&file, &output, out, |doc| match &scope.column {
+            None => Ok(vec![Command::RemoveMetadata { key }]),
+            Some(column) => {
+                let mut entries = metadata_of(doc, &scope)?;
+                let before = entries.len();
+                entries.retain(|kv| kv.key != key);
+                if entries.len() == before {
+                    return Err(Error::Usage(format!("no metadata key {key:?}")));
+                }
+                Ok(vec![Command::ReplaceColumnMetadata {
+                    column: column.clone(),
+                    entries,
+                }])
+            }
         }),
     }
+}
+
+/// The file's metadata, or a column's (sorted by key).
+fn metadata_of(doc: &Document, scope: &Scope) -> Result<Vec<KeyValue>, Error> {
+    let Some(column) = &scope.column else {
+        return Ok(doc.metadata().key_value.clone());
+    };
+    if let Some(entries) = doc.metadata().column(column) {
+        return Ok(entries.to_vec());
+    }
+    let schema = doc.schema();
+    let field = schema
+        .field_with_name(column)
+        .map_err(|_| Error::Usage(format!("no column named {column:?}")))?;
+    let mut entries: Vec<KeyValue> = field
+        .metadata()
+        .iter()
+        .map(|(k, v)| KeyValue {
+            key: k.clone(),
+            value: Some(v.clone()),
+        })
+        .collect();
+    entries.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(entries)
 }
 
 pub fn writer_settings(args: WriterArgs, out: &mut impl Write) -> Result<(), Error> {

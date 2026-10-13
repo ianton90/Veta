@@ -166,7 +166,7 @@ veta-cli add-column <file> <name> --type T [--at P]
 veta-cli remove-column <file> <name>...
 veta-cli rename-column <file> <from> <to>
 veta-cli move-column <file> <name> --to P
-veta-cli meta list|get|set|remove <file> [key [value]]
+veta-cli meta list|get|set|remove <file> [key [value]] [-c COLUMN]
 veta-cli writer-settings <file> [--column C]... [--compression ...] [--level N]
           [--encoding ...] [--dictionary on|off] [--statistics none|chunk|page]
           [--bloom-filter on|off] [--row-group-rows N] [--format-version 1|2]

@@ -93,15 +93,24 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
                 },
             ))
         }
-        Command::ReplaceMetadata(entries) => {
-            for (i, kv) in entries.iter().enumerate() {
-                if kv.key.trim().is_empty() {
-                    return Err(invalid("metadata keys cannot be empty".into()));
-                }
-                if entries[..i].iter().any(|other| other.key == kv.key) {
-                    return Err(invalid(format!("metadata key {:?} appears twice", kv.key)));
-                }
+        Command::ReplaceColumnMetadata { column, entries } => {
+            if doc.schema().field_with_name(&column).is_err() {
+                return Err(invalid(format!("no column named {column:?}")));
             }
+            check_keys(&entries)?;
+            let mut after = doc.metadata.clone();
+            after.columns.retain(|(name, _)| *name != column);
+            after.columns.push((column.clone(), entries));
+            Ok((
+                format!("Edit metadata of {column}"),
+                Change::Metadata {
+                    before: doc.metadata.clone(),
+                    after,
+                },
+            ))
+        }
+        Command::ReplaceMetadata(entries) => {
+            check_keys(&entries)?;
             let mut after = doc.metadata.clone();
             after.key_value = entries;
             Ok((
@@ -188,7 +197,14 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
                 from: from.clone(),
                 to: to.clone(),
             });
-            // Keep the column's writer settings under its new name.
+            // Keep the column's writer settings and edited metadata under
+            // its new name.
+            let mut metadata = doc.metadata.clone();
+            for (name, _) in &mut metadata.columns {
+                if *name == from {
+                    *name = to.clone();
+                }
+            }
             let mut writer = doc.writer.clone();
             let prefix = format!("{from}.");
             let mut renamed = false;
@@ -201,16 +217,23 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
                     renamed = true;
                 }
             }
-            let change = if renamed {
-                Change::Batch(vec![
-                    step,
-                    Change::Writer {
-                        before: doc.writer.clone(),
-                        after: writer,
-                    },
-                ])
+            let mut changes = vec![step];
+            if renamed {
+                changes.push(Change::Writer {
+                    before: doc.writer.clone(),
+                    after: writer,
+                });
+            }
+            if metadata != doc.metadata {
+                changes.push(Change::Metadata {
+                    before: doc.metadata.clone(),
+                    after: metadata,
+                });
+            }
+            let change = if changes.len() == 1 {
+                changes.remove(0)
             } else {
-                step
+                Change::Batch(changes)
             };
             Ok((label, change))
         }
@@ -325,6 +348,18 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
             ))
         }
     }
+}
+
+fn check_keys(entries: &[KeyValue]) -> Result<()> {
+    for (i, kv) in entries.iter().enumerate() {
+        if kv.key.trim().is_empty() {
+            return Err(invalid("metadata keys cannot be empty".into()));
+        }
+        if entries[..i].iter().any(|other| other.key == kv.key) {
+            return Err(invalid(format!("metadata key {:?} appears twice", kv.key)));
+        }
+    }
+    Ok(())
 }
 
 fn invalid(message: String) -> Error {
@@ -1154,5 +1189,59 @@ mod tests {
         doc.save(Some(dir.join("new.parquet"))).unwrap();
         let back = Document::open(dir.join("new.parquet"), OpenOptions::default()).unwrap();
         assert_eq!((back.num_rows(), back.num_columns()), (3, 1));
+    }
+
+    #[test]
+    fn column_metadata_is_saved_and_follows_renames() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut doc = Document::open(&path, OpenOptions::default()).unwrap();
+        let entries = vec![KeyValue {
+            key: "unit".into(),
+            value: Some("m".into()),
+        }];
+        let set = |column: &str| Command::ReplaceColumnMetadata {
+            column: column.into(),
+            entries: entries.clone(),
+        };
+        assert!(execute(&mut doc, set("missing")).is_err());
+        execute(&mut doc, set("score")).unwrap();
+        execute(
+            &mut doc,
+            Command::RenameColumn {
+                from: "score".into(),
+                to: "points".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(doc.metadata().column("points"), Some(entries.as_slice()));
+        let out = dir.join("out.parquet");
+        doc.save(Some(out.clone())).unwrap();
+        let back = Document::open(&out, OpenOptions::default()).unwrap();
+        let schema = back.schema();
+        let field = schema.field_with_name("points").unwrap();
+        assert_eq!(field.metadata().get("unit").map(String::as_str), Some("m"));
+        assert!(schema.field_with_name("id").unwrap().metadata().is_empty());
+        assert!(undo(&mut doc));
+        assert_eq!(doc.metadata().column("score"), Some(entries.as_slice()));
+    }
+
+    #[test]
+    fn leaf_columns_of_nested_schema() {
+        let dir = TempDir::new();
+        let path = dir.join("n.parquet");
+        fixtures::nested(&path);
+        let doc = Document::open(&path, OpenOptions::default()).unwrap();
+        let leaves = crate::io::leaf_columns(&doc.schema()).unwrap();
+        let names: Vec<&str> = leaves.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(names.contains(&"point.x"), "{names:?}");
+        assert!(
+            names.iter().any(|n| n.starts_with("tags.list.")),
+            "{names:?}"
+        );
+        assert!(names.contains(&"owner.home.x"), "{names:?}");
+        let (_, x) = leaves.iter().find(|(p, _)| p == "point.x").unwrap();
+        assert_eq!(x, &DataType::Int64);
     }
 }

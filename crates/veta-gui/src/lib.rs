@@ -90,6 +90,33 @@ pub fn run(files: Vec<PathBuf>) -> iced::Result {
     .run()
 }
 
+/// Each top-level column with its metadata: as edited in Veta, otherwise
+/// the column's own (sorted by key).
+fn column_metadata(doc: &Document) -> Vec<(String, Vec<veta_core::model::KeyValue>)> {
+    doc.schema()
+        .fields()
+        .iter()
+        .map(|field| {
+            let entries = match doc.metadata().column(field.name()) {
+                Some(entries) => entries.to_vec(),
+                None => {
+                    let mut entries: Vec<_> = field
+                        .metadata()
+                        .iter()
+                        .map(|(k, v)| veta_core::model::KeyValue {
+                            key: k.clone(),
+                            value: Some(v.clone()),
+                        })
+                        .collect();
+                    entries.sort_by(|a, b| a.key.cmp(&b.key));
+                    entries
+                }
+            };
+            (field.name().clone(), entries)
+        })
+        .collect()
+}
+
 /// The app icon as 64×64 RGBA, rendered by `packaging/icons/render.sh`.
 const APP_ICON: &[u8] = include_bytes!("../../../packaging/icons/veta-64.rgba");
 
@@ -1553,15 +1580,16 @@ impl App {
                 if let Some(Dialog::Metadata { document, dialog }) = &mut self.dialog {
                     let id = *document;
                     let cancel = matches!(message, MetadataMessage::Cancel);
-                    if let Some(command) = dialog.update(message) {
-                        let result = self
-                            .workbook
-                            .get_mut(id)
-                            .map(|doc| controller::execute(doc, command));
+                    if let Some(commands) = dialog.update(message) {
+                        let result = match self.workbook.get_mut(id) {
+                            Some(doc) => commands
+                                .into_iter()
+                                .try_for_each(|command| controller::execute(doc, command)),
+                            None => Ok(()),
+                        };
                         match result {
-                            Some(Ok(())) => self.dialog = None,
-                            Some(Err(e)) => dialog.set_error(e.to_string()),
-                            None => {}
+                            Ok(()) => self.dialog = None,
+                            Err(e) => dialog.set_error(e.to_string()),
                         }
                     } else if cancel {
                         self.dialog = None;
@@ -1605,7 +1633,7 @@ impl App {
                         Outcome::Editing => {}
                         Outcome::Cancelled => self.dialog = None,
                         Outcome::Saved(config) => {
-                            self.config = config;
+                            self.config = *config;
                             self.save_config();
                             self.dialog = None;
                         }
@@ -1883,7 +1911,10 @@ impl App {
                 {
                     self.dialog = Some(Dialog::Metadata {
                         document: id,
-                        dialog: MetadataDialog::new(&doc.metadata().key_value),
+                        dialog: MetadataDialog::new(
+                            &doc.metadata().key_value,
+                            column_metadata(doc),
+                        ),
                     });
                 }
             }
@@ -1891,12 +1922,14 @@ impl App {
                 if let Some(id) = self.active
                     && let Some(doc) = self.workbook.get(id)
                 {
-                    let columns = doc
-                        .schema()
-                        .fields()
-                        .iter()
-                        .map(|f| (f.name().clone(), f.data_type().clone()))
-                        .collect();
+                    let schema = doc.schema();
+                    let columns = veta_core::io::leaf_columns(&schema).unwrap_or_else(|_| {
+                        schema
+                            .fields()
+                            .iter()
+                            .map(|f| (f.name().clone(), f.data_type().clone()))
+                            .collect()
+                    });
                     self.dialog = Some(Dialog::Writer {
                         document: id,
                         dialog: WriterDialog::new(doc.writer_settings().clone(), columns),
@@ -2156,7 +2189,9 @@ impl App {
             })
             .find(|name| !titles.contains(name))
             .unwrap_or_default();
-        self.add_tab(Document::untitled(name));
+        let mut document = Document::untitled(name);
+        document.set_initial_writer_settings(self.config.new_files.settings());
+        self.add_tab(document);
     }
 
     /// Closes documents, asking about unsaved changes first. With `exit`,
@@ -3230,7 +3265,11 @@ impl App {
     }
 
     /// Adds a newly opened or imported document as the active tab.
-    fn add_document(&mut self, path: &Path, document: Document) {
+    fn add_document(&mut self, path: &Path, mut document: Document) {
+        if document.path().is_none() {
+            // Imported data: save with the user's defaults for new files.
+            document.set_initial_writer_settings(self.config.new_files.settings());
+        }
         self.add_tab(document);
         self.config.add_recent(path);
         self.save_config();

@@ -24,6 +24,12 @@ pub enum Command {
     /// Replaces all key/value metadata at once. Keys must be unique and not
     /// empty.
     ReplaceMetadata(Vec<KeyValue>),
+    /// Replaces a column's metadata (stored in the schema). Keys must be
+    /// unique and not empty.
+    ReplaceColumnMetadata {
+        column: String,
+        entries: Vec<KeyValue>,
+    },
     /// Sets a cell from text, parsed as the column's type. `None`, or blank
     /// text in a non-text column, sets the cell to null.
     SetCell {

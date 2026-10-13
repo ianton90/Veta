@@ -2033,12 +2033,36 @@ impl SortDialog {
     }
 }
 
+/// A compression level choice: `None` is the codec's default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Level(pub Option<i32>);
+
+impl Level {
+    /// Levels offered for `compression` (empty if it takes none).
+    pub fn choices(compression: Compression) -> Vec<Level> {
+        let mut choices = vec![Level(None)];
+        if let Some(range) = compression.level_range() {
+            choices.extend(range.map(|l| Level(Some(l))));
+        }
+        choices
+    }
+}
+
+impl std::fmt::Display for Level {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(level) => write!(f, "{level}"),
+            None => f.write_str("default"),
+        }
+    }
+}
+
 /// Edit the settings used when saving: file-wide settings, defaults for new
 /// columns, and per-column settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WriterDialog {
     settings: WriterSettings,
-    /// Top-level columns and their types, in order.
+    /// Leaf columns (dotted Parquet paths) and their types, in order.
     columns: Vec<(String, DataType)>,
     row_group: String,
     error: Option<String>,
@@ -2050,6 +2074,7 @@ pub enum WriterMessage {
     RowGroup(String),
     /// `None` edits the defaults for new columns.
     Compression(Option<usize>, Compression),
+    Level(Option<usize>, Level),
     Encoding(usize, Encoding),
     Dictionary(Option<usize>, bool),
     Statistics(Option<usize>, StatisticsLevel),
@@ -2073,7 +2098,17 @@ impl WriterDialog {
         match message {
             WriterMessage::Version(v) => self.settings.format_version = v,
             WriterMessage::RowGroup(text) => self.row_group = text,
-            WriterMessage::Compression(i, c) => self.edit(i, |s| s.compression = c),
+            WriterMessage::Compression(i, c) => self.edit(i, |s| {
+                // Keep the level when switching between codecs that take one.
+                let level = s
+                    .compression
+                    .level()
+                    .filter(|l| c.level_range().is_some_and(|r| r.contains(l)));
+                s.compression = c.with_level(level);
+            }),
+            WriterMessage::Level(i, level) => {
+                self.edit(i, |s| s.compression = s.compression.with_level(level.0));
+            }
             WriterMessage::Encoding(i, e) => self.edit(Some(i), |s| s.encoding = e),
             WriterMessage::Dictionary(i, on) => self.edit(i, |s| s.dictionary = on),
             WriterMessage::Statistics(i, level) => self.edit(i, |s| s.statistics = level),
@@ -2112,19 +2147,21 @@ impl WriterDialog {
     }
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, WriterMessage> {
-        const NAME: f32 = 150.0;
-        const COMPRESSION: f32 = 150.0;
-        const ENCODING: f32 = 200.0;
-        const STATISTICS: f32 = 100.0;
-        const FLAG: f32 = 90.0;
+        const NAME: f32 = 160.0;
+        const COMPRESSION: f32 = 145.0;
+        const LEVEL: f32 = 90.0;
+        const ENCODING: f32 = 185.0;
+        const STATISTICS: f32 = 90.0;
+        const FLAG: f32 = 85.0;
 
         let header = row![
             text("Column").width(NAME),
             text("Compression").width(COMPRESSION),
+            text("Level").width(LEVEL),
             text("Encoding").width(ENCODING),
             text("Dictionary").width(FLAG),
             text("Statistics").width(STATISTICS),
-            text("Bloom filter").width(FLAG),
+            text("Bloom").width(FLAG),
         ]
         .spacing(8);
 
@@ -2149,17 +2186,20 @@ impl WriterDialog {
                     move |c| { WriterMessage::Compression(i, c) }
                 )
                 .width(COMPRESSION),
+                level_picker(s.compression, LEVEL, move |l| WriterMessage::Level(i, l)),
                 encoding,
-                checkbox(s.dictionary)
-                    .on_toggle(move |on| WriterMessage::Dictionary(i, on))
-                    .width(FLAG),
+                iced::widget::container(
+                    checkbox(s.dictionary).on_toggle(move |on| WriterMessage::Dictionary(i, on))
+                )
+                .width(FLAG),
                 pick_list(StatisticsLevel::ALL, Some(s.statistics), move |l| {
                     WriterMessage::Statistics(i, l)
                 })
                 .width(STATISTICS),
-                checkbox(s.bloom_filter)
-                    .on_toggle(move |on| WriterMessage::Bloom(i, on))
-                    .width(FLAG),
+                iced::widget::container(
+                    checkbox(s.bloom_filter).on_toggle(move |on| WriterMessage::Bloom(i, on))
+                )
+                .width(FLAG),
             ]
             .spacing(8)
             .align_y(Alignment::Center)
@@ -2195,8 +2235,15 @@ impl WriterDialog {
             .spacing(8)
             .align_y(Alignment::Center),
             text("Columns").size(16),
-            scrollable(columns).height(Length::Fixed(260.0)),
+            scrollable(columns.padding(iced::Padding::ZERO.right(16))).height(Length::Fixed(260.0)),
             settings_row(None, "New columns".into(), None),
+            text(
+                "Nested columns are listed per leaf. With a dictionary, the encoding is used \
+                 only if the dictionary grows too large; files record it only then, so it \
+                 shows as plain after reopening."
+            )
+            .size(13)
+            .color(tokens.muted_text),
         ]
         .spacing(14);
         if let Some(error) = &self.error {
@@ -2207,21 +2254,64 @@ impl WriterDialog {
             WriterMessage::Cancel,
             WriterMessage::Apply,
         ));
-        card(body.into(), tokens, 860.0)
+        card(body.into(), tokens, 940.0)
     }
 }
 
-/// Edit the file's key/value metadata.
+/// A level pick list for `compression`, or a dash for codecs without levels.
+pub fn level_picker<'a, M: Clone + 'a>(
+    compression: Compression,
+    width: f32,
+    on_pick: impl Fn(Level) -> M + 'a,
+) -> Element<'a, M> {
+    if compression.level_range().is_none() {
+        return iced::widget::container(text("—"))
+            .width(width)
+            .align_y(Alignment::Center)
+            .into();
+    }
+    pick_list(
+        Level::choices(compression),
+        Some(Level(compression.level())),
+        on_pick,
+    )
+    .width(width)
+    .into()
+}
+
+/// Edit key/value metadata: the file's (footer) and each column's (stored
+/// in the schema).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetadataDialog {
-    entries: Vec<(String, String)>,
+    /// Scope 0 is the file; the others are columns.
+    scopes: Vec<MetadataScope>,
+    current: usize,
     /// The Arrow schema entry, kept as is: the writer regenerates it.
     arrow_schema: Option<KeyValue>,
     error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct MetadataScope {
+    /// `None` for the file.
+    column: Option<String>,
+    original: Vec<(String, String)>,
+    entries: Vec<(String, String)>,
+}
+
+/// A choice in the scope picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeChoice(usize, String);
+
+impl std::fmt::Display for ScopeChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.1)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum MetadataMessage {
+    Scope(ScopeChoice),
     Key(usize, String),
     Value(usize, String),
     Remove(usize),
@@ -2230,59 +2320,117 @@ pub enum MetadataMessage {
     Cancel,
 }
 
+fn pairs(entries: &[KeyValue]) -> Vec<(String, String)> {
+    entries
+        .iter()
+        .filter(|kv| kv.key != ARROW_SCHEMA_KEY)
+        .map(|kv| (kv.key.clone(), kv.value.clone().unwrap_or_default()))
+        .collect()
+}
+
 impl MetadataDialog {
-    pub fn new(entries: &[KeyValue]) -> Self {
+    /// `columns` are the top-level columns with their current metadata.
+    pub fn new(file: &[KeyValue], columns: Vec<(String, Vec<KeyValue>)>) -> Self {
+        let file_entries = pairs(file);
+        let mut scopes = vec![MetadataScope {
+            column: None,
+            original: file_entries.clone(),
+            entries: file_entries,
+        }];
+        scopes.extend(columns.into_iter().map(|(name, entries)| {
+            let entries = pairs(&entries);
+            MetadataScope {
+                column: Some(name),
+                original: entries.clone(),
+                entries,
+            }
+        }));
         Self {
-            entries: entries
-                .iter()
-                .filter(|kv| kv.key != ARROW_SCHEMA_KEY)
-                .map(|kv| (kv.key.clone(), kv.value.clone().unwrap_or_default()))
-                .collect(),
-            arrow_schema: entries
-                .iter()
-                .find(|kv| kv.key == ARROW_SCHEMA_KEY)
-                .cloned(),
+            scopes,
+            current: 0,
+            arrow_schema: file.iter().find(|kv| kv.key == ARROW_SCHEMA_KEY).cloned(),
             error: None,
         }
     }
 
-    /// Handles a message. Returns the command to run on apply.
-    pub fn update(&mut self, message: MetadataMessage) -> Option<Command> {
+    fn choices(&self) -> Vec<ScopeChoice> {
+        self.scopes
+            .iter()
+            .enumerate()
+            .map(|(i, scope)| {
+                let label = match &scope.column {
+                    None => "File".to_owned(),
+                    Some(name) => format!("Column: {name}"),
+                };
+                ScopeChoice(i, label)
+            })
+            .collect()
+    }
+
+    fn entries_mut(&mut self) -> &mut Vec<(String, String)> {
+        &mut self.scopes[self.current].entries
+    }
+
+    /// Handles a message. Returns the commands to run on apply (one per
+    /// changed scope; none if nothing changed).
+    pub fn update(&mut self, message: MetadataMessage) -> Option<Vec<Command>> {
         match message {
+            MetadataMessage::Scope(choice) => {
+                if choice.0 < self.scopes.len() {
+                    self.current = choice.0;
+                    self.error = None;
+                }
+            }
             MetadataMessage::Key(i, key) => {
-                if let Some(entry) = self.entries.get_mut(i) {
+                if let Some(entry) = self.entries_mut().get_mut(i) {
                     entry.0 = key;
                 }
             }
             MetadataMessage::Value(i, value) => {
-                if let Some(entry) = self.entries.get_mut(i) {
+                if let Some(entry) = self.entries_mut().get_mut(i) {
                     entry.1 = value;
                 }
             }
             MetadataMessage::Remove(i) => {
-                if i < self.entries.len() {
-                    self.entries.remove(i);
+                if i < self.entries_mut().len() {
+                    self.entries_mut().remove(i);
                 }
             }
-            MetadataMessage::Add => self.entries.push((String::new(), String::new())),
+            MetadataMessage::Add => self.entries_mut().push((String::new(), String::new())),
             MetadataMessage::Cancel => {}
             MetadataMessage::Apply => {
-                let mut entries: Vec<KeyValue> = self
-                    .entries
-                    .iter()
-                    // Rows left completely empty are ignored.
-                    .filter(|(k, v)| !(k.trim().is_empty() && v.is_empty()))
-                    .map(|(k, v)| KeyValue {
-                        key: k.trim().to_owned(),
-                        value: (!v.is_empty()).then(|| v.clone()),
-                    })
-                    .collect();
-                if entries.iter().any(|kv| kv.key == ARROW_SCHEMA_KEY) {
-                    self.error = Some(format!("{ARROW_SCHEMA_KEY} is managed automatically."));
-                    return None;
+                let mut commands = Vec::new();
+                for scope in &self.scopes {
+                    if scope.entries == scope.original {
+                        continue;
+                    }
+                    let mut entries: Vec<KeyValue> = scope
+                        .entries
+                        .iter()
+                        // Rows left completely empty are ignored.
+                        .filter(|(k, v)| !(k.trim().is_empty() && v.is_empty()))
+                        .map(|(k, v)| KeyValue {
+                            key: k.trim().to_owned(),
+                            value: (!v.is_empty()).then(|| v.clone()),
+                        })
+                        .collect();
+                    match &scope.column {
+                        None => {
+                            if entries.iter().any(|kv| kv.key == ARROW_SCHEMA_KEY) {
+                                self.error =
+                                    Some(format!("{ARROW_SCHEMA_KEY} is managed automatically."));
+                                return None;
+                            }
+                            entries.extend(self.arrow_schema.clone());
+                            commands.push(Command::ReplaceMetadata(entries));
+                        }
+                        Some(column) => commands.push(Command::ReplaceColumnMetadata {
+                            column: column.clone(),
+                            entries,
+                        }),
+                    }
                 }
-                entries.extend(self.arrow_schema.clone());
-                return Some(Command::ReplaceMetadata(entries));
+                return Some(commands);
             }
         }
         None
@@ -2294,10 +2442,11 @@ impl MetadataDialog {
     }
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, MetadataMessage> {
+        let scope = &self.scopes[self.current];
         let mut rows =
             column![row![text("Key").width(220), text("Value").width(Length::Fill)].spacing(8)]
                 .spacing(6);
-        for (i, (key, value)) in self.entries.iter().enumerate() {
+        for (i, (key, value)) in scope.entries.iter().enumerate() {
             rows = rows.push(
                 row![
                     text_input("key", key)
@@ -2314,19 +2463,30 @@ impl MetadataDialog {
                 .align_y(Alignment::Center),
             );
         }
-        if self.entries.is_empty() {
+        if scope.entries.is_empty() {
             rows = rows.push(text("No metadata.").color(tokens.muted_text));
         }
+        let choices = self.choices();
+        let selected = choices.get(self.current).cloned();
         let mut body = column![
-            text("File metadata").size(20),
-            text("Key/value pairs stored in the file's footer.").color(tokens.muted_text),
+            text("Metadata").size(20),
+            row![
+                pick_list(choices, selected, MetadataMessage::Scope).width(300),
+                text(match scope.column {
+                    None => "Key/value pairs stored in the file's footer.",
+                    Some(_) => "Key/value pairs stored with the column in the schema.",
+                })
+                .color(tokens.muted_text),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
             scrollable(rows).height(Length::Fixed(280.0)),
             button(text("Add entry"))
                 .style(button::secondary)
                 .on_press(MetadataMessage::Add),
         ]
         .spacing(14);
-        if self.arrow_schema.is_some() {
+        if self.arrow_schema.is_some() && scope.column.is_none() {
             body = body.push(
                 text(format!(
                     "{ARROW_SCHEMA_KEY} (the Arrow schema) is not shown: it is rewritten on save."
@@ -2421,15 +2581,38 @@ mod tests {
             key: k.into(),
             value: Some(v.into()),
         };
-        let mut dialog = MetadataDialog::new(&[kv("owner", "me"), kv(ARROW_SCHEMA_KEY, "xyz")]);
-        assert_eq!(dialog.entries.len(), 1);
+        let mut dialog = MetadataDialog::new(
+            &[kv("owner", "me"), kv(ARROW_SCHEMA_KEY, "xyz")],
+            vec![("id".into(), vec![kv("unit", "m")])],
+        );
+        assert_eq!(dialog.scopes[0].entries.len(), 1);
+        assert_eq!(
+            dialog.update(MetadataMessage::Apply),
+            Some(vec![]),
+            "no changes"
+        );
         dialog.update(MetadataMessage::Add);
         dialog.update(MetadataMessage::Key(1, " team ".into()));
         dialog.update(MetadataMessage::Add); // left empty: ignored
         dialog.update(MetadataMessage::Value(0, String::new()));
-        let Some(Command::ReplaceMetadata(entries)) = dialog.update(MetadataMessage::Apply) else {
-            panic!("expected metadata");
+        // A column's metadata, in the same apply.
+        dialog.update(MetadataMessage::Scope(ScopeChoice(1, String::new())));
+        dialog.update(MetadataMessage::Value(0, "km".into()));
+        let Some(commands) = dialog.update(MetadataMessage::Apply) else {
+            panic!("expected commands");
         };
+        let [Command::ReplaceMetadata(entries), column] = &commands[..] else {
+            panic!("expected two commands: {commands:?}");
+        };
+        assert_eq!(
+            column,
+            &Command::ReplaceColumnMetadata {
+                column: "id".into(),
+                entries: vec![kv("unit", "km")]
+            }
+        );
+        let entries = entries.clone();
+        dialog.update(MetadataMessage::Scope(ScopeChoice(0, String::new())));
         assert_eq!(
             entries,
             vec![
@@ -2471,5 +2654,32 @@ mod tests {
                 names: vec!["b".into(), "c".into()]
             }))
         );
+    }
+
+    #[test]
+    fn compression_levels() {
+        let mut dialog = WriterDialog::new(
+            WriterSettings::default(),
+            vec![("a".into(), DataType::Int64)],
+        );
+        dialog.update(WriterMessage::Compression(Some(0), Compression::Zstd(None)));
+        dialog.update(WriterMessage::Level(Some(0), Level(Some(7))));
+        assert_eq!(
+            dialog.column_settings(Some(0)).compression,
+            Compression::Zstd(Some(7))
+        );
+        // Gzip takes 0-10: the level carries over; Brotli then keeps it too.
+        dialog.update(WriterMessage::Compression(Some(0), Compression::Gzip(None)));
+        assert_eq!(
+            dialog.column_settings(Some(0)).compression,
+            Compression::Gzip(Some(7))
+        );
+        dialog.update(WriterMessage::Compression(Some(0), Compression::Snappy));
+        assert_eq!(
+            dialog.column_settings(Some(0)).compression,
+            Compression::Snappy
+        );
+        assert_eq!(Level::choices(Compression::Zstd(None)).len(), 23);
+        assert_eq!(Level::choices(Compression::Snappy), vec![Level(None)]);
     }
 }

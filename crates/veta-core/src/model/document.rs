@@ -100,6 +100,12 @@ impl Document {
         }
     }
 
+    /// Sets the writer settings of a new or imported document, e.g. from the
+    /// user's defaults. Not undoable and doesn't count as a change.
+    pub fn set_initial_writer_settings(&mut self, settings: WriterSettings) {
+        self.writer = settings;
+    }
+
     /// A new, unsaved document holding data imported from `name`.
     pub fn imported(name: String, source: Arc<dyn crate::source::DataSource>) -> Self {
         Self {
