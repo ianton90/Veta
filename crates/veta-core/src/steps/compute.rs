@@ -27,6 +27,9 @@ pub(crate) enum Cache {
     Data(Arc<dyn DataSource>),
     /// The input's rows with only these columns (a checked column removal).
     Project(arrow::datatypes::SchemaRef),
+    /// The step was checked on every row and is read window by window
+    /// (a cast that stops on invalid values); the output schema.
+    Checked(arrow::datatypes::SchemaRef),
 }
 
 /// Kept input rows as sorted, disjoint ranges, with each range's position in
@@ -161,6 +164,36 @@ impl ComputeJob {
             Step::Fill(f) => Cache::Data(self.fill(f, input_rows, progress)?),
             Step::ExplodeList { column } => {
                 Cache::Data(self.explode(column, input_rows, progress)?)
+            }
+            Step::Cast(cast) => {
+                // Converts every row once so an invalid value breaks the
+                // step instead of failing later reads.
+                let input = self
+                    .pipeline
+                    .schema_at(self.step)
+                    .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+                let schema = Arc::new(arrow::datatypes::Schema::new_with_metadata(
+                    cast.output_fields(&input)?,
+                    input.metadata().clone(),
+                ));
+                let mut start = 0;
+                while start < input_rows {
+                    let end = (start + PASS_ROWS).min(input_rows);
+                    let batch = self.pipeline.read_at(self.step, start..end)?;
+                    if let Some((row, value)) = cast.first_failure(&batch)? {
+                        return Err(invalid(format!(
+                            "row {}: {value:?} in column {} is not a valid {}",
+                            start + row + 1,
+                            cast.column,
+                            crate::display::type_name(&cast.to)
+                        )));
+                    }
+                    start = end;
+                    if !progress(start as f32 / input_rows as f32) {
+                        return Err(Error::Cancelled);
+                    }
+                }
+                Cache::Checked(schema)
             }
             Step::RemoveEmptyColumn { name } => {
                 let mut values = 0;

@@ -349,7 +349,17 @@ pub fn parse_type_name(name: &str) -> Option<DataType> {
             u => DataType::Time64(u),
         });
     }
-    if let Some(args) = args("decimal", '(', ')') {
+    if let Some(args) = args("duration", '[', ']') {
+        return Some(DataType::Duration(unit(&args.to_ascii_lowercase())?));
+    }
+    if let Some(inner) = args("list", '<', '>') {
+        let item = parse_type_name(inner)?;
+        return Some(DataType::List(Arc::new(Field::new("item", item, true))));
+    }
+    let decimal = args("decimal128", '(', ')')
+        .or_else(|| args("decimal256", '(', ')'))
+        .or_else(|| args("decimal", '(', ')'));
+    if let Some(args) = decimal {
         let (p, s) = args.split_once(',')?;
         let precision: u8 = p.trim().parse().ok()?;
         let scale: i8 = s.trim().parse().ok()?;
@@ -470,7 +480,14 @@ mod tests {
         }
         assert_eq!(parse_type_name(" Double "), Some(DataType::Float64));
         assert_eq!(parse_type_name("timestamp[xs]"), None);
-        assert_eq!(parse_type_name("list<int32>"), None);
+        assert_eq!(
+            parse_type_name("list<int32>"),
+            Some(DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::Int32,
+                true
+            ))))
+        );
     }
 
     #[test]

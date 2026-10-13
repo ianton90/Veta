@@ -33,6 +33,7 @@ impl Level {
             Step::ExplodeList { column } => {
                 super::nested::explode_fields(&self.schema, column).map(|_| ())
             }
+            Step::Cast(cast) => cast.output_fields(&self.schema).map(|_| ()),
             Step::RemoveEmptyColumn { name } => {
                 self.index(name)?;
                 if self.schema.fields().len() < 2 {
@@ -51,7 +52,7 @@ impl Level {
                 schema: self.schema.clone(),
                 num_rows: rows.total(),
             },
-            Cache::Project(schema) => Level {
+            Cache::Project(schema) | Cache::Checked(schema) => Level {
                 schema: schema.clone(),
                 num_rows: self.num_rows,
             },

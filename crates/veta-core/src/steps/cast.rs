@@ -98,7 +98,8 @@ impl Cast {
             .map_err(|_| invalid(format!("no column named {:?}", self.column)))?;
         let from = schema.field(index).data_type();
         let readable = if is_text(from) {
-            can_cast_types(&DataType::Utf8, &self.to)
+            // Nested values are read from JSON text.
+            self.to.is_nested() || can_cast_types(&DataType::Utf8, &self.to)
         } else {
             can_cast_types(from, &self.to)
         };
@@ -170,6 +171,18 @@ impl Cast {
         Ok(RecordBatch::try_new(schema.clone(), columns)?)
     }
 
+    /// The first row of `batch` whose value can't be converted, and that
+    /// value as text.
+    pub(super) fn first_failure(&self, batch: &RecordBatch) -> Result<Option<(usize, String)>> {
+        let input = batch
+            .column_by_name(&self.column)
+            .ok_or_else(|| invalid(format!("no column named {:?}", self.column)))?;
+        let output = self.convert(input)?;
+        Ok(failures(input, &output)
+            .first()
+            .map(|&row| (row, text_at(input, row))))
+    }
+
     /// Tries the conversion on `sample` (values of the column).
     pub fn preview(&self, sample: &ArrayRef) -> CastPreview {
         let Ok(output) = self.convert(sample) else {
@@ -204,13 +217,31 @@ impl Cast {
             ..Default::default()
         };
         if !is_text(input.data_type()) {
-            return Ok(cast_with_options(input, &self.to, &safe)?);
+            let output = cast_with_options(input, &self.to, &safe)?;
+            let custom = self.options.decimal != '.' || self.options.thousands.is_some();
+            if input.data_type().is_numeric() && is_text(&self.to) && custom {
+                // Numbers written with the chosen separators.
+                let strings = arrow::compute::cast(&output, &DataType::Utf8)?;
+                let strings = strings
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .ok_or_else(|| invalid("expected text".into()))?;
+                let formatted: StringArray = strings
+                    .iter()
+                    .map(|s| s.map(|s| self.format_number(s)))
+                    .collect();
+                return Ok(arrow::compute::cast(&formatted, &self.to)?);
+            }
+            return Ok(output);
         }
         let strings = arrow::compute::cast(input, &DataType::Utf8)?;
         let strings = strings
             .as_any()
             .downcast_ref::<StringArray>()
             .ok_or_else(|| invalid("expected text".into()))?;
+        if self.to.is_nested() {
+            return parse_json_column(strings, &self.to);
+        }
         let numeric = self.to.is_numeric();
         if let (Some(format), true) = (
             &self.options.format,
@@ -234,6 +265,34 @@ impl Cast {
         Ok(cast_with_options(&cleaned, &self.to, &safe)?)
     }
 
+    /// `-1234567.5` → `-1.234.567,5` with a comma decimal and dot thousands.
+    /// Scientific notation is left as is.
+    fn format_number(&self, s: &str) -> String {
+        if s.contains(['e', 'E']) || !s.chars().any(|c| c.is_ascii_digit()) {
+            return s.to_owned();
+        }
+        let (sign, rest) = match s.strip_prefix('-') {
+            Some(rest) => ("-", rest),
+            None => ("", s),
+        };
+        let (int, frac) = match rest.split_once('.') {
+            Some((int, frac)) => (int, Some(frac)),
+            None => (rest, None),
+        };
+        let mut out = String::from(sign);
+        for (i, c) in int.chars().enumerate() {
+            if i > 0 && (int.len() - i) % 3 == 0 {
+                out.extend(self.options.thousands);
+            }
+            out.push(c);
+        }
+        if let Some(frac) = frac {
+            out.push(self.options.decimal);
+            out.push_str(frac);
+        }
+        out
+    }
+
     fn clean_number(&self, s: &str) -> String {
         let mut out = String::with_capacity(s.len());
         for c in s.chars() {
@@ -246,6 +305,23 @@ impl Cast {
         }
         out
     }
+}
+
+/// Reads JSON text as values of the nested type `to`; text that isn't valid
+/// JSON for it becomes null.
+fn parse_json_column(strings: &StringArray, to: &DataType) -> Result<ArrayRef> {
+    let values: Vec<ArrayRef> = strings
+        .iter()
+        .map(|s| {
+            let parsed = s.and_then(|s| crate::values::parse_value(Some(s), to).ok());
+            parsed.unwrap_or_else(|| arrow::array::new_null_array(to, 1))
+        })
+        .collect();
+    if values.is_empty() {
+        return Ok(arrow::array::new_empty_array(to));
+    }
+    let refs: Vec<&dyn Array> = values.iter().map(|a| a.as_ref()).collect();
+    Ok(arrow::compute::concat(&refs)?)
 }
 
 /// Rows where a non-null input became null.
@@ -282,23 +358,94 @@ struct DateTime {
     nanos: u32,
 }
 
-const MONTHS: [&str; 12] = [
-    "january",
-    "february",
-    "march",
-    "april",
-    "may",
-    "june",
-    "july",
-    "august",
-    "september",
-    "october",
-    "november",
-    "december",
+/// Month names read by `%b`/`%B`: English, Spanish, French, German,
+/// Italian, Portuguese and Dutch, in lowercase.
+const MONTHS: [&[&str]; 12] = [
+    &[
+        "january", "enero", "janvier", "januar", "gennaio", "janeiro", "januari",
+    ],
+    &[
+        "february",
+        "febrero",
+        "février",
+        "fevrier",
+        "februar",
+        "febbraio",
+        "fevereiro",
+        "februari",
+    ],
+    &[
+        "march", "marzo", "mars", "märz", "marz", "março", "marco", "maart",
+    ],
+    &["april", "abril", "avril", "aprile"],
+    &["may", "mayo", "mai", "maggio", "maio", "mei"],
+    &["june", "junio", "juin", "juni", "giugno", "junho"],
+    &["july", "julio", "juillet", "juli", "luglio", "julho"],
+    &["august", "agosto", "août", "aout", "augustus"],
+    &[
+        "september",
+        "septiembre",
+        "setiembre",
+        "septembre",
+        "settembre",
+        "setembro",
+    ],
+    &[
+        "october", "octubre", "octobre", "oktober", "ottobre", "outubro",
+    ],
+    &["november", "noviembre", "novembre", "novembro"],
+    &[
+        "december",
+        "diciembre",
+        "décembre",
+        "decembre",
+        "dezember",
+        "dicembre",
+        "dezembro",
+    ],
 ];
 
+/// Reads a month name at the start of `text` (lowercase): a full name, or
+/// (with `abbreviated`) its first three letters, optionally followed by a
+/// dot. Returns the month (1-12) and the length read in bytes.
+fn month_name(text: &str, abbreviated: bool) -> Option<(u32, usize)> {
+    // The longest full name wins ("marzo" over "mar").
+    let full = MONTHS
+        .iter()
+        .enumerate()
+        .flat_map(|(i, names)| names.iter().map(move |n| (i, *n)))
+        .filter(|(_, name)| text.starts_with(name))
+        .max_by_key(|(_, name)| name.len());
+    if let Some((i, name)) = full {
+        return Some((i as u32 + 1, name.len()));
+    }
+    if !abbreviated {
+        return None;
+    }
+    let prefix: String = text.chars().take(3).collect();
+    if prefix.chars().count() < 3 {
+        return None;
+    }
+    // Abbreviations shared by different months ("jui": juin, juillet) don't
+    // count.
+    let months: Vec<usize> = MONTHS
+        .iter()
+        .enumerate()
+        .filter(|(_, names)| names.iter().any(|n| n.starts_with(&prefix)))
+        .map(|(i, _)| i)
+        .collect();
+    let [month] = months[..] else {
+        return None;
+    };
+    let mut len = prefix.len();
+    if text[len..].starts_with('.') {
+        len += 1;
+    }
+    Some((month as u32 + 1, len))
+}
+
 /// Format codes understood in date formats.
-pub const FORMAT_CODES: &str = "%Y year, %y two-digit year, %m month, %d day, %b/%B month name, \
+pub const FORMAT_CODES: &str = "%Y year, %y two-digit year, %m month, %d day, %b/%B month name (en, es, fr, de, it, pt, nl), \
      %H hour, %I hour (12h) with %p AM/PM, %M minute, %S second, %f fraction";
 
 fn check_format(format: &str) -> Result<()> {
@@ -377,16 +524,13 @@ fn parse_datetime(text: &str, format: &str) -> Option<DateTime> {
             }
             code @ ('b' | 'B') => {
                 let lower = s.to_lowercase();
-                let (month, len) = MONTHS.iter().enumerate().find_map(|(i, name)| {
-                    if code == 'B' && lower.starts_with(name) {
-                        Some((i, name.len()))
-                    } else if code == 'b' && lower.starts_with(&name[..3]) {
-                        Some((i, 3))
-                    } else {
-                        None
-                    }
-                })?;
-                dt.month = month as u32 + 1;
+                // Lowercasing can change byte lengths; only accept text
+                // where it doesn't.
+                if lower.len() != s.len() {
+                    return None;
+                }
+                let (month, len) = month_name(&lower, code == 'b')?;
+                dt.month = month;
                 s = s.get(len..)?;
             }
             'p' => {
@@ -632,5 +776,89 @@ mod tests {
             },
         );
         assert!(wrong_target.output_fields(&schema).is_err());
+    }
+
+    #[test]
+    fn numbers_to_text_with_separators() {
+        let numbers: ArrayRef = Arc::new(arrow::array::Float64Array::from(vec![
+            Some(-1234567.5),
+            Some(12.0),
+            None,
+        ]));
+        let c = cast(
+            DataType::Utf8,
+            CastOptions {
+                decimal: ',',
+                thousands: Some('.'),
+                ..CastOptions::default()
+            },
+        );
+        let out = c.convert(&numbers).unwrap();
+        let out = out.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(
+            out.iter().collect::<Vec<_>>(),
+            [Some("-1.234.567,5"), Some("12,0"), None]
+        );
+    }
+
+    #[test]
+    fn month_names_in_several_languages() {
+        let dates = text(&[
+            Some("3 marzo 2024"),
+            Some("3 mars 2024"),
+            Some("3 Okt. 2024"),
+            Some("3 dic 2024"),
+            Some("3 juin 2024"),
+            Some("3 jui 2024"), // juin or juillet: ambiguous
+        ]);
+        let c = cast(
+            DataType::Date32,
+            CastOptions {
+                format: Some("%d %b %Y".into()),
+                ..CastOptions::default()
+            },
+        );
+        let out = c.convert(&dates).unwrap();
+        let out = arrow::compute::cast(&out, &DataType::Utf8).unwrap();
+        let out = out.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(
+            out.iter().collect::<Vec<_>>(),
+            [
+                Some("2024-03-03"),
+                Some("2024-03-03"),
+                Some("2024-10-03"),
+                Some("2024-12-03"),
+                Some("2024-06-03"),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn text_to_nested_and_more_type_names() {
+        use crate::display::parse_type_name;
+        let to = parse_type_name("list<int64>").unwrap();
+        let c = cast(to.clone(), CastOptions::default());
+        let input = text(&[Some("[1, 2]"), Some("nope"), None]);
+        let schema = Schema::new(vec![Field::new("c", DataType::Utf8, true)]);
+        assert!(c.output_fields(&schema).is_ok());
+        let out = c.convert(&input).unwrap();
+        assert_eq!(out.data_type(), &to);
+        assert_eq!(out.null_count(), 2);
+        assert_eq!(
+            parse_type_name("duration[ms]"),
+            Some(DataType::Duration(TimeUnit::Millisecond))
+        );
+        assert_eq!(
+            parse_type_name("decimal128(10, 2)"),
+            Some(DataType::Decimal128(10, 2))
+        );
+        assert_eq!(
+            parse_type_name("timestamp[ms, Europe/Madrid]"),
+            Some(DataType::Timestamp(
+                TimeUnit::Millisecond,
+                Some("Europe/Madrid".into())
+            ))
+        );
     }
 }

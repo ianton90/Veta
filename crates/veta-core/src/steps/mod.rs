@@ -120,7 +120,7 @@ impl Step {
                 | Step::Fill(_)
                 | Step::RemoveEmptyColumn { .. }
                 | Step::ExplodeList { .. }
-        )
+        ) || matches!(self, Step::Cast(c) if c.options.on_error == cast::OnError::Fail)
     }
 
     /// Whether the step refers to rows by position, so changing an earlier

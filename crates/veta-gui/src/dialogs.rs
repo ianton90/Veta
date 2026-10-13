@@ -80,6 +80,69 @@ impl std::fmt::Display for TypeChoice {
     }
 }
 
+/// A target type offered when changing a column's type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CastTarget {
+    Text,
+    Int64,
+    Int32,
+    Float64,
+    Float32,
+    Boolean,
+    Date,
+    Timestamp,
+    Time,
+    /// Any type, typed by name.
+    Other,
+}
+
+impl CastTarget {
+    pub const ALL: [CastTarget; 10] = [
+        Self::Text,
+        Self::Int64,
+        Self::Int32,
+        Self::Float64,
+        Self::Float32,
+        Self::Boolean,
+        Self::Date,
+        Self::Timestamp,
+        Self::Time,
+        Self::Other,
+    ];
+
+    fn data_type(self) -> Option<DataType> {
+        Some(match self {
+            Self::Text => DataType::Utf8,
+            Self::Int64 => DataType::Int64,
+            Self::Int32 => DataType::Int32,
+            Self::Float64 => DataType::Float64,
+            Self::Float32 => DataType::Float32,
+            Self::Boolean => DataType::Boolean,
+            Self::Date => DataType::Date32,
+            Self::Timestamp => DataType::Timestamp(TimeUnit::Microsecond, None),
+            Self::Time => DataType::Time64(TimeUnit::Microsecond),
+            Self::Other => return None,
+        })
+    }
+}
+
+impl std::fmt::Display for CastTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Text => "Text (string)",
+            Self::Int64 => "Whole number (int64)",
+            Self::Int32 => "Whole number (int32)",
+            Self::Float64 => "Decimal number (float64)",
+            Self::Float32 => "Decimal number (float32)",
+            Self::Boolean => "True/false (bool)",
+            Self::Date => "Date",
+            Self::Timestamp => "Date and time (timestamp)",
+            Self::Time => "Time of day (time)",
+            Self::Other => "Other type…",
+        })
+    }
+}
+
 /// Add or rename a column.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColumnDialog {
@@ -574,7 +637,11 @@ impl std::fmt::Display for Separator {
 pub struct CastDialog {
     column: String,
     from_text: bool,
-    choice: TypeChoice,
+    /// The column's values are numbers (text output can use separators).
+    from_number: bool,
+    target: CastTarget,
+    /// Type name typed for "Other type…", e.g. `decimal(10, 2)`.
+    other: String,
     decimal: Separator,
     thousands: Separator,
     format: String,
@@ -586,7 +653,8 @@ pub struct CastDialog {
 
 #[derive(Debug, Clone)]
 pub enum CastMessage {
-    Type(TypeChoice),
+    Type(CastTarget),
+    Other(String),
     Decimal(Separator),
     Thousands(Separator),
     Format(String),
@@ -600,18 +668,25 @@ impl CastDialog {
     /// it in when editing a step.
     pub fn new(column: String, sample: ArrayRef, cast: Option<&Cast>) -> Self {
         let from_text = is_text(sample.data_type());
+        let from_number = sample.data_type().is_numeric();
         let options = cast.map(|c| c.options.clone()).unwrap_or_default();
-        let choice = cast
-            .and_then(|c| TypeChoice::from_type(&c.to))
-            .unwrap_or(if from_text {
-                TypeChoice::Decimal
-            } else {
-                TypeChoice::Text
-            });
+        let (target, other) = match cast {
+            Some(c) => match CastTarget::ALL
+                .iter()
+                .find(|t| t.data_type().as_ref() == Some(&c.to))
+            {
+                Some(t) => (*t, String::new()),
+                None => (CastTarget::Other, veta_core::display::type_name(&c.to)),
+            },
+            None if from_text => (CastTarget::Float64, String::new()),
+            None => (CastTarget::Text, String::new()),
+        };
         let mut dialog = Self {
             column,
             from_text,
-            choice,
+            from_number,
+            target,
+            other,
             decimal: Separator::from_char(Some(options.decimal)),
             thousands: Separator::from_char(options.thousands),
             format: options.format.unwrap_or_default(),
@@ -623,42 +698,69 @@ impl CastDialog {
         dialog
     }
 
+    /// The chosen type; `None` while "Other type…" holds no valid name.
+    fn data_type(&self) -> Option<DataType> {
+        match self.target {
+            CastTarget::Other => veta_core::display::parse_type_name(&self.other),
+            target => target.data_type(),
+        }
+    }
+
     fn uses_format(&self) -> bool {
-        self.from_text && matches!(self.choice, TypeChoice::Date | TypeChoice::Timestamp)
+        self.from_text
+            && matches!(
+                self.data_type(),
+                Some(DataType::Date32 | DataType::Timestamp(..))
+            )
     }
 
     fn uses_separators(&self) -> bool {
-        self.from_text && matches!(self.choice, TypeChoice::Integer | TypeChoice::Decimal)
+        let to = self.data_type();
+        let to_number = to.as_ref().is_some_and(DataType::is_numeric);
+        let to_text = to.as_ref().is_some_and(is_text);
+        (self.from_text && to_number) || (self.from_number && to_text)
     }
 
-    fn cast(&self) -> Cast {
+    fn cast(&self) -> Option<Cast> {
         let format = self.format.trim();
-        Cast {
+        Some(Cast {
             column: self.column.clone(),
-            to: self.choice.data_type(),
+            to: self.data_type()?,
             options: CastOptions {
                 decimal: self.decimal.char().unwrap_or('.'),
                 thousands: self.thousands.char(),
                 format: (self.uses_format() && !format.is_empty()).then(|| format.to_owned()),
                 on_error: self.on_error,
             },
-        }
+        })
     }
 
     fn refresh(&mut self) {
-        self.preview = self.cast().preview(&self.sample);
+        self.preview = match self.cast() {
+            Some(cast) => cast.preview(&self.sample),
+            None => CastPreview::default(),
+        };
     }
 
     /// Handles a message. Returns the cast to apply on submit.
     pub fn update(&mut self, message: CastMessage) -> Option<Cast> {
         match message {
-            CastMessage::Type(choice) => self.choice = choice,
+            CastMessage::Type(target) => {
+                if target == CastTarget::Other && self.other.is_empty() {
+                    self.other = self
+                        .data_type()
+                        .map(|t| veta_core::display::type_name(&t))
+                        .unwrap_or_default();
+                }
+                self.target = target;
+            }
+            CastMessage::Other(name) => self.other = name,
             CastMessage::Decimal(s) => self.decimal = s,
             CastMessage::Thousands(s) => self.thousands = s,
             CastMessage::Format(f) => self.format = f,
             CastMessage::OnError(e) => self.on_error = e,
             CastMessage::Cancel => return None,
-            CastMessage::Apply => return Some(self.cast()),
+            CastMessage::Apply => return self.cast(),
         }
         self.refresh();
         None
@@ -675,12 +777,35 @@ impl CastDialog {
             text(format!("Change type of {}", self.column)).size(20),
             labelled(
                 "Type",
-                pick_list(TypeChoice::ALL, Some(self.choice), CastMessage::Type)
+                pick_list(CastTarget::ALL, Some(self.target), CastMessage::Type)
                     .width(Length::Fill)
                     .into()
             ),
         ]
         .spacing(14);
+        if self.target == CastTarget::Other {
+            body = body.push(labelled(
+                "Type name",
+                text_input(
+                    "e.g. decimal(10, 2), timestamp[ms, UTC], list<int64>",
+                    &self.other,
+                )
+                .on_input(CastMessage::Other)
+                .on_submit(CastMessage::Apply)
+                .into(),
+            ));
+            if self.data_type().is_none() {
+                body = body.push(
+                    text(
+                        "Types: int8-64, uint8-64, float32/64, decimal(p, s), bool, string, \
+                         binary, date, time[s|ms|us|ns], timestamp[unit] or \
+                         timestamp[unit, zone], duration[unit], list<type>.",
+                    )
+                    .size(12)
+                    .color(tokens.muted_text),
+                );
+            }
+        }
         if self.uses_separators() {
             body = body.push(labelled(
                 "Decimal separator",
@@ -726,7 +851,9 @@ impl CastDialog {
                 .into(),
         ));
         let p = &self.preview;
-        let summary = if p.checked == 0 {
+        let summary = if self.data_type().is_none() {
+            "Enter a type name.".to_owned()
+        } else if p.checked == 0 {
             "No rows to check.".to_owned()
         } else if p.failed == 0 {
             format!("All of the first {} rows convert.", p.checked)
@@ -2729,5 +2856,28 @@ mod tests {
         );
         assert_eq!(Level::choices(Compression::Zstd(None)).len(), 23);
         assert_eq!(Level::choices(Compression::Snappy), vec![Level(None)]);
+    }
+
+    #[test]
+    fn cast_dialog_other_types_and_separators() {
+        let sample: ArrayRef =
+            std::sync::Arc::new(veta_core::arrow::array::Float64Array::from(vec![1234.5]));
+        let mut dialog = CastDialog::new("n".into(), sample, None);
+        assert_eq!(dialog.target, CastTarget::Text);
+        assert!(dialog.uses_separators(), "numbers to text use separators");
+        dialog.update(CastMessage::Decimal(Separator::Comma));
+        dialog.update(CastMessage::Type(CastTarget::Other));
+        assert_eq!(dialog.other, "string");
+        dialog.update(CastMessage::Other("decimal(10".into()));
+        assert_eq!(dialog.update(CastMessage::Apply), None, "not a type yet");
+        dialog.update(CastMessage::Other("decimal(10, 2)".into()));
+        let cast = dialog.update(CastMessage::Apply).unwrap();
+        assert_eq!(cast.to, DataType::Decimal128(10, 2));
+        // Editing a step with a type not in the list shows its name.
+        let edit = CastDialog::new("n".into(), dialog.sample.clone(), Some(&cast));
+        assert_eq!(
+            (edit.target, edit.other.as_str()),
+            (CastTarget::Other, "decimal(10, 2)")
+        );
     }
 }

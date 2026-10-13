@@ -4718,9 +4718,7 @@ mod tests {
         ));
         let _ = app.update(Message::Action(Action::DataType));
         assert!(matches!(app.dialog, Some(Dialog::Cast { .. })));
-        let _ = app.update(Message::Cast(CastMessage::Type(
-            dialogs::TypeChoice::Integer,
-        )));
+        let _ = app.update(Message::Cast(CastMessage::Type(dialogs::CastTarget::Int64)));
         let _ = app.update(Message::Cast(CastMessage::OnError(
             veta_core::steps::OnError::ErrorColumn,
         )));
@@ -4747,7 +4745,7 @@ mod tests {
             },
         ));
         let _ = app.update(Message::Action(Action::DataType));
-        let _ = app.update(Message::Cast(CastMessage::Type(dialogs::TypeChoice::Text)));
+        let _ = app.update(Message::Cast(CastMessage::Type(dialogs::CastTarget::Text)));
         let _ = app.update(Message::Cast(CastMessage::OnError(
             veta_core::steps::OnError::ErrorColumn,
         )));

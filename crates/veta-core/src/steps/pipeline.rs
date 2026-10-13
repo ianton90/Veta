@@ -258,8 +258,19 @@ impl Pipeline {
     /// Runs every pending full pass on this thread.
     pub fn compute_all(&mut self, progress: &mut dyn FnMut(f32) -> bool) -> Result<()> {
         while let Some(job) = self.compute_job() {
-            let computed = job.run(progress)?;
-            self.install(computed);
+            let key = job.ids.clone();
+            match job.run(progress) {
+                Ok(computed) => {
+                    self.install(computed);
+                }
+                Err(crate::Error::Cancelled) => return Err(crate::Error::Cancelled),
+                // The step is marked broken, as when computed in the
+                // background.
+                Err(e) => {
+                    self.fail(&key, e.to_string());
+                    return Err(e);
+                }
+            }
         }
         Ok(())
     }
@@ -299,7 +310,9 @@ impl Pipeline {
         }
         let schema = self.levels[level].schema.clone();
         let previous = level - 1;
-        if let Some(cache) = &self.caches[previous] {
+        if let Some(cache) = &self.caches[previous]
+            && !matches!(cache.as_ref(), Cache::Checked(_))
+        {
             return match cache.as_ref() {
                 Cache::Rows(rows) => {
                     let parts = rows
@@ -320,6 +333,8 @@ impl Pipeline {
                         .collect::<Result<Vec<_>>>()?;
                     with_schema(schema, columns, batch.num_rows())
                 }
+                // Read window by window below.
+                Cache::Checked(_) => unreachable!("handled above"),
             };
         }
         match &self.steps[previous] {

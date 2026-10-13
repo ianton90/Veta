@@ -855,7 +855,8 @@ mod tests {
         undo(&mut doc);
         cast.options.on_error = OnError::Fail;
         execute(&mut doc, Command::Cast(cast)).unwrap();
-        assert!(doc.read(0..10).is_err(), "failing values stop reading");
+        assert!(doc.compute_all().is_err(), "failing values break the step");
+        assert!(matches!(doc.status(), crate::steps::Status::Broken { .. }));
         assert!(doc.save(Some(dir.join("fail.parquet"))).is_err());
     }
 
@@ -1243,5 +1244,48 @@ mod tests {
         assert!(names.contains(&"owner.home.x"), "{names:?}");
         let (_, x) = leaves.iter().find(|(p, _)| p == "point.x").unwrap();
         assert_eq!(x, &DataType::Int64);
+    }
+
+    #[test]
+    fn failing_cast_breaks_its_step() {
+        use crate::steps::{Cast, CastOptions, OnError, Status};
+        let dir = TempDir::new();
+        let mut doc = mixed(&dir);
+        // "name" holds text like "ana": not a number.
+        execute(
+            &mut doc,
+            Command::Cast(Cast {
+                column: "name".into(),
+                to: DataType::Int64,
+                options: CastOptions {
+                    on_error: OnError::Fail,
+                    ..CastOptions::default()
+                },
+            }),
+        )
+        .unwrap();
+        assert!(doc.compute_all().is_err());
+        let Status::Broken { step, error } = doc.status() else {
+            panic!("expected a broken step, got {:?}", doc.status());
+        };
+        assert_eq!(*step, 0);
+        assert!(error.contains("ow 2: \"bo\" in column name"), "{error}");
+        // A cast that works is computed and read normally.
+        assert!(undo(&mut doc));
+        execute(
+            &mut doc,
+            Command::Cast(Cast {
+                column: "id".into(),
+                to: DataType::Utf8,
+                options: CastOptions {
+                    on_error: OnError::Fail,
+                    ..CastOptions::default()
+                },
+            }),
+        )
+        .unwrap();
+        doc.compute_all().unwrap();
+        assert!(matches!(doc.status(), Status::Ready));
+        assert_eq!(cell(&doc, 0, "id").as_deref(), Some("0"));
     }
 }
