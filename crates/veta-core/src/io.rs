@@ -28,6 +28,7 @@ use crate::model::{
 };
 use crate::source::{DataSource, MemorySource, PagedSource};
 use crate::steps::Pipeline;
+pub use crate::steps::checkpoint::remove_stale_temp_files;
 
 /// Default memory budget for loading a file: 1 GiB.
 pub const DEFAULT_MEMORY_BUDGET: usize = 1024 * 1024 * 1024;

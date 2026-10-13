@@ -634,7 +634,7 @@ pub fn tab_bar(
 pub fn status_bar(
     active: Option<(&Tab, &Document)>,
     opening: usize,
-    exporting: usize,
+    transfers: &[crate::Transfer],
     notice: Option<&str>,
     ui: Ui,
 ) -> Element<'static, Message> {
@@ -678,21 +678,41 @@ pub fn status_bar(
     if opening > 0 {
         parts.push(format!("Opening {opening} file(s)…"));
     }
-    if exporting > 0 {
-        parts.push("Exporting…".into());
-    } else if let Some(notice) = notice {
+    if transfers.is_empty()
+        && let Some(notice) = notice
+    {
         parts.push(notice.to_owned());
     }
     let t = ui.tokens;
-    container(
+    let mut bar = row![
         text(parts.join("   ·   "))
             .size(ui.small())
-            .color(t.muted_text),
-    )
-    .padding([4, 12])
-    .width(Length::Fill)
-    .style(move |_theme: &Theme| surface(t))
-    .into()
+            .color(t.muted_text)
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+    for transfer in transfers {
+        bar = bar.push(
+            text(format!(
+                "{} {:.0}%",
+                transfer.label,
+                transfer.progress * 100.0
+            ))
+            .size(ui.small())
+            .color(t.text),
+        );
+        bar = bar.push(
+            button(text("Cancel").size(ui.small()))
+                .padding([0, 8])
+                .style(move |_theme: &Theme, status| subtle_button(t, status))
+                .on_press(Message::CancelTransfer(transfer.id)),
+        );
+    }
+    container(bar)
+        .padding([4, 12])
+        .width(Length::Fill)
+        .style(move |_theme: &Theme| surface(t))
+        .into()
 }
 
 /// Shows and edits the selected cell, like Excel's formula bar.

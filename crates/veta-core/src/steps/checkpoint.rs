@@ -42,6 +42,74 @@ impl Drop for TempFile {
     }
 }
 
+/// Deletes temporary files left in the temp directory by Veta processes
+/// that ended without cleaning up (a crash). Returns how many were removed.
+///
+/// A file counts as stale when its process is gone (Linux), or when it is
+/// over a day old (other Unix systems; deleting a file another process has
+/// open is harmless there), or when nothing has it open and it is over an
+/// hour old (Windows).
+pub fn remove_stale_temp_files() -> usize {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return 0;
+    };
+    let own = std::process::id();
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("veta-"))
+            .and_then(|n| n.strip_suffix(".parquet"))
+            .and_then(|n| n.split_once('-'))
+            .and_then(|(pid, _)| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid != own && is_stale(&entry.path(), pid) && std::fs::remove_file(entry.path()).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn age(path: &Path) -> std::time::Duration {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+fn is_stale(_path: &Path, pid: u32) -> bool {
+    !Path::new(&format!("/proc/{pid}")).exists()
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn is_stale(path: &Path, _pid: u32) -> bool {
+    age(path) > std::time::Duration::from_secs(24 * 3600)
+}
+
+#[cfg(windows)]
+fn is_stale(path: &Path, _pid: u32) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    // Opening without sharing fails while another process has it open.
+    let unused = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(path)
+        .is_ok();
+    unused && age(path) > std::time::Duration::from_secs(3600)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn is_stale(path: &Path, _pid: u32) -> bool {
+    age(path) > std::time::Duration::from_secs(24 * 3600)
+}
+
 /// A step's output stored in a temporary Parquet file and read on demand.
 #[derive(Debug)]
 pub(crate) struct Checkpoint {

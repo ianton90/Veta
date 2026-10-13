@@ -173,7 +173,8 @@ veta-cli writer-settings <file> [--column C]... [--compression ...] [--level N]
 veta-cli stats <file> [-c NAME]... [--json]
 veta-cli convert <in> <out> [--from F] [--format parquet|csv|json|ndjson]
           [--delimiter C] [--quote C|none] [--decimal C] [--no-header]
-          [--encoding utf8|latin1] [--on-error column|null|fail]
+          [--encoding utf8|latin1|windows1252|utf16le|utf16be] [--date-format F]
+          [--on-error column|null|fail]
 veta-cli apply <recipe.json> <file>        # run steps saved from the GUI
 ```
 

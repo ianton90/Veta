@@ -1544,20 +1544,18 @@ impl std::fmt::Display for DecimalMark {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EncodingChoice {
-    Utf8,
-    Latin1,
-}
-
-impl std::fmt::Display for EncodingChoice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Utf8 => "UTF-8",
-            Self::Latin1 => "Latin-1",
-        })
-    }
-}
+/// Column types offered when importing CSV.
+const IMPORT_TYPES: [CastTarget; 9] = [
+    CastTarget::Text,
+    CastTarget::Int64,
+    CastTarget::Int32,
+    CastTarget::Float64,
+    CastTarget::Float32,
+    CastTarget::Boolean,
+    CastTarget::Date,
+    CastTarget::Timestamp,
+    CastTarget::Time,
+];
 
 /// Rows shown in the import preview.
 const PREVIEW_ROWS: usize = 12;
@@ -1571,10 +1569,12 @@ pub struct ImportDialog {
     other: String,
     quote: Quote,
     header: bool,
-    encoding: EncodingChoice,
+    encoding: TextEncoding,
     decimal: DecimalMark,
     /// Column types chosen (initially the guessed ones).
     types: Vec<DataType>,
+    /// Format of date and timestamp columns; empty reads ISO 8601.
+    date_format: String,
     on_error: OnError,
     preview: Result<CsvPreview, String>,
 }
@@ -1585,9 +1585,10 @@ pub enum ImportMessage {
     Other(String),
     Quote(Quote),
     Header(bool),
-    Encoding(EncodingChoice),
+    Encoding(TextEncoding),
     Decimal(DecimalMark),
-    Type(usize, TypeChoice),
+    Type(usize, CastTarget),
+    DateFormat(String),
     OnError(OnError),
     Import,
     Cancel,
@@ -1608,9 +1609,10 @@ impl ImportDialog {
             other: String::new(),
             quote: Quote::Double,
             header: true,
-            encoding: EncodingChoice::Utf8,
+            encoding: TextEncoding::Utf8,
             decimal: DecimalMark::Dot,
             types: Vec::new(),
+            date_format: String::new(),
             on_error: OnError::ErrorColumn,
             preview: Err(String::new()),
         };
@@ -1648,14 +1650,18 @@ impl ImportDialog {
             delimiter: separator(self.delimiter, &self.other).unwrap_or(b','),
             quote: self.quote.byte(),
             header: self.header,
-            encoding: match self.encoding {
-                EncodingChoice::Utf8 => TextEncoding::Utf8,
-                EncodingChoice::Latin1 => TextEncoding::Latin1,
-            },
+            encoding: self.encoding,
             decimal: self.decimal.char(),
             types: (!self.types.is_empty()).then(|| self.types.clone()),
+            date_format: Some(self.date_format.trim().to_owned()).filter(|f| !f.is_empty()),
             on_error: self.on_error,
         }
+    }
+
+    fn has_dates(&self) -> bool {
+        self.types
+            .iter()
+            .any(|t| matches!(t, DataType::Date32 | DataType::Timestamp(..)))
     }
 
     /// Re-reads the preview; `guess` drops chosen types and guesses again.
@@ -1706,10 +1712,14 @@ impl ImportDialog {
                 self.decimal = d;
                 self.refresh(true);
             }
-            ImportMessage::Type(i, choice) => {
-                if let Some(t) = self.types.get_mut(i) {
-                    *t = choice.data_type();
+            ImportMessage::Type(i, target) => {
+                if let (Some(t), Some(to)) = (self.types.get_mut(i), target.data_type()) {
+                    *t = to;
                 }
+                self.refresh(false);
+            }
+            ImportMessage::DateFormat(format) => {
+                self.date_format = format;
                 self.refresh(false);
             }
             ImportMessage::OnError(e) => self.on_error = e,
@@ -1765,7 +1775,7 @@ impl ImportDialog {
             column![
                 text("Encoding").size(13),
                 pick_list(
-                    [EncodingChoice::Utf8, EncodingChoice::Latin1],
+                    TextEncoding::ALL,
                     Some(self.encoding),
                     ImportMessage::Encoding
                 )
@@ -1795,15 +1805,17 @@ impl ImportDialog {
                 let cells = veta_core::display::format_batch(&preview.rows).unwrap_or_default();
                 let mut header = row![].spacing(6);
                 for (i, field) in preview.schema.fields().iter().enumerate() {
-                    let choice = TypeChoice::from_type(field.data_type());
+                    let choice = IMPORT_TYPES
+                        .into_iter()
+                        .find(|t| t.data_type().as_ref() == Some(field.data_type()));
                     let picker: Element<'_, ImportMessage> = match choice {
                         Some(c) => {
-                            pick_list(TypeChoice::ALL, Some(c), move |t| ImportMessage::Type(i, t))
+                            pick_list(IMPORT_TYPES, Some(c), move |t| ImportMessage::Type(i, t))
                                 .text_size(12)
                                 .width(WIDTH)
                                 .into()
                         }
-                        None => pick_list(TypeChoice::ALL, None::<TypeChoice>, move |t| {
+                        None => pick_list(IMPORT_TYPES, None::<CastTarget>, move |t| {
                             ImportMessage::Type(i, t)
                         })
                         .placeholder(veta_core::display::type_name(field.data_type()))
@@ -1849,11 +1861,29 @@ impl ImportDialog {
                     .into()
             }
         };
+        let date_format: Option<Element<'_, ImportMessage>> = self.has_dates().then(|| {
+            column![
+                row![
+                    text("Date format"),
+                    text_input("Automatic (ISO 8601: 2024-12-31)", &self.date_format)
+                        .on_input(ImportMessage::DateFormat)
+                        .width(Length::Fill),
+                ]
+                .spacing(12)
+                .align_y(Alignment::Center),
+                text(FORMAT_CODES).size(12).color(tokens.muted_text),
+            ]
+            .spacing(4)
+            .into()
+        });
         let body = column![
             text(format!("Import {name}")).size(20),
             options,
             text("Preview").size(15),
             preview,
+        ]
+        .extend(date_format)
+        .push(
             row![
                 text("Values that don't fit their column's type:"),
                 pick_list(OnError::ALL, Some(self.on_error), ImportMessage::OnError)
@@ -1861,11 +1891,17 @@ impl ImportDialog {
             ]
             .spacing(12)
             .align_y(Alignment::Center),
+        )
+        .push(
             text("You'll be told how many values didn't fit after importing.")
                 .size(12)
                 .color(tokens.muted_text),
-            buttons("Import", ImportMessage::Cancel, ImportMessage::Import),
-        ]
+        )
+        .push(buttons(
+            "Import",
+            ImportMessage::Cancel,
+            ImportMessage::Import,
+        ))
         .spacing(14);
         card(body.into(), tokens, 820.0)
     }

@@ -205,6 +205,9 @@ pub enum OnErrorArg {
 pub enum InputEncoding {
     Utf8,
     Latin1,
+    Windows1252,
+    Utf16le,
+    Utf16be,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
@@ -226,6 +229,9 @@ pub struct ConvertArgs {
     /// CSV decimal separator.
     #[arg(long, default_value = ".")]
     pub decimal: char,
+    /// Format of CSV dates and timestamps, e.g. "%d/%m/%Y" (default: ISO 8601).
+    #[arg(long, value_name = "FORMAT")]
+    pub date_format: Option<String>,
     /// The CSV input has no header row / don't write one.
     #[arg(long)]
     pub no_header: bool,
@@ -289,8 +295,12 @@ pub fn convert(args: ConvertArgs, out: &mut impl Write) -> Result<(), Error> {
                     encoding: match args.encoding {
                         InputEncoding::Utf8 => TextEncoding::Utf8,
                         InputEncoding::Latin1 => TextEncoding::Latin1,
+                        InputEncoding::Windows1252 => TextEncoding::Windows1252,
+                        InputEncoding::Utf16le => TextEncoding::Utf16Le,
+                        InputEncoding::Utf16be => TextEncoding::Utf16Be,
                     },
                     decimal: args.decimal,
+                    date_format: args.date_format.clone(),
                     on_error: match args.on_error {
                         OnErrorArg::Column => veta_core::steps::OnError::ErrorColumn,
                         OnErrorArg::Null => veta_core::steps::OnError::Null,

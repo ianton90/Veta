@@ -69,6 +69,8 @@ pub fn run(files: Vec<PathBuf>) -> iced::Result {
             instance::Claim::Alone => {}
         }
     }
+    // Temp files from earlier sessions that crashed.
+    std::thread::spawn(veta_core::io::remove_stale_temp_files);
     let startup = Startup::load();
     let (font, size) = startup.font();
     iced::application(
@@ -98,6 +100,28 @@ fn nested_columns(schema: &veta_core::arrow::datatypes::Schema) -> Vec<String> {
         .filter(|f| f.data_type().is_nested())
         .map(|f| f.name().clone())
         .collect()
+}
+
+/// A background import or export, shown in the status bar.
+#[derive(Debug)]
+pub struct Transfer {
+    pub id: u64,
+    /// The file being imported, if this is an import.
+    importing: Option<PathBuf>,
+    pub label: String,
+    pub progress: f32,
+    cancel: Arc<AtomicBool>,
+}
+
+fn file_label(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Whether an error message is the core's "cancelled".
+fn is_cancelled(error: &str) -> bool {
+    error == veta_core::Error::Cancelled.to_string()
 }
 
 /// Each top-level column with its metadata: as edited in Veta, otherwise
@@ -272,7 +296,9 @@ struct App {
     /// A value inside a nested cell being edited in the Value tab.
     leaf_edit: Option<LeafEdit>,
     /// Exports running in the background.
-    exporting: usize,
+    /// Imports and exports running in the background.
+    transfers: Vec<Transfer>,
+    next_transfer: u64,
     /// Last thing done worth telling (shown in the status bar).
     notice: Option<String>,
     /// A "remove the error column if empty" step just added after a cast,
@@ -586,6 +612,10 @@ enum Message {
     /// Where to export was chosen.
     ExportTo(DocumentId, Option<PathBuf>),
     Exported(Result<PathBuf, String>),
+    /// A background import or export reached this fraction.
+    TransferProgress(u64, f32),
+    TransferDone(u64),
+    CancelTransfer(u64),
     /// Turn off the temporary row filter.
     ClearFilter,
     SaveRecipe,
@@ -650,7 +680,8 @@ impl App {
             computing: None,
             error_check: None,
             stats: Stats::default(),
-            exporting: 0,
+            transfers: Vec::new(),
+            next_transfer: 0,
             notice: None,
             collapsed: HashSet::new(),
             leaf_edit: None,
@@ -765,6 +796,7 @@ impl App {
                 match result.map(|loaded| loaded.take()) {
                     Ok(Some(document)) => self.add_document(&path, document),
                     Ok(None) => {}
+                    Err(e) if is_cancelled(&e) => {}
                     Err(e) => self
                         .errors
                         .push(format!("Could not open {}: {e}", path.display())),
@@ -780,6 +812,7 @@ impl App {
                         }
                     }
                     Ok(None) => {}
+                    Err(e) if is_cancelled(&e) => {}
                     Err(e) => self
                         .errors
                         .push(format!("Could not import {}: {e}", path.display())),
@@ -1420,17 +1453,19 @@ impl App {
                         let budget = self.config.memory_budget();
                         self.opening.push(path.clone());
                         let worker_path = path.clone();
-                        return Task::perform(
-                            blocking(move || {
+                        return self.start_transfer(
+                            Some(path.clone()),
+                            format!("Importing {}", file_label(&path)),
+                            move |progress| {
                                 veta_core::convert::import_csv(
                                     &worker_path,
                                     &options,
                                     budget,
-                                    &mut |_| true,
+                                    progress,
                                 )
                                 .map(Slot::new)
                                 .map_err(|e| e.to_string())
-                            }),
+                            },
                             move |result| Message::Imported(path.clone(), result),
                         );
                     } else if cancel {
@@ -1473,22 +1508,32 @@ impl App {
                     }
                     None => return Task::none(),
                 };
-                self.exporting += 1;
-                return Task::perform(
-                    blocking(move || {
-                        veta_core::convert::export(&output, &path, &format, &mut |_| true)
+                return self.start_transfer(
+                    None,
+                    format!("Exporting {}", file_label(&path)),
+                    move |progress| {
+                        veta_core::convert::export(&output, &path, &format, progress)
                             .map(|()| path)
                             .map_err(|e| e.to_string())
-                    }),
+                    },
                     Message::Exported,
                 );
             }
             Message::ExportTo(_, None) => {}
-            Message::Exported(result) => {
-                self.exporting = self.exporting.saturating_sub(1);
-                match result {
-                    Ok(path) => self.notice = Some(format!("Exported {}", path.display())),
-                    Err(e) => self.errors.push(format!("Could not export: {e}")),
+            Message::Exported(result) => match result {
+                Ok(path) => self.notice = Some(format!("Exported {}", path.display())),
+                Err(e) if is_cancelled(&e) => self.notice = Some("Export cancelled".into()),
+                Err(e) => self.errors.push(format!("Could not export: {e}")),
+            },
+            Message::TransferProgress(id, progress) => {
+                if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
+                    t.progress = progress;
+                }
+            }
+            Message::TransferDone(id) => self.transfers.retain(|t| t.id != id),
+            Message::CancelTransfer(id) => {
+                if let Some(t) = self.transfers.iter().find(|t| t.id == id) {
+                    t.cancel.store(true, Ordering::Relaxed);
                 }
             }
             Message::ClearFilter => {
@@ -3058,6 +3103,41 @@ impl App {
         Task::run(receiver, |message| message)
     }
 
+    /// Runs `work` on a thread with progress and cancel shown in the status
+    /// bar; `done` turns its result into the message to handle.
+    fn start_transfer<T: Send + 'static>(
+        &mut self,
+        importing: Option<PathBuf>,
+        label: String,
+        work: impl FnOnce(&mut dyn FnMut(f32) -> bool) -> T + Send + 'static,
+        done: impl Fn(T) -> Message + Send + 'static,
+    ) -> Task<Message> {
+        let id = self.next_transfer;
+        self.next_transfer += 1;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.transfers.push(Transfer {
+            id,
+            importing,
+            label,
+            progress: 0.0,
+            cancel: cancel.clone(),
+        });
+        let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
+        std::thread::spawn(move || {
+            let mut reported = 0.0;
+            let result = work(&mut |progress| {
+                if progress - reported >= 0.01 {
+                    reported = progress;
+                    let _ = sender.unbounded_send(Message::TransferProgress(id, progress));
+                }
+                !cancel.load(Ordering::Relaxed)
+            });
+            let _ = sender.unbounded_send(done(result));
+            let _ = sender.unbounded_send(Message::TransferDone(id));
+        });
+        Task::run(receiver, |message| message)
+    }
+
     fn open_column_dialog(&mut self, id: DocumentId, dialog: ColumnDialog) -> Task<Message> {
         self.edit = None;
         self.dialog = Some(Dialog::Column {
@@ -3261,15 +3341,25 @@ impl App {
             self.opening.push(path.clone());
             let worker_path = path.clone();
             let budget = options.memory_budget;
+            if format == Some(veta_core::convert::ImportFormat::Json) {
+                let label = format!("Importing {}", file_label(&path));
+                tasks.push(self.start_transfer(
+                    Some(path.clone()),
+                    label,
+                    move |progress| {
+                        veta_core::convert::import_json(&worker_path, budget, progress)
+                            .map(Loaded::new)
+                            .map_err(|e| e.to_string())
+                    },
+                    move |result| Message::Opened(path.clone(), result),
+                ));
+                continue;
+            }
             tasks.push(Task::perform(
                 blocking(move || {
-                    let document = match format {
-                        Some(veta_core::convert::ImportFormat::Json) => {
-                            veta_core::convert::import_json(&worker_path, budget, &mut |_| true)
-                        }
-                        _ => Document::open(worker_path, options),
-                    };
-                    document.map(Loaded::new).map_err(|e| e.to_string())
+                    Document::open(worker_path, options)
+                        .map(Loaded::new)
+                        .map_err(|e| e.to_string())
                 }),
                 move |result| Message::Opened(path.clone(), result),
             ));
@@ -3442,8 +3532,14 @@ impl App {
             ),
             panes::status_bar(
                 self.active_document(),
-                self.opening.len(),
-                self.exporting,
+                self.opening
+                    .iter()
+                    .filter(|p| !self
+                        .transfers
+                        .iter()
+                        .any(|t| t.importing.as_ref() == Some(p)))
+                    .count(),
+                &self.transfers,
                 self.notice.as_deref(),
                 ui
             ),
@@ -4414,7 +4510,7 @@ mod tests {
         assert_eq!((options.delimiter, options.decimal), (b';', ','));
         let _ = app.update(Message::Import(ImportMessage::Type(
             0,
-            dialogs::TypeChoice::Text,
+            dialogs::CastTarget::Text,
         )));
         let _ = app.update(Message::Import(ImportMessage::Import));
         assert!(app.dialog.is_none());
@@ -4469,7 +4565,7 @@ mod tests {
         let _ = app.update(Message::ImportPicked(Some(csv.clone())));
         let _ = app.update(Message::Import(ImportMessage::Type(
             0,
-            dialogs::TypeChoice::Integer,
+            dialogs::CastTarget::Int64,
         )));
         let Some(Dialog::Import(dialog)) = &app.dialog else {
             panic!("import dialog");
@@ -4606,9 +4702,15 @@ mod tests {
         );
         let _ = app.update(Message::ExportTo(id, Some(dir.join("out.csv"))));
         assert!(app.dialog.is_none());
-        assert_eq!(app.exporting, 1);
+        assert_eq!(app.transfers.len(), 1);
+        let transfer = app.transfers[0].id;
+        let _ = app.update(Message::TransferProgress(transfer, 0.5));
+        assert_eq!(app.transfers[0].progress, 0.5);
+        let _ = app.update(Message::CancelTransfer(transfer));
+        assert!(app.transfers[0].cancel.load(Ordering::Relaxed));
         let _ = app.update(Message::Exported(Ok(dir.join("out.csv"))));
-        assert_eq!(app.exporting, 0);
+        let _ = app.update(Message::TransferDone(transfer));
+        assert!(app.transfers.is_empty());
         assert!(app.notice.as_deref().unwrap().starts_with("Exported"));
     }
 

@@ -32,11 +32,46 @@ pub const INFER_ROWS: usize = 1000;
 /// Text encodings for CSV files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TextEncoding {
+    /// UTF-8; files starting with a UTF-16 byte order mark are read as
+    /// UTF-16.
     #[default]
     Utf8,
-    /// ISO-8859-1 / Windows "ANSI" for Western languages.
+    /// ISO-8859-1.
     Latin1,
+    /// Windows-1252, Windows' "ANSI" for Western languages (Latin-1 plus
+    /// characters such as € and curly quotes).
+    Windows1252,
+    Utf16Le,
+    Utf16Be,
 }
+
+impl TextEncoding {
+    pub const ALL: [TextEncoding; 5] = [
+        Self::Utf8,
+        Self::Latin1,
+        Self::Windows1252,
+        Self::Utf16Le,
+        Self::Utf16Be,
+    ];
+}
+
+impl std::fmt::Display for TextEncoding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Utf8 => "UTF-8",
+            Self::Latin1 => "Latin-1 (ISO-8859-1)",
+            Self::Windows1252 => "Windows-1252",
+            Self::Utf16Le => "UTF-16 LE",
+            Self::Utf16Be => "UTF-16 BE",
+        })
+    }
+}
+
+/// Windows-1252 characters for bytes 0x80-0x9F (the rest match Latin-1).
+const WINDOWS_1252: [char; 32] = [
+    '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',
+    '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
+];
 
 /// How to read a CSV file.
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +87,9 @@ pub struct CsvOptions {
     pub decimal: char,
     /// Column types; `None` guesses them from the first rows.
     pub types: Option<Vec<DataType>>,
+    /// Format of date and timestamp columns (`%d/%m/%Y`, …, as in Change
+    /// type); `None` reads ISO 8601.
+    pub date_format: Option<String>,
     /// What to do with values that don't fit their column's type.
     pub on_error: OnError,
 }
@@ -65,6 +103,7 @@ impl Default for CsvOptions {
             encoding: TextEncoding::Utf8,
             decimal: '.',
             types: None,
+            date_format: None,
             on_error: OnError::ErrorColumn,
         }
     }
@@ -149,6 +188,9 @@ struct Input<'a> {
     cancelled: bool,
     /// Transcoded bytes not yet returned.
     pending: Vec<u8>,
+    /// UTF-16 bytes kept for the next chunk (an odd byte, or the first
+    /// half of a surrogate pair).
+    carry: Vec<u8>,
     started: bool,
 }
 
@@ -168,6 +210,7 @@ impl<'a> Input<'a> {
             progress,
             cancelled: false,
             pending: Vec::new(),
+            carry: Vec::new(),
             started: false,
         })
     }
@@ -186,7 +229,13 @@ impl Read for Input<'_> {
         let len = chunk.len();
         self.inner.consume(len);
         if len == 0 {
-            return Ok(0);
+            if self.carry.is_empty() {
+                return Ok(0);
+            }
+            // A dangling UTF-16 byte or surrogate at the end.
+            let rest = std::mem::take(&mut self.carry);
+            self.pending = decode_utf16(&rest, self.encoding == TextEncoding::Utf16Be, true).0;
+            return self.read(buf);
         }
         self.read += len as u64;
         if let Some(progress) = &mut self.progress
@@ -200,6 +249,18 @@ impl Read for Input<'_> {
             if self.encoding == TextEncoding::Utf8 && chunk.starts_with(&[0xEF, 0xBB, 0xBF]) {
                 chunk.drain(..3);
             }
+            // A UTF-16 byte order mark picks the byte order.
+            let utf16 = matches!(
+                self.encoding,
+                TextEncoding::Utf8 | TextEncoding::Utf16Le | TextEncoding::Utf16Be
+            );
+            if utf16 && chunk.starts_with(&[0xFF, 0xFE]) {
+                self.encoding = TextEncoding::Utf16Le;
+                chunk.drain(..2);
+            } else if utf16 && chunk.starts_with(&[0xFE, 0xFF]) {
+                self.encoding = TextEncoding::Utf16Be;
+                chunk.drain(..2);
+            }
         }
         self.pending = match self.encoding {
             TextEncoding::Utf8 => chunk,
@@ -208,9 +269,57 @@ impl Read for Input<'_> {
                 .map(|&b| b as char)
                 .collect::<String>()
                 .into_bytes(),
+            TextEncoding::Windows1252 => chunk
+                .iter()
+                .map(|&b| match b {
+                    0x80..=0x9F => WINDOWS_1252[usize::from(b - 0x80)],
+                    _ => b as char,
+                })
+                .collect::<String>()
+                .into_bytes(),
+            TextEncoding::Utf16Le | TextEncoding::Utf16Be => {
+                let mut bytes = std::mem::take(&mut self.carry);
+                bytes.extend_from_slice(&chunk);
+                let (text, rest) =
+                    decode_utf16(&bytes, self.encoding == TextEncoding::Utf16Be, false);
+                self.carry = rest;
+                text
+            }
         };
         self.read(buf)
     }
+}
+
+/// Decodes UTF-16 `bytes` to UTF-8, returning the bytes to keep for the
+/// next chunk: an odd last byte, or a high surrogate waiting for its pair
+/// (`at_end`: there is no next chunk).
+/// Invalid units become U+FFFD.
+fn decode_utf16(bytes: &[u8], big_endian: bool, at_end: bool) -> (Vec<u8>, Vec<u8>) {
+    let even = bytes.len() - bytes.len() % 2;
+    let mut units: Vec<u16> = bytes[..even]
+        .chunks_exact(2)
+        .map(|p| {
+            if big_endian {
+                u16::from_be_bytes([p[0], p[1]])
+            } else {
+                u16::from_le_bytes([p[0], p[1]])
+            }
+        })
+        .collect();
+    let mut rest = bytes[even..].to_vec();
+    if !at_end && units.last().is_some_and(|u| (0xD800..0xDC00).contains(u)) {
+        let unit = units.pop().unwrap_or_default();
+        let pair = if big_endian {
+            unit.to_be_bytes()
+        } else {
+            unit.to_le_bytes()
+        };
+        rest.splice(0..0, pair);
+    }
+    let text: String = char::decode_utf16(units)
+        .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect();
+    (text.into_bytes(), rest)
 }
 
 /// Turns a JSON array of objects into one object per line.
@@ -311,7 +420,7 @@ fn csv_format(options: &CsvOptions) -> arrow::csv::reader::Format {
 fn convert_columns(
     batch: &RecordBatch,
     schema: &SchemaRef,
-    decimal: char,
+    options: &CsvOptions,
 ) -> Result<Vec<(ArrayRef, Vec<usize>)>> {
     batch
         .columns()
@@ -325,9 +434,14 @@ fn convert_columns(
                 column: field.name().clone(),
                 to: field.data_type().clone(),
                 options: CastOptions {
-                    decimal,
+                    decimal: options.decimal,
                     thousands: None,
-                    format: None,
+                    format: options.date_format.clone().filter(|_| {
+                        matches!(
+                            field.data_type(),
+                            DataType::Date32 | DataType::Timestamp(..)
+                        )
+                    }),
                     on_error: OnError::Null,
                 },
             }
@@ -377,7 +491,7 @@ fn import_batch(
     first_row: usize,
     failures: &mut [u64],
 ) -> Result<RecordBatch> {
-    let converted = convert_columns(text, schema, options.decimal)?;
+    let converted = convert_columns(text, schema, options)?;
     for (i, (_, failed)) in converted.iter().enumerate() {
         failures[i] += failed.len() as u64;
         if options.on_error == OnError::Fail
@@ -544,7 +658,7 @@ fn csv_schema(path: &Path, options: &CsvOptions) -> Result<SchemaRef> {
 pub fn preview_csv(path: &Path, options: &CsvOptions, rows: usize) -> Result<CsvPreview> {
     let schema = csv_schema(path, options)?;
     let text = read_csv_text(path, options, &text_schema(&schema), rows)?;
-    let converted = convert_columns(&text, &schema, options.decimal)?;
+    let converted = convert_columns(&text, &schema, options)?;
     let failures = converted.iter().map(|(_, f)| f.len()).collect();
     let columns = converted.into_iter().map(|(c, _)| c).collect();
     let rows = RecordBatch::try_new(schema.clone(), columns)?;
@@ -667,14 +781,14 @@ fn json_input<'a>(
     })
 }
 
-/// Column names and types guessed from a JSON file's first objects, in the
-/// order keys first appear.
+/// Column names and types guessed from all of a JSON file's objects (so
+/// keys that first appear late aren't dropped), in the order keys first
+/// appear. This reads the file once more than the import itself.
 fn json_schema(path: &Path) -> Result<SchemaRef> {
     let (input, _) = json_input(path, None)?;
-    let (schema, _) =
-        arrow::json::reader::infer_json_schema(BufReader::new(input), Some(INFER_ROWS))?;
+    let (schema, _) = arrow::json::reader::infer_json_schema(BufReader::new(input), None)?;
     let (input, _) = json_input(path, None)?;
-    let order = key_order(BufReader::new(input), INFER_ROWS);
+    let order = key_order(BufReader::new(input), usize::MAX);
     let mut fields: Vec<_> = schema.fields().iter().cloned().collect();
     fields.sort_by_key(|f| {
         order
@@ -742,7 +856,7 @@ pub fn preview_json(path: &Path, rows: usize) -> Result<RecordBatch> {
 }
 
 /// Imports a JSON file (one object per line, or an array of objects) as a
-/// new, unsaved document. Types are guessed from the first objects.
+/// new, unsaved document. Types are guessed from all objects.
 pub fn import_json(
     path: &Path,
     memory_budget: usize,
@@ -1260,5 +1374,62 @@ mod tests {
             Err(Error::Cancelled)
         ));
         assert!(!dir.join("x.csv").exists());
+    }
+
+    #[test]
+    fn more_encodings_dates_and_late_json_keys() {
+        let dir = TempDir::new();
+        // UTF-16 LE with a byte order mark, read with the default (UTF-8).
+        let path = dir.join("u16.csv");
+        let text = "name,when\nzoë,31/12/2024\n€uro,01/02/2023\n";
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        std::fs::write(&path, bytes).unwrap();
+        let mut options = CsvOptions {
+            types: Some(vec![DataType::Utf8, DataType::Date32]),
+            date_format: Some("%d/%m/%Y".into()),
+            ..CsvOptions::default()
+        };
+        let (doc, report) = import_csv(&path, &options, usize::MAX, &mut |_| true).unwrap();
+        assert!(report.failures.is_empty(), "{report:?}");
+        let cells = crate::display::format_batch(&doc.read(0..2).unwrap()).unwrap();
+        assert_eq!(cells[0][0].as_deref(), Some("zoë"));
+        assert_eq!(cells[1][0].as_deref(), Some("€uro"));
+        assert_eq!(cells[0][1].as_deref(), Some("2024-12-31"));
+
+        // Windows-1252: 0x80 is €.
+        let path = dir.join("w.csv");
+        std::fs::write(&path, b"a\n\x80 5\n").unwrap();
+        options = CsvOptions {
+            encoding: TextEncoding::Windows1252,
+            ..CsvOptions::default()
+        };
+        let (doc, _) = import_csv(&path, &options, usize::MAX, &mut |_| true).unwrap();
+        let cells = crate::display::format_batch(&doc.read(0..1).unwrap()).unwrap();
+        assert_eq!(cells[0][0].as_deref(), Some("€ 5"));
+
+        // A key that first appears after the inference window is kept.
+        let path = dir.join("late.ndjson");
+        let mut lines: String = (0..1500).map(|i| format!("{{\"a\": {i}}}\n")).collect();
+        lines.push_str("{\"a\": 1, \"late\": \"x\"}\n");
+        std::fs::write(&path, lines).unwrap();
+        let doc = import_json(&path, usize::MAX, &mut |_| true).unwrap();
+        assert_eq!(doc.num_columns(), 2);
+        let last = crate::display::format_batch(&doc.read(1500..1501).unwrap()).unwrap();
+        assert_eq!(last[0][1].as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn utf16_split_across_chunks() {
+        // A surrogate pair split between two decode calls.
+        let text = "a😀b";
+        let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        let (first, rest) = decode_utf16(&bytes[..4], true, false);
+        let mut all = rest;
+        all.extend_from_slice(&bytes[4..]);
+        let (second, rest) = decode_utf16(&all, true, true);
+        assert!(rest.is_empty());
+        let joined = String::from_utf8([first, second].concat()).unwrap();
+        assert_eq!(joined, text);
     }
 }

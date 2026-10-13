@@ -433,3 +433,18 @@ fn fill_carries_values_across_batches() {
         }
     }
 }
+
+#[test]
+fn stale_temp_files_are_removed() {
+    let dir = std::env::temp_dir();
+    // No process has this id (above the usual pid limits).
+    let stale = dir.join("veta-4294967-0.parquet");
+    std::fs::write(&stale, b"x").unwrap();
+    let own = crate::steps::checkpoint::TempFile::new().unwrap();
+    crate::steps::checkpoint::remove_stale_temp_files();
+    if cfg!(target_os = "linux") {
+        assert!(!stale.exists());
+    }
+    assert!(own.path().exists(), "this process's files stay");
+    let _ = std::fs::remove_file(&stale);
+}
