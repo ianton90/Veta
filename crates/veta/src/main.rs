@@ -11,7 +11,7 @@ use clap::Parser;
 /// Parquet viewer and editor (desktop app). For command-line use, run
 /// `veta-cli`.
 #[derive(Debug, Parser)]
-#[command(name = "veta", version)]
+#[command(name = "veta", version = veta_core::version::LONG)]
 struct Args {
     /// Files to open.
     files: Vec<PathBuf>,

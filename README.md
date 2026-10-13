@@ -1,16 +1,22 @@
 # Veta
 A Parquet file viewer and editor written in Rust, with a desktop GUI (iced) and a CLI.
 
-Status: early development. See [docs/SCOPE.md](docs/SCOPE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Status: early development (0.1.0). See [CHANGELOG.md](CHANGELOG.md),
+[docs/SCOPE.md](docs/SCOPE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+Two programs: `veta` is the desktop app (`veta [FILE]...`), `veta-cli` the
+command line (`veta-cli --help`).
 
 ## Build and run
 
 Requires stable Rust 1.88 or newer.
 
 ```sh
-cargo run --release            # open the GUI
-cargo run --release -- --help  # CLI help
+cargo run --release -p veta                  # open the desktop app
+cargo run --release -p veta-cli -- --help    # command-line help
 ```
+
+Release archives: `scripts/release.sh` (see [docs/RELEASING.md](docs/RELEASING.md)).
 
 Linux needs the usual desktop libraries at runtime (present on any desktop
 install): `libxkbcommon-x11` for X11, Wayland libraries for Wayland, and a

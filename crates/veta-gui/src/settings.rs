@@ -212,7 +212,7 @@ pub fn view<'a>(
 pub fn about<'a, Message: Clone + 'a>(close: Message, tokens: Tokens) -> Element<'a, Message> {
     let body = column![
         text("Veta").size(22),
-        text(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+        text(format!("Version {}", veta_core::version::LONG)),
         text("A Parquet viewer and editor."),
         text("Licensed under Apache-2.0. Icons from Lucide (ISC License).")
             .color(tokens.muted_text),

@@ -17,7 +17,7 @@ use veta_core::{Command as CoreCommand, Document, OpenOptions};
 /// Read and edit Parquet files from the command line. The desktop app is
 /// `veta`.
 #[derive(Debug, Parser)]
-#[command(name = "veta-cli", version)]
+#[command(name = "veta-cli", version = veta_core::version::LONG)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
