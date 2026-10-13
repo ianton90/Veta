@@ -74,7 +74,6 @@ pub fn set_nested(
     text: Option<&str>,
     leaf_type: &DataType,
 ) -> Result<String> {
-    use crate::display::PathPart;
     let mut root: serde_json::Value = serde_json::from_str(cell_json)
         .map_err(|e| Error::InvalidCommand(format!("the cell is not valid JSON: {e}")))?;
     let leaf = parse_value(text, leaf_type)?;
@@ -84,7 +83,130 @@ pub fn set_nested(
         }
         None => serde_json::Value::Null,
     };
-    let mut target = &mut root;
+    *value_at(&mut root, pointer)? = leaf;
+    Ok(root.to_string())
+}
+
+/// `json` indented for reading; returned as is if it isn't valid JSON.
+pub fn pretty_json(json: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .unwrap_or_else(|| json.to_owned())
+}
+
+/// `text` as compact JSON, `None` for `null`. Fails if it isn't JSON.
+pub fn compact_json(text: &str) -> Result<Option<String>> {
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(serde_json::Value::Null) => Ok(None),
+        Ok(value) => Ok(Some(value.to_string())),
+        Err(e) => Err(Error::InvalidCommand(format!("not valid JSON: {e}"))),
+    }
+}
+
+/// Ways to change the shape of a nested cell (see [`edit_nested`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum NestedEdit {
+    /// Adds a null item at the end of the list at the pointer.
+    AppendItem,
+    /// Adds an entry with a new key and a null value to the map at the
+    /// pointer.
+    AddEntry,
+    /// Removes the list item or map entry at the pointer.
+    Remove,
+    /// Renames the map entry at the pointer.
+    RenameKey(String),
+}
+
+/// The JSON of a nested cell after `edit` at `pointer`. Struct fields can't
+/// be added or removed (the column's type fixes them).
+pub fn edit_nested(
+    cell_json: &str,
+    pointer: &[crate::display::PathPart],
+    edit: &NestedEdit,
+) -> Result<String> {
+    use crate::display::PathPart;
+    let invalid = |m: &str| Error::InvalidCommand(m.into());
+    let mut root: serde_json::Value = serde_json::from_str(cell_json)
+        .map_err(|e| Error::InvalidCommand(format!("the cell is not valid JSON: {e}")))?;
+    match edit {
+        NestedEdit::AppendItem => match value_at(&mut root, pointer)? {
+            serde_json::Value::Array(items) => items.push(serde_json::Value::Null),
+            serde_json::Value::Null => *value_at(&mut root, pointer)? = serde_json::json!([null]),
+            _ => return Err(invalid("items can only be added to lists")),
+        },
+        NestedEdit::AddEntry => {
+            let target = value_at(&mut root, pointer)?;
+            if target.is_null() {
+                *target = serde_json::json!({});
+            }
+            let serde_json::Value::Object(map) = target else {
+                return Err(invalid("entries can only be added to maps"));
+            };
+            let key = (1..)
+                .map(|n| {
+                    if n == 1 {
+                        "key".to_owned()
+                    } else {
+                        format!("key {n}")
+                    }
+                })
+                .find(|k| !map.contains_key(k))
+                .unwrap_or_default();
+            map.insert(key, serde_json::Value::Null);
+        }
+        NestedEdit::Remove | NestedEdit::RenameKey(_) => {
+            let Some((last, parent)) = pointer.split_last() else {
+                return Err(invalid("pick an item or entry"));
+            };
+            let container = value_at(&mut root, parent)?;
+            match (edit, last, container) {
+                (NestedEdit::Remove, PathPart::Index(i), serde_json::Value::Array(items))
+                    if *i < items.len() =>
+                {
+                    items.remove(*i);
+                }
+                (NestedEdit::Remove, PathPart::Key(key), serde_json::Value::Object(map)) => {
+                    map.shift_remove(key)
+                        .ok_or_else(|| invalid("that entry no longer exists"))?;
+                }
+                (
+                    NestedEdit::RenameKey(new),
+                    PathPart::Key(old),
+                    serde_json::Value::Object(map),
+                ) => {
+                    let new = new.trim();
+                    if new.is_empty() {
+                        return Err(invalid("keys can't be empty"));
+                    }
+                    if new != old && map.contains_key(new) {
+                        return Err(Error::InvalidCommand(format!(
+                            "the key {new:?} already exists"
+                        )));
+                    }
+                    let index = map
+                        .keys()
+                        .position(|k| k == old)
+                        .ok_or_else(|| invalid("that entry no longer exists"))?;
+                    let value = map.shift_remove(old).unwrap_or_default();
+                    map.shift_insert(index, new.to_owned(), value);
+                }
+                (_, PathPart::Field(_), _) => {
+                    return Err(invalid("struct fields can't be removed; set them to null"));
+                }
+                _ => return Err(invalid("that part of the value no longer exists")),
+            }
+        }
+    }
+    Ok(root.to_string())
+}
+
+fn value_at<'a>(
+    root: &'a mut serde_json::Value,
+    pointer: &[crate::display::PathPart],
+) -> Result<&'a mut serde_json::Value> {
+    use crate::display::PathPart;
+    let mut target = root;
     for part in pointer {
         let missing = || Error::InvalidCommand("that part of the value no longer exists".into());
         target = match part {
@@ -94,8 +216,7 @@ pub fn set_nested(
             PathPart::Index(i) => target.get_mut(*i).ok_or_else(missing)?,
         };
     }
-    *target = leaf;
-    Ok(root.to_string())
+    Ok(target)
 }
 
 /// A short JSON example for a nested type.

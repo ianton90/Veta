@@ -328,6 +328,8 @@ struct LeafEdit {
     data_type: veta_core::arrow::datatypes::DataType,
     text: String,
     error: Option<String>,
+    /// Renaming the map key at `pointer` instead of editing the value.
+    rename: bool,
 }
 
 /// Statistics computed for the side pane, and the pass running.
@@ -410,7 +412,11 @@ enum MenuItem {
     MergeColumns,
     DuplicateColumn,
     ExpandStruct,
+    /// Expand a struct column and the structs inside it.
+    ExpandAll,
     ExplodeList,
+    /// Open the cell in the JSON editor.
+    EditJson,
     SortAscending,
     SortDescending,
     /// Filter to rows whose value in this column equals the selected cell's.
@@ -538,6 +544,10 @@ enum Dialog {
         document: DocumentId,
         dialog: MetadataDialog,
     },
+    Json {
+        document: DocumentId,
+        dialog: dialogs::JsonDialog,
+    },
     ConfirmClose {
         document: DocumentId,
     },
@@ -600,8 +610,18 @@ enum Message {
         veta_core::arrow::datatypes::DataType,
         String,
     ),
+    /// Start renaming the map key at the pointer.
+    EditKey(Vec<veta_core::display::PathPart>, String),
+    /// Add or remove items and entries inside the selected nested cell.
+    NestedEdit(
+        Vec<veta_core::display::PathPart>,
+        veta_core::values::NestedEdit,
+    ),
     LeafInput(String),
     CommitLeaf,
+    /// Open the selected nested cell in the JSON editor.
+    OpenJsonEditor,
+    Json(dialogs::JsonMessage),
     /// Collapse or expand a node of the value tree.
     ToggleNode(String),
     StatsDone(DocumentId, u64, Result<Vec<ColumnStats>, String>),
@@ -989,8 +1009,10 @@ impl App {
                     MenuItem::SplitColumn => return self.open_split_dialog(id, None),
                     MenuItem::MergeColumns => return self.open_merge_dialog(id, None),
                     MenuItem::DuplicateColumn => self.duplicate_column(id),
-                    MenuItem::ExpandStruct => self.nested_step(id, false),
-                    MenuItem::ExplodeList => self.nested_step(id, true),
+                    MenuItem::ExpandStruct => self.nested_step(id, false, false),
+                    MenuItem::ExpandAll => self.nested_step(id, false, true),
+                    MenuItem::ExplodeList => self.nested_step(id, true, false),
+                    MenuItem::EditJson => self.open_json_editor(id),
                     MenuItem::SortAscending | MenuItem::SortDescending => {
                         self.sort_selected(id, item == MenuItem::SortDescending);
                     }
@@ -1391,9 +1413,87 @@ impl App {
                             data_type,
                             text,
                             error: None,
+                            rename: false,
                         });
                         return iced::widget::operation::focus(LEAF_ID);
                     }
+                }
+            }
+            Message::EditKey(pointer, key) => {
+                let selected = self.active.filter(|&id| self.editable(id)).and_then(|id| {
+                    let tab = self.tabs.iter().find(|t| t.id == id)?;
+                    Some((id, tab.grid.selected()?))
+                });
+                if let Some((id, (row, column))) = selected {
+                    self.edit = None;
+                    self.leaf_edit = Some(LeafEdit {
+                        document: id,
+                        row,
+                        column,
+                        pointer,
+                        data_type: veta_core::arrow::datatypes::DataType::Utf8,
+                        text: key,
+                        error: None,
+                        rename: true,
+                    });
+                    return iced::widget::operation::focus(LEAF_ID);
+                }
+            }
+            Message::OpenJsonEditor => {
+                if let Some(id) = self.active {
+                    self.open_json_editor(id);
+                }
+            }
+            Message::Json(message) => {
+                if let Some(Dialog::Json { document, dialog }) = &mut self.dialog {
+                    let id = *document;
+                    let cancel = matches!(message, dialogs::JsonMessage::Cancel);
+                    if let Some(value) = dialog.update(message) {
+                        let command = Command::SetCell {
+                            row: dialog.row,
+                            column: dialog.column.clone(),
+                            value,
+                        };
+                        let result = self
+                            .workbook
+                            .get_mut(id)
+                            .map(|doc| controller::execute(doc, command));
+                        match result {
+                            Some(Ok(())) => {
+                                self.dialog = None;
+                                self.refresh(id);
+                            }
+                            Some(Err(e)) => dialog.set_error(e.to_string()),
+                            None => self.dialog = None,
+                        }
+                    } else if cancel {
+                        self.dialog = None;
+                    }
+                }
+            }
+            Message::NestedEdit(pointer, change) => {
+                let Some(id) = self.active else {
+                    return Task::none();
+                };
+                if !self.editable(id) {
+                    self.not_editable(id);
+                    return Task::none();
+                }
+                let Some((row, column)) = self
+                    .tabs
+                    .iter()
+                    .find(|t| t.id == id)
+                    .and_then(|t| t.grid.selected())
+                else {
+                    return Task::none();
+                };
+                self.leaf_edit = None;
+                let result = self.change_nested_cell(id, row, column, |json| {
+                    veta_core::values::edit_nested(json, &pointer, &change)
+                });
+                match result {
+                    Ok(()) => self.refresh(id),
+                    Err(e) => self.errors.push(e),
                 }
             }
             Message::LeafInput(text) => {
@@ -1903,7 +2003,7 @@ impl App {
             }
             Action::ExpandStruct | Action::ExplodeList => {
                 if let Some(id) = self.active {
-                    self.nested_step(id, action == Action::ExplodeList);
+                    self.nested_step(id, action == Action::ExplodeList, false);
                 }
             }
             Action::CustomSort => {
@@ -2549,29 +2649,17 @@ impl App {
             return;
         };
         let id = edit.document;
-        let result = (|| -> Result<(), String> {
-            let tab = self.tabs.iter().find(|t| t.id == id).ok_or("closed")?;
-            let doc = self.workbook.get(id).ok_or("closed")?;
-            let json = tab
-                .grid
-                .cell_array(edit.row, edit.column, doc)
-                .and_then(|a| veta_core::display::value_json(a.as_ref(), 0).ok().flatten())
-                .ok_or("the cell is empty")?;
-            let text = (!edit.text.is_empty()).then_some(edit.text.as_str());
-            let value = veta_core::values::set_nested(&json, &edit.pointer, text, &edit.data_type)
-                .map_err(|e| e.to_string())?;
-            let column = doc.schema().field(edit.column).name().clone();
-            let doc = self.workbook.get_mut(id).ok_or("closed")?;
-            controller::execute(
-                doc,
-                Command::SetCell {
-                    row: edit.row,
-                    column,
-                    value: Some(value),
-                },
-            )
-            .map_err(|e| e.to_string())
-        })();
+        let text = (!edit.text.is_empty()).then_some(edit.text.clone());
+        let (pointer, data_type, rename) =
+            (edit.pointer.clone(), edit.data_type.clone(), edit.rename);
+        let result = self.change_nested_cell(id, edit.row, edit.column, |json| {
+            if rename {
+                let key = veta_core::values::NestedEdit::RenameKey(text.unwrap_or_default());
+                veta_core::values::edit_nested(json, &pointer, &key)
+            } else {
+                veta_core::values::set_nested(json, &pointer, text.as_deref(), &data_type)
+            }
+        });
         match result {
             Ok(()) => self.refresh(id),
             Err(e) => {
@@ -2581,9 +2669,75 @@ impl App {
         }
     }
 
+    /// Opens the selected nested cell in the multi-line JSON editor.
+    fn open_json_editor(&mut self, id: DocumentId) {
+        if !self.editable(id) {
+            self.not_editable(id);
+            return;
+        }
+        let Some(tab) = self.tabs.iter().find(|t| t.id == id) else {
+            return;
+        };
+        let Some(doc) = self.workbook.get(id) else {
+            return;
+        };
+        let Some((row, column)) = tab.grid.selected() else {
+            return;
+        };
+        let schema = doc.schema();
+        let field = schema.field(column);
+        if !field.data_type().is_nested() {
+            return;
+        }
+        let Some(json) = tab
+            .grid
+            .cell_array(row, column, doc)
+            .and_then(|a| veta_core::display::value_json(a.as_ref(), 0).ok())
+        else {
+            return;
+        };
+        self.edit = None;
+        self.leaf_edit = None;
+        self.dialog = Some(Dialog::Json {
+            document: id,
+            dialog: dialogs::JsonDialog::new(row, field.name().clone(), json.as_deref()),
+        });
+    }
+
+    /// Replaces a nested cell with `change` applied to its JSON (`null` for
+    /// a null cell).
+    fn change_nested_cell(
+        &mut self,
+        id: DocumentId,
+        row: usize,
+        column: usize,
+        change: impl FnOnce(&str) -> veta_core::Result<String>,
+    ) -> Result<(), String> {
+        let tab = self.tabs.iter().find(|t| t.id == id).ok_or("closed")?;
+        let doc = self.workbook.get(id).ok_or("closed")?;
+        let json = tab
+            .grid
+            .cell_array(row, column, doc)
+            .and_then(|a| veta_core::display::value_json(a.as_ref(), 0).ok())
+            .ok_or("the cell isn't loaded")?
+            .unwrap_or_else(|| "null".into());
+        let value = change(&json).map_err(|e| e.to_string())?;
+        let name = doc.schema().field(column).name().clone();
+        let doc = self.workbook.get_mut(id).ok_or("closed")?;
+        controller::execute(
+            doc,
+            Command::SetCell {
+                row,
+                column: name,
+                value: Some(value),
+            },
+        )
+        .map_err(|e| e.to_string())
+    }
+
     /// Expands the selected struct column, or explodes the selected list
     /// column into rows.
-    fn nested_step(&mut self, id: DocumentId, explode: bool) {
+    fn nested_step(&mut self, id: DocumentId, explode: bool, all_levels: bool) {
         let Some(column) = self.selected_column_names(id).into_iter().next() else {
             self.errors.push("Select a column first.".into());
             return;
@@ -2591,7 +2745,7 @@ impl App {
         let command = if explode {
             Command::ExplodeList { column }
         } else {
-            Command::ExpandStruct { column }
+            Command::ExpandStruct { column, all_levels }
         };
         self.execute(id, command);
     }
@@ -3477,11 +3631,12 @@ impl App {
                                     .leaf_edit
                                     .as_ref()
                                     .filter(|e| e.document == id)
-                                    .map(|e| (
-                                        e.pointer.as_slice(),
-                                        e.text.as_str(),
-                                        e.error.as_deref()
-                                    )),
+                                    .map(|e| panes::LeafEditView {
+                                        pointer: e.pointer.as_slice(),
+                                        text: e.text.as_str(),
+                                        error: e.error.as_deref(),
+                                        rename: e.rename,
+                                    }),
                             },
                             ui
                         )
@@ -3575,13 +3730,21 @@ impl App {
         if let Some(menu) = &self.menu {
             let rows = self.selected_rows(menu.document).map_or(1, |r| r.len());
             let columns = self.selected_columns(menu.document).map_or(1, |c| c.len());
-            let column_type = match menu.target {
-                MenuTarget::Column(c) => self
-                    .workbook
-                    .get(menu.document)
-                    .and_then(|d| d.schema().fields().get(c).map(|f| f.data_type().clone())),
+            let column = match menu.target {
+                MenuTarget::Column(c) => Some(c),
+                MenuTarget::Cell => self
+                    .tabs
+                    .iter()
+                    .find(|t| t.id == menu.document)
+                    .and_then(|t| t.grid.selected())
+                    .map(|(_, c)| c),
                 _ => None,
             };
+            let column_type = column.and_then(|c| {
+                self.workbook
+                    .get(menu.document)
+                    .and_then(|d| d.schema().fields().get(c).map(|f| f.data_type().clone()))
+            });
             return stack![
                 window,
                 mouse_area(
@@ -3626,6 +3789,7 @@ impl App {
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
             Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
             Dialog::Metadata { dialog, .. } => dialog.view(ui.tokens).map(Message::Metadata),
+            Dialog::Json { dialog, .. } => dialog.view(ui.tokens).map(Message::Json),
             Dialog::ConfirmClose { document } => {
                 let name = self
                     .workbook
@@ -5162,5 +5326,63 @@ mod tests {
         let _ = app.update(Message::Action(Action::DeleteRows));
         let _ = app.view();
         assert_eq!(app.workbook.get(id).unwrap().num_rows(), 1);
+    }
+
+    #[test]
+    fn nested_items_keys_and_json_editor() {
+        use veta_core::display::PathPart;
+        use veta_core::values::NestedEdit;
+        let dir = TempDir::new();
+        let path = dir.join("n.parquet");
+        fixtures::nested(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let cell = |app: &App, row: usize, column: &str| {
+            let doc = app.workbook.get(id).unwrap();
+            let i = doc.schema().index_of(column).unwrap();
+            veta_core::display::format_batch(&doc.read(row..row + 1).unwrap()).unwrap()[0][i]
+                .clone()
+        };
+        // tags = [a, b]: add an item, remove the first.
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 2 }));
+        let _ = app.update(Message::NestedEdit(vec![], NestedEdit::AppendItem));
+        assert_eq!(cell(&app, 0, "tags").as_deref(), Some("[a, b, null]"));
+        let _ = app.update(Message::NestedEdit(
+            vec![PathPart::Index(0)],
+            NestedEdit::Remove,
+        ));
+        assert_eq!(cell(&app, 0, "tags").as_deref(), Some("[b, null]"));
+
+        // scores = {math: 9, art: 7}: rename a key (order kept), add an entry.
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 4 }));
+        let math = vec![PathPart::Key("math".into())];
+        let _ = app.update(Message::EditKey(math, "math".into()));
+        let _ = app.update(Message::LeafInput("maths".into()));
+        let _ = app.update(Message::CommitLeaf);
+        assert!(app.leaf_edit.is_none());
+        let _ = app.update(Message::NestedEdit(vec![], NestedEdit::AddEntry));
+        assert_eq!(
+            cell(&app, 0, "scores").as_deref(),
+            Some("{maths: 9, art: 7, key: null}")
+        );
+
+        // The JSON editor replaces the whole value.
+        let _ = app.update(Message::OpenJsonEditor);
+        assert!(matches!(app.dialog, Some(Dialog::Json { .. })));
+        use iced::widget::text_editor::{Action as EditorAction, Edit};
+        let _ = app.update(Message::Json(dialogs::JsonMessage::Edit(
+            EditorAction::SelectAll,
+        )));
+        let _ = app.update(Message::Json(dialogs::JsonMessage::Edit(
+            EditorAction::Edit(Edit::Paste(std::sync::Arc::new("{\"x\": 1".into()))),
+        )));
+        let _ = app.update(Message::Json(dialogs::JsonMessage::Apply));
+        assert!(app.dialog.is_some(), "invalid JSON keeps the editor open");
+        let _ = app.update(Message::Json(dialogs::JsonMessage::Edit(
+            EditorAction::Edit(Edit::Insert('}')),
+        )));
+        let _ = app.update(Message::Json(dialogs::JsonMessage::Apply));
+        assert!(app.dialog.is_none());
+        assert_eq!(cell(&app, 0, "scores").as_deref(), Some("{x: 1}"));
     }
 }

@@ -86,9 +86,11 @@ pub enum Command {
     Fill(Fill),
     Split(Split),
     Merge(Merge),
-    /// Fields of a struct column become columns.
+    /// Fields of a struct column become columns; with `all_levels`, struct
+    /// fields inside it too.
     ExpandStruct {
         column: String,
+        all_levels: bool,
     },
     /// One row per item of a list or map column.
     ExplodeList {

@@ -79,6 +79,59 @@ pub(super) fn expand(
     Ok(RecordBatch::try_new(schema.clone(), columns)?)
 }
 
+/// The struct columns expanded in order (the column, then with
+/// `all_levels` its struct fields, breadth first) and the schema after.
+pub(super) fn expand_all(
+    schema: &Schema,
+    column: &str,
+    all_levels: bool,
+) -> Result<(Vec<String>, Schema)> {
+    let mut schema = schema.clone();
+    let mut order = Vec::new();
+    let mut queue = std::collections::VecDeque::from([column.to_owned()]);
+    while let Some(name) = queue.pop_front() {
+        schema =
+            Schema::new_with_metadata(expand_fields(&schema, &name)?, schema.metadata().clone());
+        if all_levels {
+            let prefix = format!("{name}.");
+            queue.extend(
+                schema
+                    .fields()
+                    .iter()
+                    .filter(|f| f.name().starts_with(&prefix))
+                    .filter(|f| matches!(f.data_type(), DataType::Struct(_)))
+                    .map(|f| f.name().clone()),
+            );
+        }
+        order.push(name);
+    }
+    Ok((order, schema))
+}
+
+/// Expands `column` (and, with `all_levels`, nested structs) in `batch`;
+/// `schema` is the output schema.
+pub(super) fn expand_levels(
+    batch: &RecordBatch,
+    column: &str,
+    all_levels: bool,
+    schema: &Arc<Schema>,
+) -> Result<RecordBatch> {
+    let (order, _) = expand_all(&batch.schema(), column, all_levels)?;
+    let mut batch = batch.clone();
+    for (i, name) in order.iter().enumerate() {
+        let next = if i + 1 == order.len() {
+            schema.clone()
+        } else {
+            Arc::new(Schema::new_with_metadata(
+                expand_fields(&batch.schema(), name)?,
+                batch.schema().metadata().clone(),
+            ))
+        };
+        batch = expand(&batch, name, &next)?;
+    }
+    Ok(batch)
+}
+
 /// The column type after exploding: the list's item type, or the map's
 /// entry struct.
 pub(super) fn explode_fields(schema: &Schema, column: &str) -> Result<Vec<Field>> {

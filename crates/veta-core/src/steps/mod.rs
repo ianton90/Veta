@@ -94,9 +94,11 @@ pub enum Step {
     Split(Split),
     Merge(Merge),
     CustomColumn(CustomColumn),
-    /// Fields of a struct column become columns `<column>.<field>`.
+    /// Fields of a struct column become columns `<column>.<field>`; with
+    /// `all_levels`, struct fields are expanded too (`a.b.c`).
     ExpandStruct {
         column: String,
+        all_levels: bool,
     },
     /// One row per item of a list (or entry of a map) column.
     ExplodeList {
@@ -176,7 +178,14 @@ impl Step {
             Step::Merge(merge) => merge.describe(),
             Step::CustomColumn(custom) => custom.describe(),
             Step::RemoveEmptyColumn { name } => format!("Removed column {name} if empty"),
-            Step::ExpandStruct { column } => format!("Expanded {column}"),
+            Step::ExpandStruct {
+                column,
+                all_levels: false,
+            } => format!("Expanded {column}"),
+            Step::ExpandStruct {
+                column,
+                all_levels: true,
+            } => format!("Expanded {column} (all levels)"),
             Step::ExplodeList { column } => format!("Exploded {column} into rows"),
         }
     }

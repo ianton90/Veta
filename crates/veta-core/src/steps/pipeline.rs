@@ -395,8 +395,9 @@ impl Pipeline {
                     op.apply(c)
                 })
             }
-            Step::ExpandStruct { column } => {
-                super::nested::expand(&self.read_level(previous, range)?, column, &schema)
+            Step::ExpandStruct { column, all_levels } => {
+                let input = self.read_level(previous, range)?;
+                super::nested::expand_levels(&input, column, *all_levels, &schema)
             }
             Step::Filter(_)
             | Step::Sort(_)

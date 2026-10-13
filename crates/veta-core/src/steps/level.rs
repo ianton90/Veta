@@ -179,8 +179,13 @@ impl Level {
                 split.output_fields(&self.schema)?,
                 self.num_rows,
             )),
-            Step::ExpandStruct { column } => Ok(with_fields(
-                super::nested::expand_fields(&self.schema, column)?,
+            Step::ExpandStruct { column, all_levels } => Ok(with_fields(
+                super::nested::expand_all(&self.schema, column, *all_levels)?
+                    .1
+                    .fields()
+                    .iter()
+                    .map(|f| f.as_ref().clone())
+                    .collect(),
                 self.num_rows,
             )),
             Step::CustomColumn(custom) => Ok(with_fields(

@@ -253,8 +253,8 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
         }
         Command::Fill(fill) => Ok((fill.describe(), Change::PushStep(Step::Fill(fill)))),
         Command::Split(split) => Ok((split.describe(), Change::PushStep(Step::Split(split)))),
-        Command::ExpandStruct { column } => {
-            let step = Step::ExpandStruct { column };
+        Command::ExpandStruct { column, all_levels } => {
+            let step = Step::ExpandStruct { column, all_levels };
             Ok((step.describe(), Change::PushStep(step)))
         }
         Command::ExplodeList { column } => {
@@ -1117,6 +1117,7 @@ mod tests {
                 &mut doc,
                 Command::ExpandStruct {
                     column: "point".into(),
+                    all_levels: false,
                 },
             )
             .unwrap();
@@ -1137,11 +1138,25 @@ mod tests {
                 execute(
                     &mut doc,
                     Command::ExpandStruct {
-                        column: "tags".into()
+                        column: "tags".into(),
+                        all_levels: false,
                     }
                 )
                 .is_err()
             );
+            // All levels: owner → owner.name, owner.home → owner.home.x, ….
+            execute(
+                &mut doc,
+                Command::ExpandStruct {
+                    column: "owner".into(),
+                    all_levels: true,
+                },
+            )
+            .unwrap();
+            let schema = doc.schema();
+            assert!(schema.field_with_name("owner.home.x").is_ok());
+            assert!(schema.field_with_name("owner.home").is_err());
+            assert_eq!(cell(&doc, 0, "owner.home.x").as_deref(), Some("5"));
             let out = dir.join("out.parquet");
             doc.save(Some(out.clone())).unwrap();
             assert_eq!(

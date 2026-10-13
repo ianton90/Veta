@@ -178,6 +178,8 @@ enum RecipeStep {
     },
     ExpandStruct {
         column: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all_levels: bool,
     },
     ExplodeList {
         column: String,
@@ -395,8 +397,9 @@ impl RecipeStep {
                 separator: m.separator.clone(),
                 name: m.name.clone(),
             },
-            Step::ExpandStruct { column } => RecipeStep::ExpandStruct {
+            Step::ExpandStruct { column, all_levels } => RecipeStep::ExpandStruct {
                 column: column.clone(),
+                all_levels: *all_levels,
             },
             Step::ExplodeList { column } => RecipeStep::ExplodeList {
                 column: column.clone(),
@@ -530,7 +533,9 @@ impl RecipeStep {
                 name,
             }),
             RecipeStep::RemoveEmptyColumn { name } => Step::RemoveEmptyColumn { name },
-            RecipeStep::ExpandStruct { column } => Step::ExpandStruct { column },
+            RecipeStep::ExpandStruct { column, all_levels } => {
+                Step::ExpandStruct { column, all_levels }
+            }
             RecipeStep::ExplodeList { column } => Step::ExplodeList { column },
             RecipeStep::CustomColumn {
                 name,
