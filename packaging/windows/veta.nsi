@@ -75,6 +75,22 @@ Section "Veta (required)" SecApp
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "EstimatedSize" 60000
 SectionEnd
 
+Section "Open .parquet files with Veta" SecAssoc
+  WriteRegStr HKCU "Software\Classes\Veta.Parquet" "" "Parquet file"
+  WriteRegStr HKCU "Software\Classes\Veta.Parquet\DefaultIcon" "" "$INSTDIR\veta.exe,0"
+  WriteRegStr HKCU "Software\Classes\Veta.Parquet\shell\open\command" "" '"$INSTDIR\veta.exe" "%1"'
+  WriteRegStr HKCU "Software\Classes\.parquet" "" "Veta.Parquet"
+  WriteRegStr HKCU "Software\Classes\.parquet\OpenWithProgids" "Veta.Parquet" ""
+  WriteRegStr HKCU "Software\Classes\.parq" "" "Veta.Parquet"
+  WriteRegStr HKCU "Software\Classes\.parq\OpenWithProgids" "Veta.Parquet" ""
+  ; "Open with" list and the "Default apps" settings page.
+  WriteRegStr HKCU "Software\Classes\Applications\veta.exe\SupportedTypes" ".parquet" ""
+  WriteRegStr HKCU "Software\Classes\Applications\veta.exe\SupportedTypes" ".parq" ""
+  WriteRegStr HKCU "Software\Classes\Applications\veta.exe\shell\open\command" "" '"$INSTDIR\veta.exe" "%1"'
+  ; Tell Explorer the associations changed (SHCNE_ASSOCCHANGED).
+  System::Call "shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)"
+SectionEnd
+
 Section "Add veta-cli to PATH" SecPath
   ReadRegStr $0 HKCU "Environment" "Path"
   ; Already there?
@@ -108,6 +124,19 @@ Section "Uninstall"
   WriteRegExpandStr HKCU "Environment" "Path" "$0"
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
   unpath_done:
+
+  ; File associations: only undo what points at Veta.
+  ReadRegStr $0 HKCU "Software\Classes\.parquet" ""
+  StrCmp $0 "Veta.Parquet" 0 +2
+    DeleteRegValue HKCU "Software\Classes\.parquet" ""
+  DeleteRegValue HKCU "Software\Classes\.parquet\OpenWithProgids" "Veta.Parquet"
+  ReadRegStr $0 HKCU "Software\Classes\.parq" ""
+  StrCmp $0 "Veta.Parquet" 0 +2
+    DeleteRegValue HKCU "Software\Classes\.parq" ""
+  DeleteRegValue HKCU "Software\Classes\.parq\OpenWithProgids" "Veta.Parquet"
+  DeleteRegKey HKCU "Software\Classes\Veta.Parquet"
+  DeleteRegKey HKCU "Software\Classes\Applications\veta.exe"
+  System::Call "shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)"
 
   Delete "$SMPROGRAMS\Veta.lnk"
   Delete "$INSTDIR\veta.exe"

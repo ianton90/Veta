@@ -53,15 +53,23 @@
 - **Windows installer** (`packaging/windows/veta.nsi`): installs for the
   current user into `%LOCALAPPDATA%\Programs\Veta` without admin rights,
   adds a Start menu entry, an uninstaller (Settings → Apps), and optionally
-  adds the folder to the user `PATH` for `veta-cli`. Settings in
+  opens `.parquet`/`.parq` files with Veta and adds the folder to the user
+  `PATH` for `veta-cli`. If another app was already chosen for `.parquet`,
+  Windows keeps it until the user picks Veta (Open with → Always). Settings in
   `%APPDATA%\veta` survive uninstalling. `veta.exe` carries the icon and
   version info (file version `X.Y.Z.BUILD`) from `crates/veta/build.rs`.
 - **AppImage**: one file; make it executable and run it. A link named
-  `veta-cli` to it runs the command line. Built against this machine's
+  `veta-cli` to it runs the command line. `Veta.AppImage --integrate` adds
+  the menu entry, icon and the `application/vnd.apache.parquet` type to
+  `~/.local/share` and makes Veta the default for it;
+  `--remove-integration` undoes it. Built against this machine's
   glibc, so it needs a distribution at least as new as the build machine
   (built on Ubuntu 24.04: glibc 2.39).
 - **macOS** (`packaging/macos/make-app.sh`): unsigned, ad-hoc signed
   `Veta.app` in a `.dmg`; on first launch use right-click → Open.
   `veta-cli` is inside the bundle (`Veta.app/Contents/MacOS/veta-cli`).
+  `Info.plist` declares `.parquet` (`org.apache.parquet`), so Finder offers
+  Veta for it; Finder sends files as Apple Events, which Veta doesn't read
+  yet (#84).
 - **Icon**: edit `packaging/icons/veta.svg`, then run
   `packaging/icons/render.sh` and commit the outputs.

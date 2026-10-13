@@ -1,8 +1,45 @@
 #!/bin/sh
-# Entry point of the Veta AppImage. Runs the desktop app, or the command
-# line when the AppImage is started through a link named `veta-cli`.
+# Entry point of the Veta AppImage.
+#   Veta.AppImage [FILE]...    the desktop app
+#   Veta.AppImage --integrate  add Veta to the app menu and open .parquet
+#                              files with it (current user)
+#   Veta.AppImage --remove-integration
+# Started through a link named `veta-cli`, it runs the command line.
 here="$(dirname "$(readlink -f "$0")")"
+data="${XDG_DATA_HOME:-$HOME/.local/share}"
+
+integrate() {
+    image="${APPIMAGE:?run the AppImage itself, not the extracted files}"
+    mkdir -p "$data/applications" "$data/icons/hicolor/256x256/apps" "$data/mime/packages"
+    sed "s|^Exec=veta|Exec=\"$image\"|" "$here/veta.desktop" > "$data/applications/veta.desktop"
+    cp "$here/veta.png" "$data/icons/hicolor/256x256/apps/veta.png"
+    cp "$here/usr/share/mime/packages/veta.xml" "$data/mime/packages/veta.xml"
+    refresh
+    command -v xdg-mime >/dev/null && xdg-mime default veta.desktop application/vnd.apache.parquet
+    echo "Veta is in the app menu and opens .parquet files ($image)."
+    echo "Run it again with --integrate after moving the AppImage."
+}
+
+remove() {
+    rm -f "$data/applications/veta.desktop" \
+        "$data/icons/hicolor/256x256/apps/veta.png" \
+        "$data/mime/packages/veta.xml"
+    refresh
+    echo "Removed Veta from the app menu."
+}
+
+refresh() {
+    command -v update-mime-database >/dev/null && update-mime-database "$data/mime" >/dev/null 2>&1
+    command -v update-desktop-database >/dev/null && update-desktop-database "$data/applications" >/dev/null 2>&1
+    command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q "$data/icons/hicolor" >/dev/null 2>&1
+    return 0
+}
+
 case "$(basename "${ARGV0:-$0}")" in
     veta-cli*) exec "$here/usr/bin/veta-cli" "$@" ;;
+esac
+case "${1:-}" in
+    --integrate) integrate ;;
+    --remove-integration) remove ;;
     *) exec "$here/usr/bin/veta" "$@" ;;
 esac

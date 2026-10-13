@@ -7,4 +7,5 @@ Exec=veta %F
 Icon=veta
 Terminal=false
 Categories=Office;Development;
+MimeType=application/vnd.apache.parquet;
 StartupWMClass=veta

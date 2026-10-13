@@ -35,6 +35,9 @@ While the major version is 0, minor versions may change behaviour.
 **Packages**
 - Windows installer (per-user, no admin) and portable zip; Linux AppImage
   and tarball; macOS `.dmg` when built on a Mac. App icon.
+- `.parquet` files open in Veta: set up by the Windows installer and by
+  `Veta.AppImage --integrate` on Linux. On macOS, opening from Finder needs
+  #84.
 
 **Known limits**
 - macOS packages must be built on a Mac and are unsigned.
