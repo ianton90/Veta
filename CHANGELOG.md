@@ -32,6 +32,9 @@ While the major version is 0, minor versions may change behaviour.
   writer settings, `convert` between Parquet, CSV and JSON, and `apply` to
   run a recipe.
 
+**Packages**
+- Windows installer (per-user, no admin) and portable zip; Linux AppImage
+  and tarball; macOS `.dmg` when built on a Mac. App icon.
+
 **Known limits**
-- Windows and Linux builds only; macOS builds need a Mac. No installers or
-  file associations yet (#51, #52).
+- macOS packages must be built on a Mac and are unsigned.

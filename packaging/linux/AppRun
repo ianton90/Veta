@@ -1,0 +1,8 @@
+#!/bin/sh
+# Entry point of the Veta AppImage. Runs the desktop app, or the command
+# line when the AppImage is started through a link named `veta-cli`.
+here="$(dirname "$(readlink -f "$0")")"
+case "$(basename "${ARGV0:-$0}")" in
+    veta-cli*) exec "$here/usr/bin/veta-cli" "$@" ;;
+    *) exec "$here/usr/bin/veta" "$@" ;;
+esac

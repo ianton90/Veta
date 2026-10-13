@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Veta
+GenericName=Parquet Editor
+Comment=View and edit Parquet files
+Exec=veta %F
+Icon=veta
+Terminal=false
+Categories=Office;Development;
+StartupWMClass=veta

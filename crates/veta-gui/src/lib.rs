@@ -86,8 +86,27 @@ pub fn run(files: Vec<PathBuf>) -> iced::Result {
         ..iced::Settings::default()
     })
     .font(icon::FONT_BYTES)
-    .window_size(Size::new(1280.0, 800.0))
+    .window(window_settings())
     .run()
+}
+
+/// The app icon as 64×64 RGBA, rendered by `packaging/icons/render.sh`.
+const APP_ICON: &[u8] = include_bytes!("../../../packaging/icons/veta-64.rgba");
+
+fn window_settings() -> window::Settings {
+    #[allow(unused_mut)]
+    let mut settings = window::Settings {
+        size: Size::new(1280.0, 800.0),
+        icon: window::icon::from_rgba(APP_ICON.to_vec(), 64, 64).ok(),
+        ..window::Settings::default()
+    };
+    // Matches the desktop entry (`veta.desktop`), so the menu entry and the
+    // window share the icon.
+    #[cfg(target_os = "linux")]
+    {
+        settings.platform_specific.application_id = "veta".into();
+    }
+    settings
 }
 
 /// Everything read from disk before the window opens.
