@@ -3699,7 +3699,9 @@ impl App {
     }
 
     fn add_tab(&mut self, document: Document) {
-        let grid = GridView::new(&document, self.text_size);
+        let mut grid = GridView::new(&document, self.text_size);
+        // Start on the first cell, at the top left.
+        grid.apply(GridEvent::Select { row: 0, column: 0 }, &document);
         let id = self.workbook.add(document);
         self.tabs.push(Tab { id, grid });
         self.active = Some(id);
@@ -5121,11 +5123,8 @@ mod tests {
                 .clone()
         };
 
-        let _ = app.update(Message::Action(Action::SortDescending));
-        assert!(app.workbook.get(id).unwrap().steps().is_empty());
-        assert_eq!(app.errors.len(), 1, "nothing selected");
-
-        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 0 }));
+        // Opening a file starts on the first cell (#90).
+        assert_eq!(app.tabs[0].grid.selected(), Some((0, 0)));
         let _ = app.update(Message::Action(Action::SortDescending));
         finish_compute(&mut app, id);
         assert_eq!(id_at(&app, 0).as_deref(), Some("999"));

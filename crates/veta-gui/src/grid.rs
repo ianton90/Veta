@@ -1257,6 +1257,11 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
                 state.modifiers = *modifiers;
             }
+            // A press that started elsewhere (e.g. in a file dialog) must not
+            // leave a drag running: its release never reaches the grid.
+            Event::Window(iced::window::Event::Focused | iced::window::Event::Unfocused) => {
+                state.drag = Drag::None;
+            }
             Event::Mouse(mouse::Event::CursorMoved { position }) => match state.drag {
                 Drag::None => {}
                 Drag::Header {
