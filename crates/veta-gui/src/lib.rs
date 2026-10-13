@@ -263,6 +263,8 @@ struct App {
     workbook: Workbook,
     /// Files from other launches, opened once no save is running.
     queued_files: Vec<PathBuf>,
+    /// Size of the window, to keep menus on screen.
+    window_size: Size,
     /// GUI state per open document, in tab order.
     tabs: Vec<Tab>,
     active: Option<DocumentId>,
@@ -563,6 +565,7 @@ enum Message {
     FilesPicked(Vec<PathBuf>),
     /// Files sent by another `veta` launch.
     Remote(Vec<PathBuf>),
+    WindowResized(Size),
     Opened(PathBuf, Result<Loaded, String>),
     /// A CSV import finished, with what it found.
     Imported(PathBuf, Result<Slot<(Document, ImportReport)>, String>),
@@ -683,6 +686,7 @@ impl App {
         let (_, text_size) = startup.font();
         let mut app = Self {
             queued_files: Vec::new(),
+            window_size: Size::new(1280.0, 800.0),
             workbook: Workbook::new(),
             tabs: Vec::new(),
             active: None,
@@ -778,6 +782,7 @@ impl App {
             window::close_requests().map(|_| Message::CloseRequested),
             iced::system::theme_changes().map(Message::SystemMode),
             Subscription::run(instance::incoming).map(Message::Remote),
+            window::resize_events().map(|(_, size)| Message::WindowResized(size)),
         ])
     }
 
@@ -815,6 +820,7 @@ impl App {
             Message::OpenDialog => return self.perform(Action::Open),
             Message::Ribbon(message) => self.ribbon.update(message),
             Message::FilesPicked(files) => return self.open(files),
+            Message::WindowResized(size) => self.window_size = size,
             Message::Remote(files) => {
                 self.queued_files.extend(files);
                 return window::latest().and_then(window::gain_focus);
@@ -3933,6 +3939,16 @@ impl App {
                     .get(menu.document)
                     .and_then(|d| d.schema().fields().get(c).map(|f| f.data_type().clone()))
             });
+            let sections = panes::menu_sections(menu.target, rows, columns, column_type.as_ref());
+            // Opens up or to the left where it wouldn't fit below or right.
+            let height = panes::menu_height(&sections, ui);
+            let mut position = menu.position;
+            if position.y + height > self.window_size.height {
+                position.y = (self.window_size.height - height).max(0.0);
+            }
+            if position.x + panes::MENU_WIDTH > self.window_size.width {
+                position.x = (position.x - panes::MENU_WIDTH).max(0.0);
+            }
             return stack![
                 window,
                 mouse_area(
@@ -3942,14 +3958,7 @@ impl App {
                 )
                 .on_press(Message::CloseMenu)
                 .on_right_press(Message::CloseMenu),
-                pin(panes::context_menu(
-                    menu.target,
-                    rows,
-                    columns,
-                    column_type.as_ref(),
-                    ui
-                ))
-                .position(menu.position),
+                pin(panes::context_menu(sections, ui)).position(position),
             ]
             .into();
         }
@@ -5618,5 +5627,27 @@ mod tests {
         let _ = app.update(Message::Pasted(Some("abc".into())));
         assert_eq!(app.errors.len(), before + 1);
         assert_eq!(cell(&app, 0, "score").as_deref(), Some("1.5"));
+    }
+
+    #[test]
+    fn menu_sections_follow_the_target() {
+        use veta_core::arrow::datatypes::{DataType, Field, Fields};
+        let titles = |target, column_type: Option<&DataType>| -> Vec<&str> {
+            panes::menu_sections(target, 1, 1, column_type)
+                .into_iter()
+                .map(|(title, _)| title)
+                .collect()
+        };
+        let point = DataType::Struct(Fields::from(vec![Field::new("x", DataType::Int64, true)]));
+        assert_eq!(titles(MenuTarget::Blank, None), ["Add"]);
+        assert_eq!(titles(MenuTarget::Rows, None), ["Clipboard", "Rows"]);
+        assert_eq!(
+            titles(MenuTarget::Cell, Some(&DataType::Int64)),
+            ["Clipboard", "Cell", "Filter", "Rows"]
+        );
+        assert_eq!(
+            titles(MenuTarget::Column(0), Some(&point)),
+            ["Clipboard", "Column", "Data", "Split & Merge", "Nested"]
+        );
     }
 }

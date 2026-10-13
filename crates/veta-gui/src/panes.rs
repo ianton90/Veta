@@ -1033,216 +1033,213 @@ pub fn computing<'a>(label: String, progress: f32, ui: Ui) -> Element<'a, Messag
         .into()
 }
 
-pub fn context_menu<'a>(
+/// One entry of a right-click menu: icon, label, shortcut, action.
+type MenuEntry = (Icon, String, &'static str, MenuItem);
+
+/// The right-click menu's sections for `target`: a title and its entries.
+pub fn menu_sections(
     target: MenuTarget,
     rows: usize,
     columns: usize,
     column_type: Option<&DataType>,
+) -> Vec<(&'static str, Vec<MenuEntry>)> {
+    let entry = |icon, label: &str, shortcut, item| (icon, label.to_owned(), shortcut, item);
+    let count = |n: usize, one: &str, many: &str| {
+        if n == 1 {
+            one.to_owned()
+        } else {
+            many.replace("{n}", &n.to_string())
+        }
+    };
+    let nested = column_type.is_some_and(DataType::is_nested);
+    let mut sections: Vec<(&'static str, Vec<MenuEntry>)> = Vec::new();
+    if target == MenuTarget::Blank {
+        sections.push((
+            "Add",
+            vec![
+                entry(Icon::InsertRows, "Add row", "Ctrl++", MenuItem::AddRow),
+                entry(Icon::Plus, "Add column…", "", MenuItem::AddColumn),
+            ],
+        ));
+        return sections;
+    }
+    sections.push((
+        "Clipboard",
+        vec![
+            entry(Icon::Scissors, "Cut", "Ctrl+X", MenuItem::Cut),
+            entry(Icon::Copy, "Copy", "Ctrl+C", MenuItem::Copy),
+            entry(Icon::Paste, "Paste", "Ctrl+V", MenuItem::Paste),
+        ],
+    ));
+    if target == MenuTarget::Cell {
+        let mut cell = vec![
+            entry(Icon::Rename, "Edit cell", "Enter", MenuItem::EditCell),
+            entry(Icon::Eraser, "Set to null", "Delete", MenuItem::ClearCell),
+        ];
+        if nested {
+            cell.push(entry(Icon::Braces, "Edit as JSON…", "", MenuItem::EditJson));
+        }
+        sections.push(("Cell", cell));
+        sections.push((
+            "Filter",
+            vec![
+                entry(
+                    Icon::Filter,
+                    "Filter by this value",
+                    "",
+                    MenuItem::KeepValue,
+                ),
+                entry(
+                    Icon::Filter,
+                    "Filter out this value",
+                    "",
+                    MenuItem::ExcludeValue,
+                ),
+            ],
+        ));
+    }
+    if matches!(target, MenuTarget::Cell | MenuTarget::Rows) {
+        sections.push((
+            "Rows",
+            vec![
+                (
+                    Icon::InsertRows,
+                    count(rows, "Insert row above", "Insert {n} rows above"),
+                    "Ctrl++",
+                    MenuItem::InsertRowsAbove,
+                ),
+                (
+                    Icon::InsertRows,
+                    count(rows, "Insert row below", "Insert {n} rows below"),
+                    "",
+                    MenuItem::InsertRowsBelow,
+                ),
+                (
+                    Icon::FilterPlus,
+                    count(rows, "Keep only this row", "Keep only these {n} rows"),
+                    "",
+                    MenuItem::KeepRows,
+                ),
+                (
+                    Icon::Trash,
+                    count(rows, "Delete row", "Delete {n} rows"),
+                    "Ctrl+-",
+                    MenuItem::DeleteRows,
+                ),
+            ],
+        ));
+    }
+    if let MenuTarget::Column(_) = target {
+        sections.push((
+            "Column",
+            vec![
+                entry(
+                    Icon::Plus,
+                    "Insert column left…",
+                    "",
+                    MenuItem::InsertColumnLeft,
+                ),
+                entry(
+                    Icon::Plus,
+                    "Insert column right…",
+                    "",
+                    MenuItem::InsertColumnRight,
+                ),
+                entry(Icon::Rename, "Rename…", "", MenuItem::RenameColumn),
+                entry(Icon::Copy, "Duplicate", "", MenuItem::DuplicateColumn),
+                entry(Icon::ArrowLeft, "Move left", "", MenuItem::MoveColumnLeft),
+                entry(
+                    Icon::ArrowRight,
+                    "Move right",
+                    "",
+                    MenuItem::MoveColumnRight,
+                ),
+                (
+                    Icon::Columns,
+                    count(
+                        columns,
+                        "Keep only this column",
+                        "Keep only these {n} columns",
+                    ),
+                    "",
+                    MenuItem::KeepColumns,
+                ),
+                (
+                    Icon::Trash,
+                    count(columns, "Remove column", "Remove {n} columns"),
+                    "",
+                    MenuItem::RemoveColumns,
+                ),
+            ],
+        ));
+        sections.push((
+            "Data",
+            vec![
+                entry(Icon::Filter, "Filter…", "", MenuItem::FilterColumn),
+                entry(Icon::SortAsc, "Sort ascending", "", MenuItem::SortAscending),
+                entry(
+                    Icon::SortDesc,
+                    "Sort descending",
+                    "",
+                    MenuItem::SortDescending,
+                ),
+                entry(Icon::Type, "Change type…", "", MenuItem::ChangeType),
+                entry(
+                    Icon::Replace,
+                    "Replace values…",
+                    "",
+                    MenuItem::ReplaceValues,
+                ),
+                entry(Icon::CaseUpper, "Format text…", "", MenuItem::FormatText),
+                entry(Icon::FillDown, "Fill down", "", MenuItem::FillDown),
+                entry(Icon::FillUp, "Fill up", "", MenuItem::FillUp),
+            ],
+        ));
+        sections.push((
+            "Split & Merge",
+            vec![
+                entry(Icon::Split, "Split column…", "", MenuItem::SplitColumn),
+                entry(Icon::Merge, "Merge columns…", "", MenuItem::MergeColumns),
+            ],
+        ));
+    }
+    let nested_entries: Vec<MenuEntry> = nested_items(column_type).into_iter().flatten().collect();
+    if !nested_entries.is_empty() {
+        sections.push(("Nested", nested_entries));
+    }
+    sections
+}
+
+/// Width of the right-click menu.
+pub const MENU_WIDTH: f32 = 250.0;
+
+/// Approximate height of a menu with these sections, to keep it on screen.
+pub fn menu_height(sections: &[(&'static str, Vec<MenuEntry>)], ui: Ui) -> f32 {
+    let entries: usize = sections.iter().map(|(_, e)| e.len()).sum();
+    let item = ui.small() * 1.3 + 10.0 + 1.0;
+    let title = ui.small() * 1.3 + 8.0;
+    entries as f32 * item + sections.len() as f32 * (title + 7.0) + 10.0
+}
+
+pub fn context_menu<'a>(
+    sections: Vec<(&'static str, Vec<MenuEntry>)>,
     ui: Ui,
 ) -> Element<'a, Message> {
     let t = ui.tokens;
-    let rows_label = |verb: &str, rest: &str| {
-        if rows == 1 {
-            format!("{verb} row{rest}")
-        } else {
-            format!("{verb} {rows} rows{rest}")
-        }
-    };
-    let mut items: Vec<Option<(Icon, String, &str, MenuItem)>> = Vec::new();
-    if target != MenuTarget::Blank {
-        items.extend([
-            Some((Icon::Scissors, "Cut".into(), "Ctrl+X", MenuItem::Cut)),
-            Some((Icon::Copy, "Copy".into(), "Ctrl+C", MenuItem::Copy)),
-            Some((Icon::Paste, "Paste".into(), "Ctrl+V", MenuItem::Paste)),
-            None,
-        ]);
-    }
-    if target == MenuTarget::Cell {
-        items.push(Some((
-            Icon::Rename,
-            "Edit cell".into(),
-            "Enter",
-            MenuItem::EditCell,
-        )));
-        items.push(Some((
-            Icon::Eraser,
-            "Set to null".into(),
-            "Delete",
-            MenuItem::ClearCell,
-        )));
-        items.push(None);
-        items.push(Some((
-            Icon::Filter,
-            "Filter by this value".into(),
-            "",
-            MenuItem::KeepValue,
-        )));
-        items.push(Some((
-            Icon::Filter,
-            "Filter out this value".into(),
-            "",
-            MenuItem::ExcludeValue,
-        )));
-        items.push(None);
-        if column_type.is_some_and(DataType::is_nested) {
-            items.push(Some((
-                Icon::Rename,
-                "Edit as JSON…".into(),
-                "",
-                MenuItem::EditJson,
-            )));
-            items.extend(nested_items(column_type));
-            items.push(None);
-        }
-    }
-    if target == MenuTarget::Blank {
-        items.push(Some((
-            Icon::InsertRows,
-            "Add row".into(),
-            "Ctrl++",
-            MenuItem::AddRow,
-        )));
-        items.push(Some((
-            Icon::Plus,
-            "Add column…".into(),
-            "",
-            MenuItem::AddColumn,
-        )));
-    }
-    if matches!(target, MenuTarget::Cell | MenuTarget::Rows) {
-        items.push(Some((
-            Icon::InsertRows,
-            rows_label("Insert", " above"),
-            "Ctrl++",
-            MenuItem::InsertRowsAbove,
-        )));
-        items.push(Some((
-            Icon::InsertRows,
-            rows_label("Insert", " below"),
-            "",
-            MenuItem::InsertRowsBelow,
-        )));
-        items.push(Some((
-            Icon::FilterPlus,
-            if rows == 1 {
-                "Keep only this row".to_owned()
-            } else {
-                format!("Keep only these {rows} rows")
-            },
-            "",
-            MenuItem::KeepRows,
-        )));
-        items.push(Some((
-            Icon::Trash,
-            rows_label("Delete", ""),
-            "Ctrl+-",
-            MenuItem::DeleteRows,
-        )));
-    }
-    if let MenuTarget::Column(_) = target {
-        let (keep, remove) = if columns == 1 {
-            (
-                "Keep only this column".to_owned(),
-                "Remove column".to_owned(),
-            )
-        } else {
-            (
-                format!("Keep only these {columns} columns"),
-                format!("Remove {columns} columns"),
-            )
-        };
-        items.extend([
-            Some((
-                Icon::Plus,
-                "Insert column left…".into(),
-                "",
-                MenuItem::InsertColumnLeft,
-            )),
-            Some((
-                Icon::Plus,
-                "Insert column right…".into(),
-                "",
-                MenuItem::InsertColumnRight,
-            )),
-            Some((Icon::Rename, "Rename…".into(), "", MenuItem::RenameColumn)),
-            Some((Icon::Filter, "Filter…".into(), "", MenuItem::FilterColumn)),
-            Some((Icon::Type, "Change type…".into(), "", MenuItem::ChangeType)),
-            Some((
-                Icon::Replace,
-                "Replace values…".into(),
-                "",
-                MenuItem::ReplaceValues,
-            )),
-            Some((Icon::FillDown, "Fill down".into(), "", MenuItem::FillDown)),
-            Some((Icon::FillDown, "Fill up".into(), "", MenuItem::FillUp)),
-            Some((
-                Icon::CaseUpper,
-                "Format text…".into(),
-                "",
-                MenuItem::FormatText,
-            )),
-            Some((
-                Icon::Copy,
-                "Duplicate".into(),
-                "",
-                MenuItem::DuplicateColumn,
-            )),
-        ]);
-        items.extend(nested_items(column_type));
-        items.extend([
-            Some((
-                Icon::Split,
-                "Split column…".into(),
-                "",
-                MenuItem::SplitColumn,
-            )),
-            Some((
-                Icon::Merge,
-                "Merge columns…".into(),
-                "",
-                MenuItem::MergeColumns,
-            )),
-            Some((
-                Icon::SortAsc,
-                "Sort ascending".into(),
-                "",
-                MenuItem::SortAscending,
-            )),
-            Some((
-                Icon::SortDesc,
-                "Sort descending".into(),
-                "",
-                MenuItem::SortDescending,
-            )),
-            None,
-            Some((Icon::Swap, "Move left".into(), "", MenuItem::MoveColumnLeft)),
-            Some((
-                Icon::Swap,
-                "Move right".into(),
-                "",
-                MenuItem::MoveColumnRight,
-            )),
-            None,
-            Some((Icon::Columns, keep, "", MenuItem::KeepColumns)),
-            Some((Icon::Trash, remove, "", MenuItem::RemoveColumns)),
-        ]);
-    }
-
     let mut list = column![].spacing(1);
-    for item in items {
-        list = match item {
-            None => list.push(
-                container(
-                    rule::horizontal(1).style(move |_theme: &Theme| rule::Style {
-                        color: t.border,
-                        radius: 0.0.into(),
-                        fill_mode: rule::FillMode::Full,
-                        snap: true,
-                    }),
-                )
-                .padding([3, 0]),
-            ),
-            Some((glyph, label, shortcut, message)) => list.push(
+    let count = sections.len();
+    for (i, (title, entries)) in sections.into_iter().enumerate() {
+        list = list.push(
+            container(
+                text(title)
+                    .size(ui.small() - 1.0)
+                    .font(bold())
+                    .color(t.muted_text),
+            )
+            .padding(iced::Padding::from([2, 10]).top(4)),
+        );
+        for (glyph, label, shortcut, message) in entries {
+            list = list.push(
                 button(
                     row![
                         icon(glyph, ui.small()).color(t.muted_text),
@@ -1256,11 +1253,24 @@ pub fn context_menu<'a>(
                 .padding([5, 10])
                 .style(move |_theme: &Theme, status| subtle_button(t, status))
                 .on_press(Message::Menu(message)),
-            ),
-        };
+            );
+        }
+        if i + 1 < count {
+            list = list.push(
+                container(
+                    rule::horizontal(1).style(move |_theme: &Theme| rule::Style {
+                        color: t.border,
+                        radius: 0.0.into(),
+                        fill_mode: rule::FillMode::Full,
+                        snap: true,
+                    }),
+                )
+                .padding([3, 0]),
+            );
+        }
     }
     container(list)
-        .width(240)
+        .width(MENU_WIDTH)
         .padding(4)
         .style(move |_theme: &Theme| {
             container::Style::default()
