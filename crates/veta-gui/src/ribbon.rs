@@ -1,4 +1,6 @@
-//! The ribbon: tabs of grouped commands, modelled on Power Query's.
+//! The ribbon: tabs of grouped commands (Home, Rows, Columns, Nested,
+//! View). Every tab is always shown; commands that don't apply to the
+//! selection are greyed out.
 //!
 //! Every command is an [`Action`]; keyboard shortcuts emit the same actions.
 //! Commands that are not built yet are shown disabled, with the issue that
@@ -20,13 +22,20 @@ pub enum Action {
     Close,
     Import,
     Export,
+    LoadRecipe,
+    SaveRecipe,
     Undo,
     Redo,
+    Copy,
+    Cut,
+    Paste,
     KeepColumns,
     RemoveColumns,
     AddColumn,
     DuplicateColumn,
     RenameColumn,
+    MoveColumnLeft,
+    MoveColumnRight,
     FilterRows,
     KeepRows,
     RemoveRows,
@@ -36,10 +45,13 @@ pub enum Action {
     SortDescending,
     CustomSort,
     ExpandStruct,
+    ExpandAll,
     ExplodeList,
+    EditJson,
     DataType,
     ReplaceValues,
     FillDown,
+    FillUp,
     SplitColumn,
     MergeColumns,
     FormatText,
@@ -70,6 +82,9 @@ impl Action {
             Action::InsertRows => Some("Ctrl++"),
             Action::DeleteRows => Some("Ctrl+-"),
             Action::Redo => Some("Ctrl+Y"),
+            Action::Copy => Some("Ctrl+C"),
+            Action::Cut => Some("Ctrl+X"),
+            Action::Paste => Some("Ctrl+V"),
             Action::Settings => Some("Ctrl+,"),
             _ => None,
         }
@@ -80,22 +95,39 @@ impl Action {
 pub enum Tab {
     #[default]
     Home,
-    Transform,
-    AddColumn,
+    Rows,
+    Columns,
+    Nested,
     View,
 }
 
 impl Tab {
-    const ALL: [Tab; 4] = [Tab::Home, Tab::Transform, Tab::AddColumn, Tab::View];
+    const ALL: [Tab; 5] = [Tab::Home, Tab::Rows, Tab::Columns, Tab::Nested, Tab::View];
 
     fn label(self) -> &'static str {
         match self {
             Tab::Home => "Home",
-            Tab::Transform => "Transform",
-            Tab::AddColumn => "Add Column",
+            Tab::Rows => "Rows",
+            Tab::Columns => "Columns",
+            Tab::Nested => "Nested",
             Tab::View => "View",
         }
     }
+}
+
+/// What kind of column is selected (or holds the selected cell).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColumnKind {
+    #[default]
+    None,
+    /// Any non-nested column.
+    Plain,
+    Struct {
+        /// It has struct fields itself.
+        nested_structs: bool,
+    },
+    /// A list or map column.
+    List,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -178,10 +210,32 @@ fn groups(tab: Tab) -> Vec<Group> {
                 ],
             ),
             group(
+                "Properties",
+                vec![
+                    small(A::FileMetadata, "Metadata", Icon::TableProperties),
+                    small(A::WriterSettings, "Writer Settings", Icon::Sliders),
+                ],
+            ),
+            group(
                 "Import / Export",
                 vec![
                     small(A::Import, "Import", Icon::FileDown),
                     small(A::Export, "Export", Icon::FileUp),
+                ],
+            ),
+            group(
+                "Recipe",
+                vec![
+                    small(A::LoadRecipe, "Load Recipe", Icon::RecipeLoad),
+                    small(A::SaveRecipe, "Save Recipe", Icon::RecipeSave),
+                ],
+            ),
+            group(
+                "Clipboard",
+                vec![
+                    large(A::Paste, "Paste", Icon::Paste),
+                    small(A::Cut, "Cut", Icon::Scissors),
+                    small(A::Copy, "Copy", Icon::Copy),
                 ],
             ),
             group(
@@ -192,14 +246,28 @@ fn groups(tab: Tab) -> Vec<Group> {
                 ],
             ),
             group(
-                "Manage Columns",
+                "Data",
                 vec![
-                    large(A::KeepColumns, "Keep Columns", Icon::Columns),
-                    large(A::RemoveColumns, "Remove Columns", Icon::Trash),
+                    large(A::FilterRows, "Filter", Icon::Filter),
+                    small(A::SortAscending, "Sort Ascending", Icon::SortAsc),
+                    small(A::SortDescending, "Sort Descending", Icon::SortDesc),
+                    small(A::DataType, "Data Type", Icon::Type),
+                    small(A::ReplaceValues, "Replace Values", Icon::Replace),
+                    small(A::KeepColumns, "Keep Columns", Icon::Columns),
+                    small(A::RemoveColumns, "Remove Columns", Icon::Trash),
+                ],
+            ),
+        ],
+        Tab::Rows => vec![
+            group(
+                "Rows",
+                vec![
+                    large(A::InsertRows, "Insert Rows", Icon::InsertRows),
+                    large(A::DeleteRows, "Delete Rows", Icon::Trash),
                 ],
             ),
             group(
-                "Reduce Rows",
+                "Filter",
                 vec![
                     large(A::FilterRows, "Filter", Icon::Filter),
                     large(A::KeepRows, "Keep Rows", Icon::FilterPlus),
@@ -215,81 +283,67 @@ fn groups(tab: Tab) -> Vec<Group> {
                 ],
             ),
             group(
-                "Transform",
+                "Fill",
                 vec![
-                    small(A::DataType, "Data Type", Icon::Type),
-                    small(A::ReplaceValues, "Replace Values", Icon::Replace),
-                    small(A::SplitColumn, "Split Column", Icon::Split),
-                ],
-            ),
-        ],
-        Tab::Transform => vec![
-            group(
-                "Any Column",
-                vec![
-                    large(A::DataType, "Data Type", Icon::Type),
-                    small(A::RenameColumn, "Rename", Icon::Rename),
-                    small(A::ReplaceValues, "Replace Values", Icon::Replace),
                     small(A::FillDown, "Fill Down", Icon::FillDown),
-                ],
-            ),
-            group(
-                "Text Column",
-                vec![
-                    large(A::SplitColumn, "Split Column", Icon::Split),
-                    small(A::MergeColumns, "Merge Columns", Icon::Merge),
-                    small(A::FormatText, "Format", Icon::CaseUpper),
-                ],
-            ),
-            group(
-                "Number Column",
-                vec![
-                    large(A::Statistics, "Statistics", Icon::Sigma),
-                    small(A::Standard, "Standard", Icon::Calculator),
-                ],
-            ),
-            group(
-                "Date & Time",
-                vec![large(A::DateTime, "Date", Icon::Calendar)],
-            ),
-            group(
-                "Structured Column",
-                vec![
-                    small(A::ExpandStruct, "Expand", Icon::ListTree),
-                    small(A::ExplodeList, "Explode to Rows", Icon::Rows),
-                ],
-            ),
-            group(
-                "Rows",
-                vec![
-                    small(A::InsertRows, "Insert Rows", Icon::InsertRows),
-                    small(A::DeleteRows, "Delete Rows", Icon::Trash),
+                    small(A::FillUp, "Fill Up", Icon::FillUp),
                 ],
             ),
         ],
-        Tab::AddColumn => vec![
+        Tab::Columns => vec![
             group(
-                "General",
+                "Add",
                 vec![
                     large(A::AddColumn, "New Column", Icon::Plus),
                     large(A::CustomColumn, "Custom Column", Icon::Function),
                     small(A::IndexColumn, "Index Column", Icon::ListOrdered),
-                    small(A::DuplicateColumn, "Duplicate Column", Icon::Copy),
+                    small(A::DuplicateColumn, "Duplicate", Icon::Copy),
                 ],
             ),
             group(
-                "From Text",
+                "Manage",
                 vec![
-                    small(A::MergeColumns, "Merge Columns", Icon::Merge),
-                    small(A::FormatText, "Format", Icon::CaseUpper),
+                    small(A::RenameColumn, "Rename", Icon::Rename),
+                    small(A::MoveColumnLeft, "Move Left", Icon::ArrowLeft),
+                    small(A::MoveColumnRight, "Move Right", Icon::ArrowRight),
+                    large(A::KeepColumns, "Keep Columns", Icon::Columns),
+                    large(A::RemoveColumns, "Remove Columns", Icon::Trash),
                 ],
             ),
             group(
-                "From Number",
+                "Transform",
+                vec![
+                    large(A::DataType, "Data Type", Icon::Type),
+                    small(A::ReplaceValues, "Replace Values", Icon::Replace),
+                    small(A::FormatText, "Format", Icon::CaseUpper),
+                    small(A::SplitColumn, "Split Column", Icon::Split),
+                    small(A::MergeColumns, "Merge Columns", Icon::Merge),
+                ],
+            ),
+            group(
+                "Calculate",
                 vec![
                     small(A::Standard, "Standard", Icon::Calculator),
                     small(A::Statistics, "Statistics", Icon::Sigma),
+                    small(A::DateTime, "Date", Icon::Calendar),
                 ],
+            ),
+        ],
+        Tab::Nested => vec![
+            group(
+                "Structs",
+                vec![
+                    large(A::ExpandStruct, "Expand", Icon::ListTree),
+                    large(A::ExpandAll, "Expand All Levels", Icon::Layers),
+                ],
+            ),
+            group(
+                "Lists and Maps",
+                vec![large(A::ExplodeList, "Explode to Rows", Icon::Rows)],
+            ),
+            group(
+                "Value",
+                vec![large(A::EditJson, "Edit as JSON", Icon::Braces)],
             ),
         ],
         Tab::View => vec![
@@ -299,13 +353,6 @@ fn groups(tab: Tab) -> Vec<Group> {
                     large(A::ToggleDetails, "Details Pane", Icon::PanelRight),
                     small(A::AppliedSteps, "Applied Steps", Icon::ListTree),
                     small(A::StatisticsPane, "Statistics", Icon::ChartColumn),
-                ],
-            ),
-            group(
-                "File",
-                vec![
-                    small(A::FileMetadata, "Metadata", Icon::TableProperties),
-                    small(A::WriterSettings, "Writer Settings", Icon::Sliders),
                 ],
             ),
             group(
@@ -333,7 +380,14 @@ fn groups(tab: Tab) -> Vec<Group> {
 #[derive(Debug, Clone, Copy)]
 pub struct Context {
     pub has_document: bool,
+    /// Rows are selected, or a cell.
     pub has_selection: bool,
+    /// A cell is selected (not whole rows or columns).
+    pub has_cell: bool,
+    /// The document can be changed (no filter view, step preview or
+    /// computation in the way).
+    pub editable: bool,
+    pub column: ColumnKind,
     /// A temporary row filter is on.
     pub filter_active: bool,
     pub can_undo: bool,
@@ -346,21 +400,64 @@ pub struct Context {
 
 impl Context {
     fn enabled(&self, action: Action) -> bool {
+        use Action as A;
+        let column = self.column != ColumnKind::None;
         match action {
-            Action::Close => self.has_document,
-            Action::Undo => self.can_undo,
-            Action::DeleteRows | Action::RenameColumn => self.has_selection,
+            A::New | A::Open | A::Import | A::LoadRecipe => true,
+            A::Undo => self.can_undo,
+            A::Redo => self.can_redo,
+            A::Copy => self.has_selection || column,
+            A::Cut | A::Paste => self.editable && (self.has_selection || column),
+            A::DeleteRows => self.editable && self.has_selection,
             // Without a selection, appends a row.
-            Action::InsertRows => self.has_document,
-            Action::KeepRows | Action::RemoveRows => self.filter_active,
-            Action::FilterRows => self.has_document,
-            Action::Save
-            | Action::SaveAs
-            | Action::AddColumn
-            | Action::KeepColumns
-            | Action::RemoveColumns
-            | Action::WriterSettings => self.has_document,
-            Action::Redo => self.can_redo,
+            A::InsertRows => self.editable,
+            A::KeepRows | A::RemoveRows => self.filter_active,
+            A::RenameColumn
+            | A::MoveColumnLeft
+            | A::MoveColumnRight
+            | A::DuplicateColumn
+            | A::DataType
+            | A::ReplaceValues
+            | A::FillDown
+            | A::FillUp
+            | A::SplitColumn
+            | A::MergeColumns
+            | A::FormatText
+            | A::Statistics
+            | A::Standard
+            | A::DateTime
+            | A::SortAscending
+            | A::SortDescending => self.editable && column,
+            A::ExpandStruct => self.editable && matches!(self.column, ColumnKind::Struct { .. }),
+            A::ExpandAll => {
+                self.editable
+                    && matches!(
+                        self.column,
+                        ColumnKind::Struct {
+                            nested_structs: true
+                        }
+                    )
+            }
+            A::ExplodeList => self.editable && self.column == ColumnKind::List,
+            A::EditJson => {
+                self.editable
+                    && self.has_cell
+                    && matches!(self.column, ColumnKind::Struct { .. } | ColumnKind::List)
+            }
+            A::AddColumn
+            | A::CustomColumn
+            | A::IndexColumn
+            | A::KeepColumns
+            | A::RemoveColumns
+            | A::CustomSort => self.editable,
+            A::Close
+            | A::Save
+            | A::SaveAs
+            | A::Export
+            | A::SaveRecipe
+            | A::FilterRows
+            | A::WriterSettings
+            | A::FileMetadata => self.has_document,
             _ => true,
         }
     }

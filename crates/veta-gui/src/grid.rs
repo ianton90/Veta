@@ -123,6 +123,15 @@ pub enum GridEvent {
 }
 
 /// What a context menu was opened on.
+/// The kind of selection in a grid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Selection {
+    None,
+    Cell(usize, usize),
+    Rows(Range<usize>),
+    Columns(Range<usize>),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuTarget {
     Cell,
@@ -338,6 +347,17 @@ impl GridView {
             (Some((a, b)), _) => Some(a.min(b)..a.max(b) + 1),
             (None, Some((r, _))) => Some(r..r + 1),
             (None, None) => None,
+        }
+    }
+
+    /// What is selected: whole rows, whole columns, or one cell.
+    pub fn selection(&self) -> Selection {
+        let span = |(a, b): (usize, usize)| a.min(b)..a.max(b) + 1;
+        match (self.rows, self.cols, self.selected) {
+            (Some(rows), _, _) => Selection::Rows(span(rows)),
+            (None, Some(cols), _) => Selection::Columns(span(cols)),
+            (None, None, Some((r, c))) => Selection::Cell(r, c),
+            (None, None, None) => Selection::None,
         }
     }
 

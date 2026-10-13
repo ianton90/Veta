@@ -1,6 +1,7 @@
 //! Veta core: model, controller and storage. Has no UI dependencies; the GUI
 //! and the CLI are thin layers on top of it. See `docs/ARCHITECTURE.md`.
 
+pub mod clipboard;
 pub mod command;
 pub mod controller;
 pub mod convert;

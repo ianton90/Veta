@@ -42,7 +42,8 @@ interface that exposes the same editing capabilities.
 - Struct, list and map columns. Displayed read-only at first; editing later.
 
 ### User interface
-- Ribbon menus (Power Query's ribbon as the starting point).
+- Ribbon with Home, Rows, Columns, Nested and View tabs (started from Power
+  Query's; redesigned in #88). Copy, cut and paste with other apps.
 - Configurable themes: font, color scheme, light/dark mode. Themes are TOML
   files; a default light and dark theme ship with the app.
 

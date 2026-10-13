@@ -156,6 +156,66 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
             };
             Ok((label, change))
         }
+        Command::PasteCells {
+            row,
+            column,
+            values,
+        } => {
+            let schema = doc.schema();
+            let width = values.iter().map(Vec::len).max().unwrap_or(0);
+            if width == 0 {
+                return Err(invalid("there is nothing to paste".into()));
+            }
+            if column + width > schema.fields().len() {
+                return Err(invalid(format!(
+                    "the pasted values are {width} columns wide; only {} fit from column {}",
+                    schema.fields().len().saturating_sub(column),
+                    column + 1
+                )));
+            }
+            let mut changes = Vec::new();
+            let end = row + values.len();
+            if end > doc.num_rows() {
+                changes.push(Change::PushStep(Step::InsertRows {
+                    at: doc.num_rows(),
+                    count: end - doc.num_rows(),
+                }));
+            }
+            // Cells join the last step if it already edits cells.
+            let existing = match (changes.is_empty(), doc.steps().last()) {
+                (true, Some(Step::EditCells(edits))) => Some(edits),
+                _ => None,
+            };
+            let mut new_step = existing.is_none();
+            let mut count = 0;
+            for (i, line) in values.iter().enumerate() {
+                for (j, value) in line.iter().enumerate() {
+                    let field = schema.field(column + j);
+                    let name = field.name().clone();
+                    let r = row + i;
+                    let after = parse_value(value.as_deref(), field.data_type())
+                        .map_err(|e| invalid(format!("row {}, {name}: {e}", r + 1)))?;
+                    if after.is_null(0) && !field.is_nullable() {
+                        return Err(invalid(format!("{name} cannot be empty (row {})", r + 1)));
+                    }
+                    changes.push(Change::EditCell {
+                        before: existing.and_then(|e| e.get(&name, r).cloned()),
+                        column: name,
+                        row: r,
+                        after,
+                        new_step,
+                    });
+                    new_step = false;
+                    count += 1;
+                }
+            }
+            let label = if count == 1 {
+                "Paste 1 cell".to_owned()
+            } else {
+                format!("Paste {count} cells")
+            };
+            Ok((label, Change::Batch(changes)))
+        }
         Command::InsertRows { at, count } => Ok((
             format!("Insert {}", rows(count)),
             Change::PushStep(Step::InsertRows { at, count }),
@@ -1302,5 +1362,56 @@ mod tests {
         doc.compute_all().unwrap();
         assert!(matches!(doc.status(), Status::Ready));
         assert_eq!(cell(&doc, 0, "id").as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn paste_cells_is_one_change_and_adds_rows() {
+        let dir = TempDir::new();
+        let mut doc = mixed(&dir);
+        let values = vec![
+            vec![Some("x".into()), Some("1,5".into())],
+            vec![None, Some("2.5".into())],
+        ];
+        let paste = |row| Command::PasteCells {
+            row,
+            column: 1,
+            values: values.clone(),
+        };
+        // "1,5" isn't a float64: nothing changes.
+        assert!(execute(&mut doc, paste(0)).is_err());
+        assert!(!doc.history().can_undo());
+        let values = vec![
+            vec![Some("x".into()), Some("1.5".into())],
+            vec![None, Some("2.5".into())],
+        ];
+        execute(
+            &mut doc,
+            Command::PasteCells {
+                row: 999,
+                column: 1,
+                values: values.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(doc.num_rows(), 1001);
+        assert_eq!(cell(&doc, 999, "name").as_deref(), Some("x"));
+        assert_eq!(cell(&doc, 1000, "score").as_deref(), Some("2.5"));
+        assert_eq!(cell(&doc, 1000, "name"), None);
+        assert_eq!(doc.history().undo_label(), Some("Paste 4 cells"));
+        assert!(undo(&mut doc));
+        assert_eq!(doc.num_rows(), 1000);
+        assert!(!doc.history().can_undo());
+        // Too wide for the columns to the right.
+        assert!(
+            execute(
+                &mut doc,
+                Command::PasteCells {
+                    row: 0,
+                    column: 3,
+                    values,
+                }
+            )
+            .is_err()
+        );
     }
 }

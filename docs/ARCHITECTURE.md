@@ -119,7 +119,7 @@ undone one edit at a time.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ Ribbon: [Home] [Transform] [Add Column] [View] ...        │
+│ Ribbon: [Home] [Rows] [Columns] [Nested] [View]           │
 ├────────────────────────────────────────┬─────────────────┤
 │                                        │ Side pane:      │
 │   Data grid (virtualized)              │ Applied steps / │
@@ -134,6 +134,12 @@ undone one edit at a time.
 
 - The grid is virtualized: only visible rows are requested from the model.
 - iced has no built-in table or ribbon widgets; both are custom.
+- Ribbon tabs: Home (file, recipes, clipboard, undo, everyday commands),
+  Rows, Columns, Nested, View. All tabs are always shown; commands that
+  don't apply to the selection are greyed out.
+- Clipboard: Ctrl+C/X/V copy, cut and paste tab-separated text (as
+  spreadsheets do) for a cell, rows, or whole columns (with their names).
+  A paste is one undo step and adds rows if needed.
 - Themes: TOML files with font family/size, palette and light/dark flag,
   converted to an iced `Theme` plus Veta's own style tokens.
 

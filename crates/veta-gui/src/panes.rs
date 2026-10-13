@@ -1049,6 +1049,14 @@ pub fn context_menu<'a>(
         }
     };
     let mut items: Vec<Option<(Icon, String, &str, MenuItem)>> = Vec::new();
+    if target != MenuTarget::Blank {
+        items.extend([
+            Some((Icon::Scissors, "Cut".into(), "Ctrl+X", MenuItem::Cut)),
+            Some((Icon::Copy, "Copy".into(), "Ctrl+C", MenuItem::Copy)),
+            Some((Icon::Paste, "Paste".into(), "Ctrl+V", MenuItem::Paste)),
+            None,
+        ]);
+    }
     if target == MenuTarget::Cell {
         items.push(Some((
             Icon::Rename,

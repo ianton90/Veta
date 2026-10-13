@@ -37,6 +37,14 @@ pub enum Command {
         column: String,
         value: Option<String>,
     },
+    /// Sets a block of cells from text, starting at `row` and the column at
+    /// index `column`, as one change. Rows are added at the end if the
+    /// block reaches past the last row. `None` sets null.
+    PasteCells {
+        row: usize,
+        column: usize,
+        values: Vec<Vec<Option<String>>>,
+    },
     /// Inserts `count` empty rows before row `at` (`at` = row count appends).
     InsertRows {
         at: usize,

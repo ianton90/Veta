@@ -45,7 +45,7 @@ use crate::dialogs::{
     SplitDialog, SplitMessage, WriterDialog, WriterMessage,
 };
 use crate::files::FileKind;
-use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav};
+use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav, Selection};
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
 use crate::settings::{Draft, Outcome, SettingsMessage};
 use crate::theme::{Mode, Tokens, VetaTheme};
@@ -385,6 +385,9 @@ struct ContextMenu {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MenuItem {
+    Cut,
+    Copy,
+    Paste,
     EditCell,
     ClearCell,
     InsertRowsAbove,
@@ -621,6 +624,8 @@ enum Message {
     CommitLeaf,
     /// Open the selected nested cell in the JSON editor.
     OpenJsonEditor,
+    /// Clipboard text read for pasting.
+    Pasted(Option<String>),
     Json(dialogs::JsonMessage),
     /// Collapse or expand a node of the value tree.
     ToggleNode(String),
@@ -756,6 +761,9 @@ impl App {
                         Some(Message::Action(Action::SaveAs))
                     }
                     keyboard::Key::Character("s") => Some(Message::Action(Action::Save)),
+                    keyboard::Key::Character("c") => Some(Message::Action(Action::Copy)),
+                    keyboard::Key::Character("x") => Some(Message::Action(Action::Cut)),
+                    keyboard::Key::Character("v") => Some(Message::Action(Action::Paste)),
                     keyboard::Key::Character("n") => Some(Message::Action(Action::New)),
                     keyboard::Key::Character("o") => Some(Message::Action(Action::Open)),
                     keyboard::Key::Character("w") => Some(Message::Action(Action::Close)),
@@ -967,7 +975,10 @@ impl App {
                 let id = menu.document;
                 let views_only = matches!(
                     item,
-                    MenuItem::KeepValue | MenuItem::ExcludeValue | MenuItem::FilterColumn
+                    MenuItem::KeepValue
+                        | MenuItem::ExcludeValue
+                        | MenuItem::FilterColumn
+                        | MenuItem::Copy
                 );
                 if !views_only && !self.editable(id) {
                     self.not_editable(id);
@@ -1009,6 +1020,9 @@ impl App {
                     MenuItem::SplitColumn => return self.open_split_dialog(id, None),
                     MenuItem::MergeColumns => return self.open_merge_dialog(id, None),
                     MenuItem::DuplicateColumn => self.duplicate_column(id),
+                    MenuItem::Cut => return self.copy_selection(id, true),
+                    MenuItem::Copy => return self.copy_selection(id, false),
+                    MenuItem::Paste => return iced::clipboard::read().map(Message::Pasted),
                     MenuItem::ExpandStruct => self.nested_step(id, false, false),
                     MenuItem::ExpandAll => self.nested_step(id, false, true),
                     MenuItem::ExplodeList => self.nested_step(id, true, false),
@@ -1439,6 +1453,15 @@ impl App {
                     return iced::widget::operation::focus(LEAF_ID);
                 }
             }
+            Message::Pasted(text) => {
+                if let (Some(id), Some(text)) = (self.active, text) {
+                    if !self.editable(id) {
+                        self.not_editable(id);
+                        return Task::none();
+                    }
+                    self.paste(id, &text);
+                }
+            }
             Message::OpenJsonEditor => {
                 if let Some(id) = self.active {
                     self.open_json_editor(id);
@@ -1835,6 +1858,13 @@ impl App {
                 | Action::IndexColumn
                 | Action::Standard
                 | Action::DateTime
+                | Action::Cut
+                | Action::Paste
+                | Action::FillUp
+                | Action::MoveColumnLeft
+                | Action::MoveColumnRight
+                | Action::ExpandAll
+                | Action::EditJson
         );
         if changes_data
             && let Some(id) = self.active
@@ -1867,6 +1897,47 @@ impl App {
                 }
             }
             Action::New => self.new_document(),
+            Action::LoadRecipe => return self.handle(Message::LoadRecipe),
+            Action::SaveRecipe => return self.handle(Message::SaveRecipe),
+            Action::Copy | Action::Cut => {
+                if let Some(id) = self.active {
+                    return self.copy_selection(id, action == Action::Cut);
+                }
+            }
+            Action::Paste => {
+                if self.active.is_some() {
+                    return iced::clipboard::read().map(Message::Pasted);
+                }
+            }
+            Action::FillUp => {
+                if let Some(id) = self.active {
+                    self.fill_selected(id, true);
+                }
+            }
+            Action::MoveColumnLeft | Action::MoveColumnRight => {
+                if let Some(id) = self.active
+                    && let Some(c) = self.selected_columns(id)
+                {
+                    let to = if action == Action::MoveColumnLeft {
+                        c.start.checked_sub(1)
+                    } else {
+                        Some(c.start + 1)
+                    };
+                    if let Some(to) = to {
+                        self.move_column(id, c.start, to);
+                    }
+                }
+            }
+            Action::ExpandAll => {
+                if let Some(id) = self.active {
+                    self.nested_step(id, false, true);
+                }
+            }
+            Action::EditJson => {
+                if let Some(id) = self.active {
+                    self.open_json_editor(id);
+                }
+            }
             Action::Open => {
                 let open = files::open_many("Open".into(), vec![FileKind::Parquet]);
                 return Task::perform(open, |files| {
@@ -2667,6 +2738,95 @@ impl App {
                 self.leaf_edit = Some(edit);
             }
         }
+    }
+
+    /// Copies the selection to the clipboard as tab-separated text (whole
+    /// columns with their names first). With `cut`, then clears the cell or
+    /// removes the rows or columns.
+    fn copy_selection(&mut self, id: DocumentId, cut: bool) -> Task<Message> {
+        self.commit_edit();
+        let (Some(tab), Some(doc)) = (self.tabs.iter().find(|t| t.id == id), self.workbook.get(id))
+        else {
+            return Task::none();
+        };
+        let selection = tab.grid.selection();
+        let text = match &selection {
+            Selection::None => return Task::none(),
+            Selection::Cell(r, c) => {
+                veta_core::clipboard::copy_text(doc, *r..r + 1, *c..c + 1, false)
+            }
+            Selection::Rows(rows) => {
+                veta_core::clipboard::copy_text(doc, rows.clone(), 0..doc.num_columns(), false)
+            }
+            Selection::Columns(cols) => {
+                veta_core::clipboard::copy_text(doc, 0..doc.num_rows(), cols.clone(), true)
+            }
+        };
+        let text = match text {
+            Ok(text) => text,
+            Err(e) => {
+                self.errors.push(format!("Could not copy: {e}"));
+                return Task::none();
+            }
+        };
+        if cut {
+            match selection {
+                Selection::Cell(row, c) => {
+                    let column = doc.schema().field(c).name().clone();
+                    self.execute(
+                        id,
+                        Command::SetCell {
+                            row,
+                            column,
+                            value: None,
+                        },
+                    );
+                }
+                Selection::Rows(_) => self.delete_rows(id),
+                Selection::Columns(_) => self.keep_or_remove_columns(id, false, true),
+                Selection::None => {}
+            }
+        }
+        iced::clipboard::write(text)
+    }
+
+    /// Pastes tab-separated `text` at the selected cell (or the start of
+    /// the selected rows or columns) as one change.
+    fn paste(&mut self, id: DocumentId, text: &str) {
+        self.commit_edit();
+        let (Some(tab), Some(doc)) = (self.tabs.iter().find(|t| t.id == id), self.workbook.get(id))
+        else {
+            return;
+        };
+        let mut values = veta_core::clipboard::parse_tsv(text);
+        let (row, column) = match tab.grid.selection() {
+            Selection::None => {
+                self.errors.push("Select where to paste first.".into());
+                return;
+            }
+            Selection::Cell(r, c) => (r, c),
+            Selection::Rows(rows) => (rows.start, 0),
+            Selection::Columns(cols) => {
+                // Copied whole columns start with their names.
+                let names = self.column_names(id, cols.clone());
+                let header: Vec<Option<String>> = names.into_iter().map(Some).collect();
+                if values.first() == Some(&header) {
+                    values.remove(0);
+                }
+                (0, cols.start)
+            }
+        };
+        if values.is_empty() || doc.num_columns() == 0 {
+            return;
+        }
+        self.execute(
+            id,
+            Command::PasteCells {
+                row,
+                column,
+                values,
+            },
+        );
     }
 
     /// Opens the selected nested cell in the multi-line JSON editor.
@@ -3649,9 +3809,37 @@ impl App {
             None => panes::empty_state(!self.opening.is_empty(), &self.config.recent_files, ui),
         };
 
+        let column = self.active_document().and_then(|(tab, doc)| {
+            let c = tab.grid.selected_columns()?.start;
+            doc.schema().fields().get(c).map(|f| f.data_type().clone())
+        });
         let context = ribbon::Context {
             has_document: self.active.is_some(),
             has_selection: self.active.and_then(|id| self.selected_rows(id)).is_some(),
+            has_cell: self
+                .active_document()
+                .is_some_and(|(tab, _)| matches!(tab.grid.selection(), Selection::Cell(..))),
+            editable: self.active.is_some_and(|id| self.editable(id)),
+            column: match column {
+                None => ribbon::ColumnKind::None,
+                Some(veta_core::arrow::datatypes::DataType::Struct(fields)) => {
+                    ribbon::ColumnKind::Struct {
+                        nested_structs: fields.iter().any(|f| {
+                            matches!(
+                                f.data_type(),
+                                veta_core::arrow::datatypes::DataType::Struct(_)
+                            )
+                        }),
+                    }
+                }
+                Some(
+                    veta_core::arrow::datatypes::DataType::List(_)
+                    | veta_core::arrow::datatypes::DataType::LargeList(_)
+                    | veta_core::arrow::datatypes::DataType::FixedSizeList(..)
+                    | veta_core::arrow::datatypes::DataType::Map(..),
+                ) => ribbon::ColumnKind::List,
+                Some(_) => ribbon::ColumnKind::Plain,
+            },
             filter_active: self
                 .active_document()
                 .is_some_and(|(tab, doc)| tab.grid.filter_counts(doc).is_some()),
@@ -5384,5 +5572,51 @@ mod tests {
         let _ = app.update(Message::Json(dialogs::JsonMessage::Apply));
         assert!(app.dialog.is_none());
         assert_eq!(cell(&app, 0, "scores").as_deref(), Some("{x: 1}"));
+    }
+
+    #[test]
+    fn cut_and_paste() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let cell = |app: &App, row: usize, column: &str| {
+            let doc = app.workbook.get(id).unwrap();
+            let i = doc.schema().index_of(column).unwrap();
+            veta_core::display::format_batch(&doc.read(row..row + 1).unwrap()).unwrap()[0][i]
+                .clone()
+        };
+        // A block pasted at a cell, as one undo step.
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 1 }));
+        let _ = app.update(Message::Pasted(Some("x\t1.5\r\ny\t\r\n".into())));
+        assert_eq!(cell(&app, 0, "name").as_deref(), Some("x"));
+        assert_eq!(cell(&app, 0, "score").as_deref(), Some("1.5"));
+        assert_eq!(cell(&app, 1, "name").as_deref(), Some("y"));
+        assert_eq!(cell(&app, 1, "score"), None);
+        let doc = app.workbook.get(id).unwrap();
+        assert_eq!(doc.history().undo_label(), Some("Paste 4 cells"));
+
+        // Cut clears the cell.
+        let _ = app.update(Message::Action(Action::Cut));
+        assert_eq!(cell(&app, 0, "name"), None);
+
+        // Whole columns: a copied header row is skipped.
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 1,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Pasted(Some("name\nfirst\n".into())));
+        assert_eq!(cell(&app, 0, "name").as_deref(), Some("first"));
+
+        // A bad value reports an error and changes nothing.
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 2 }));
+        let before = app.errors.len();
+        let _ = app.update(Message::Pasted(Some("abc".into())));
+        assert_eq!(app.errors.len(), before + 1);
+        assert_eq!(cell(&app, 0, "score").as_deref(), Some("1.5"));
     }
 }
