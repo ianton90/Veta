@@ -321,6 +321,10 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
             let step = Step::ExplodeList { column };
             Ok((step.describe(), Change::PushStep(step)))
         }
+        Command::CollectList { keys, columns } => {
+            let step = Step::CollectList { keys, columns };
+            Ok((step.describe(), Change::PushStep(step)))
+        }
         Command::CombineStruct { columns, name } => {
             let step = Step::CombineStruct { columns, name };
             Ok((step.describe(), Change::PushStep(step)))
@@ -1230,6 +1234,70 @@ mod tests {
                 7
             );
         }
+    }
+
+    #[test]
+    fn collect_values_into_lists() {
+        let dir = TempDir::new();
+        let path = dir.join("mixed.parquet");
+        fixtures::mixed_settings(&path);
+        for options in [OpenOptions::default(), OpenOptions::paged()] {
+            let mut doc = Document::open(&path, options).unwrap();
+            let collect = |keys: &[&str], columns: &[&str]| Command::CollectList {
+                keys: keys.iter().map(|c| c.to_string()).collect(),
+                columns: columns.iter().map(|c| c.to_string()).collect(),
+            };
+            execute(&mut doc, collect(&["name"], &["score", "id"])).unwrap();
+            doc.compute_all().unwrap();
+            let names: Vec<_> = doc
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| f.name().clone())
+                .collect();
+            assert_eq!(names, ["id", "name", "score"], "input order, flag dropped");
+            assert_eq!(doc.num_rows(), 6, "five names and null");
+            assert_eq!(cell(&doc, 0, "name").as_deref(), Some("ana"));
+            assert!(
+                cell(&doc, 0, "id")
+                    .unwrap()
+                    .starts_with("[5, 10, 15, 20, 25, 30, 40")
+            );
+            assert_eq!(cell(&doc, 5, "name"), None, "nulls group last");
+            let batch = doc.read(0..6).unwrap();
+            let items: usize = (0..6)
+                .map(|r| crate::display::item_count(batch.column(0).as_ref(), r))
+                .sum();
+            assert_eq!(items, fixtures::MIXED_SETTINGS_ROWS);
+            assert_eq!(
+                doc.steps()[0].describe(),
+                "Collected 2 columns into lists by name"
+            );
+
+            assert!(execute(&mut doc, collect(&["name"], &[])).is_err());
+            assert!(execute(&mut doc, collect(&["name"], &["name"])).is_err());
+        }
+
+        // Without keys every row is one group, across reads.
+        let path = dir.join("large.parquet");
+        let rows = 64 * 1024 + 10; // more than one read of a full pass
+        fixtures::large(&path, rows, 50_000);
+        let mut doc = Document::open(&path, OpenOptions::paged()).unwrap();
+        execute(
+            &mut doc,
+            Command::CollectList {
+                keys: Vec::new(),
+                columns: vec!["id".into()],
+            },
+        )
+        .unwrap();
+        doc.compute_all().unwrap();
+        assert_eq!(doc.num_rows(), 1);
+        let batch = doc.read(0..1).unwrap();
+        assert_eq!(
+            crate::display::item_count(batch.column(0).as_ref(), 0),
+            rows
+        );
     }
 
     #[test]

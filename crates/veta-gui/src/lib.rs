@@ -38,11 +38,12 @@ use crate::config::Config;
 #[cfg(test)]
 use crate::config::ModePreference;
 use crate::dialogs::{
-    CastDialog, CastMessage, ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage,
-    CombineDialog, CombineMessage, CustomDialog, CustomMessage, ExportDialog, ExportMessage,
-    FilterDialog, FilterMessage, FormatDialog, FormatMessage, ImportDialog, ImportMessage,
-    MergeDialog, MergeMessage, MetadataDialog, MetadataMessage, ReplaceDialog, ReplaceMessage,
-    SortDialog, SortMessage, SplitDialog, SplitMessage, WriterDialog, WriterMessage,
+    CastDialog, CastMessage, ChooseColumns, ChooseMessage, CollectDialog, CollectMessage,
+    ColumnDialog, ColumnMessage, CombineDialog, CombineMessage, CustomDialog, CustomMessage,
+    ExportDialog, ExportMessage, FilterDialog, FilterMessage, FormatDialog, FormatMessage,
+    ImportDialog, ImportMessage, MergeDialog, MergeMessage, MetadataDialog, MetadataMessage,
+    ReplaceDialog, ReplaceMessage, SortDialog, SortMessage, SplitDialog, SplitMessage,
+    WriterDialog, WriterMessage,
 };
 use crate::files::FileKind;
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav, Selection};
@@ -418,6 +419,7 @@ enum MenuItem {
     DuplicateColumn,
     ExpandStruct,
     CombineStruct,
+    CollectList,
     /// Expand a struct column and the structs inside it.
     ExpandAll,
     ExplodeList,
@@ -476,6 +478,7 @@ fn step_dialog_supported(step: &Step) -> bool {
             | Step::Split(_)
             | Step::Merge(_)
             | Step::CombineStruct { .. }
+            | Step::CollectList { .. }
             | Step::CustomColumn(_)
     )
 }
@@ -531,6 +534,11 @@ enum Dialog {
     Combine {
         document: DocumentId,
         dialog: CombineDialog,
+        replace: Option<usize>,
+    },
+    Collect {
+        document: DocumentId,
+        dialog: CollectDialog,
         replace: Option<usize>,
     },
     Custom {
@@ -613,6 +621,7 @@ enum Message {
     Custom(CustomMessage),
     Merge(MergeMessage),
     Combine(CombineMessage),
+    Collect(CollectMessage),
     /// Progress (0–1) of the background pass with this key.
     ComputeProgress(DocumentId, Target, Vec<u64>, f32),
     /// The background pass with this key finished.
@@ -1052,6 +1061,7 @@ impl App {
                     MenuItem::SplitColumn => return self.open_split_dialog(id, None),
                     MenuItem::MergeColumns => return self.open_merge_dialog(id, None),
                     MenuItem::CombineStruct => return self.open_combine_dialog(id, None),
+                    MenuItem::CollectList => self.open_collect_dialog(id, None),
                     MenuItem::DuplicateColumn => self.duplicate_column(id),
                     MenuItem::Cut => return self.copy_selection(id, true),
                     MenuItem::Copy => return self.copy_selection(id, false),
@@ -1342,6 +1352,31 @@ impl App {
                         let command = Command::CombineStruct { columns, name };
                         if let Err(e) = self.add_or_replace(id, replace, step, command)
                             && let Some(Dialog::Combine { dialog, .. }) = &mut self.dialog
+                        {
+                            dialog.set_error(e);
+                        }
+                    } else if cancel {
+                        self.dialog = None;
+                    }
+                }
+            }
+            Message::Collect(message) => {
+                if let Some(Dialog::Collect {
+                    document,
+                    dialog,
+                    replace,
+                }) = &mut self.dialog
+                {
+                    let (id, replace) = (*document, *replace);
+                    let cancel = matches!(message, CollectMessage::Cancel);
+                    if let Some((keys, columns)) = dialog.update(message) {
+                        let step = Step::CollectList {
+                            keys: keys.clone(),
+                            columns: columns.clone(),
+                        };
+                        let command = Command::CollectList { keys, columns };
+                        if let Err(e) = self.add_or_replace(id, replace, step, command)
+                            && let Some(Dialog::Collect { dialog, .. }) = &mut self.dialog
                         {
                             dialog.set_error(e);
                         }
@@ -1912,6 +1947,7 @@ impl App {
                 | Action::SplitColumn
                 | Action::MergeColumns
                 | Action::CombineStruct
+                | Action::CollectList
                 | Action::CustomColumn
                 | Action::DuplicateColumn
                 | Action::IndexColumn
@@ -2129,6 +2165,11 @@ impl App {
             Action::CombineStruct => {
                 if let Some(id) = self.active {
                     return self.open_combine_dialog(id, None);
+                }
+            }
+            Action::CollectList => {
+                if let Some(id) = self.active {
+                    self.open_collect_dialog(id, None);
                 }
             }
             Action::DataType => {
@@ -2362,6 +2403,10 @@ impl App {
             Step::CombineStruct { columns, name } => {
                 let step = (columns.clone(), name.clone());
                 return self.open_combine_dialog(id, Some((index, step)));
+            }
+            Step::CollectList { keys, columns } => {
+                self.open_collect_dialog(id, Some((index, keys.clone(), columns.clone())));
+                return Task::none();
             }
             Step::FormatText { columns, op } => {
                 self.edit = None;
@@ -3062,6 +3107,49 @@ impl App {
             iced::widget::operation::focus(dialogs::NAME_ID),
             iced::widget::operation::select_all(dialogs::NAME_ID),
         ])
+    }
+
+    /// Opens the collect dialog on the selected columns, or on the collect
+    /// step at `index`.
+    fn open_collect_dialog(
+        &mut self,
+        id: DocumentId,
+        step: Option<(usize, Vec<String>, Vec<String>)>,
+    ) {
+        let Some(doc) = self.workbook.get(id) else {
+            return;
+        };
+        let (replace, keys, columns, schema) = match step {
+            Some((i, keys, columns)) => (Some(i), keys, columns, doc.schema_at(i)),
+            None => {
+                let schema = doc.schema_at(doc.evaluated_steps());
+                (None, Vec::new(), self.selected_column_names(id), schema)
+            }
+        };
+        if columns.is_empty() {
+            self.errors
+                .push("Select the columns to collect (Shift+click the headers).".into());
+            return;
+        }
+        let others = schema
+            .map(|s| {
+                s.fields()
+                    .iter()
+                    .map(|f| f.name().clone())
+                    .filter(|name| !columns.contains(name))
+                    .map(|name| {
+                        let on = keys.contains(&name);
+                        (name, on)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.edit = None;
+        self.dialog = Some(Dialog::Collect {
+            document: id,
+            dialog: CollectDialog::new(columns, others),
+            replace,
+        });
     }
 
     /// Opens the combine dialog on the selected columns, or on the combine
@@ -4134,6 +4222,7 @@ impl App {
             Dialog::Custom { dialog, .. } => dialog.view(ui.tokens).map(Message::Custom),
             Dialog::Merge { dialog, .. } => dialog.view(ui.tokens).map(Message::Merge),
             Dialog::Combine { dialog, .. } => dialog.view(ui.tokens).map(Message::Combine),
+            Dialog::Collect { dialog, .. } => dialog.view(ui.tokens).map(Message::Collect),
             Dialog::ConfirmStep { .. } => settings::confirm_step(ui.tokens),
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
             Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
@@ -5228,6 +5317,58 @@ mod tests {
         // The step reopens in its dialog.
         let _ = app.update(Message::EditStep(2));
         assert!(matches!(app.dialog, Some(Dialog::Combine { .. })));
+    }
+
+    #[test]
+    fn collect_columns_into_lists() {
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        // Collect score, grouped by name (the second of the others).
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 2,
+                extend: false,
+            },
+        ));
+        let _ = app.update(Message::Action(Action::CollectList));
+        let _ = app.update(Message::Collect(CollectMessage::ToggleKey(1, true)));
+        let _ = app.update(Message::Collect(CollectMessage::Apply));
+        assert!(app.dialog.is_none());
+        finish_compute(&mut app, id);
+        let doc = app.workbook.get(id).unwrap();
+        let names: Vec<_> = doc
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(names, ["name", "score"]);
+        assert_eq!(doc.num_rows(), 6);
+        assert_eq!(
+            doc.steps()[0].describe(),
+            "Collected score into lists by name"
+        );
+
+        // The step reopens with its group columns checked.
+        let _ = app.update(Message::EditStep(0));
+        let Some(Dialog::Collect { dialog, .. }) = &app.dialog else {
+            panic!("collect dialog");
+        };
+        assert_eq!(
+            dialog,
+            &CollectDialog::new(
+                vec!["score".into()],
+                vec![
+                    ("id".into(), false),
+                    ("name".into(), true),
+                    ("flag".into(), false)
+                ]
+            )
+        );
     }
 
     #[test]

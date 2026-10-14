@@ -104,6 +104,13 @@ pub enum Step {
     ExplodeList {
         column: String,
     },
+    /// One row per group of equal `keys` (ordered by them), with `columns`
+    /// collected into lists; other columns are dropped. Reverses
+    /// [`Step::ExplodeList`].
+    CollectList {
+        keys: Vec<String>,
+        columns: Vec<String>,
+    },
     /// Columns become the fields of one struct column `name`, placed where
     /// the first of them was. A `<name>.` prefix is dropped from field
     /// names, so it reverses [`Step::ExpandStruct`].
@@ -129,6 +136,7 @@ impl Step {
                 | Step::Fill(_)
                 | Step::RemoveEmptyColumn { .. }
                 | Step::ExplodeList { .. }
+                | Step::CollectList { .. }
         ) || matches!(self, Step::Cast(c) if c.options.on_error == cast::OnError::Fail)
     }
 
@@ -194,6 +202,16 @@ impl Step {
                 all_levels: true,
             } => format!("Expanded {column} (all levels)"),
             Step::ExplodeList { column } => format!("Exploded {column} into rows"),
+            Step::CollectList { keys, columns } => {
+                let what = match columns.as_slice() {
+                    [one] => one.clone(),
+                    _ => plural(columns.len(), "column"),
+                };
+                match keys.as_slice() {
+                    [] => format!("Collected {what} into lists"),
+                    _ => format!("Collected {what} into lists by {}", keys.join(", ")),
+                }
+            }
             Step::CombineStruct { columns, name } => {
                 format!("Combined {} into {name}", plural(columns.len(), "column"))
             }

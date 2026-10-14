@@ -188,6 +188,10 @@ enum RecipeStep {
         columns: Vec<String>,
         name: String,
     },
+    CollectList {
+        keys: Vec<String>,
+        columns: Vec<String>,
+    },
 }
 
 fn dot() -> char {
@@ -405,6 +409,10 @@ impl RecipeStep {
                 column: column.clone(),
                 all_levels: *all_levels,
             },
+            Step::CollectList { keys, columns } => RecipeStep::CollectList {
+                keys: keys.clone(),
+                columns: columns.clone(),
+            },
             Step::CombineStruct { columns, name } => RecipeStep::CombineStruct {
                 columns: columns.clone(),
                 name: name.clone(),
@@ -546,6 +554,7 @@ impl RecipeStep {
             }
             RecipeStep::ExplodeList { column } => Step::ExplodeList { column },
             RecipeStep::CombineStruct { columns, name } => Step::CombineStruct { columns, name },
+            RecipeStep::CollectList { keys, columns } => Step::CollectList { keys, columns },
             RecipeStep::CustomColumn {
                 name,
                 expression,
@@ -707,6 +716,10 @@ mod tests {
             Step::CombineStruct {
                 columns: vec!["id".into(), "m".into()],
                 name: "s".into(),
+            },
+            Step::CollectList {
+                keys: vec!["s".into()],
+                columns: vec!["label".into()],
             },
             Step::CustomColumn(CustomColumn {
                 name: "c".into(),

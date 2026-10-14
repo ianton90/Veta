@@ -622,7 +622,11 @@ impl GridView {
         let mut fresh = Vec::new();
         self.columns = display_columns(&schema, &self.expanded);
         for (i, column) in self.columns.iter_mut().enumerate() {
-            match old.iter().find(|c| c.key == column.key) {
+            // A column whose type changed is fitted again.
+            match old
+                .iter()
+                .find(|c| c.key == column.key && c.type_name == column.type_name)
+            {
                 Some(kept) => column.width = kept.width,
                 None => {
                     column.width = MIN_FITTED_WIDTH;

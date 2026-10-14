@@ -33,6 +33,9 @@ impl Level {
             Step::ExplodeList { column } => {
                 super::nested::explode_fields(&self.schema, column).map(|_| ())
             }
+            Step::CollectList { keys, columns } => {
+                super::nested::collect_fields(&self.schema, keys, columns).map(|_| ())
+            }
             Step::Cast(cast) => cast.output_fields(&self.schema).map(|_| ()),
             Step::RemoveEmptyColumn { name } => {
                 self.index(name)?;
@@ -212,7 +215,8 @@ impl Level {
             | Step::Sort(_)
             | Step::Fill(_)
             | Step::RemoveEmptyColumn { .. }
-            | Step::ExplodeList { .. } => Err(invalid("this step must be computed first".into())),
+            | Step::ExplodeList { .. }
+            | Step::CollectList { .. } => Err(invalid("this step must be computed first".into())),
             Step::MoveColumn { name, to } => {
                 let index = self.index(name)?;
                 if *to >= fields.len() {

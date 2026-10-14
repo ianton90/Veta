@@ -406,7 +406,8 @@ impl Pipeline {
             | Step::Sort(_)
             | Step::Fill(_)
             | Step::RemoveEmptyColumn { .. }
-            | Step::ExplodeList { .. } => Err(invalid("this step must be computed first".into())),
+            | Step::ExplodeList { .. }
+            | Step::CollectList { .. } => Err(invalid("this step must be computed first".into())),
             Step::RemoveColumns { .. }
             | Step::KeepColumns { .. }
             | Step::RenameColumn { .. }

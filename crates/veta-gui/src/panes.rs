@@ -1219,6 +1219,12 @@ pub fn menu_sections(
             "",
             MenuItem::CombineStruct,
         ));
+        nested_entries.push(entry(
+            Icon::ListCollapse,
+            "Collect into lists…",
+            "",
+            MenuItem::CollectList,
+        ));
     }
     if !nested_entries.is_empty() {
         sections.push(("Nested", nested_entries));

@@ -46,6 +46,7 @@ pub enum Action {
     CustomSort,
     ExpandStruct,
     CombineStruct,
+    CollectList,
     ExpandAll,
     ExplodeList,
     EditJson,
@@ -341,7 +342,10 @@ fn groups(tab: Tab) -> Vec<Group> {
             ),
             group(
                 "Lists and Maps",
-                vec![large(A::ExplodeList, "Explode to Rows", Icon::Rows)],
+                vec![
+                    large(A::ExplodeList, "Explode to Rows", Icon::Rows),
+                    large(A::CollectList, "Collect into Lists", Icon::ListCollapse),
+                ],
             ),
             group(
                 "Value",
@@ -425,6 +429,7 @@ impl Context {
             | A::SplitColumn
             | A::MergeColumns
             | A::CombineStruct
+            | A::CollectList
             | A::FormatText
             | A::Statistics
             | A::Standard

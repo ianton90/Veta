@@ -104,6 +104,11 @@ pub enum Command {
     ExplodeList {
         column: String,
     },
+    /// One row per group of equal keys, other chosen columns as lists.
+    CollectList {
+        keys: Vec<String>,
+        columns: Vec<String>,
+    },
     /// Columns become the fields of one struct column.
     CombineStruct {
         columns: Vec<String>,

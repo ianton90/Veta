@@ -165,6 +165,9 @@ impl ComputeJob {
             Step::ExplodeList { column } => {
                 Cache::Data(self.explode(column, input_rows, progress)?)
             }
+            Step::CollectList { keys, columns } => {
+                Cache::Data(self.collect(keys, columns, input_rows, progress)?)
+            }
             Step::Cast(cast) => {
                 // Converts every row once so an invalid value breaks the
                 // step instead of failing later reads.
@@ -344,6 +347,125 @@ impl ComputeJob {
                 Ok(Arc::new(Checkpoint::open(file, schema)?))
             }
         }
+    }
+
+    /// One row per group of equal keys, the other columns collected into
+    /// lists. Rows are sorted by the keys first (stable, so items keep their
+    /// order), which also orders the groups.
+    fn collect(
+        &self,
+        keys: &[String],
+        columns: &[String],
+        input_rows: usize,
+        progress: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<Arc<dyn DataSource>> {
+        use super::sort::{Sort, SortKey};
+        let input = self
+            .pipeline
+            .schema_at(self.step)
+            .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+        let schema = Arc::new(arrow::datatypes::Schema::new_with_metadata(
+            super::nested::collect_fields(&input, keys, columns)?,
+            input.metadata().clone(),
+        ));
+        let read = |range| self.pipeline.read_at(self.step, range);
+        let sorted: Option<Arc<dyn DataSource>> = if keys.is_empty() {
+            None
+        } else {
+            let sort = Sort {
+                keys: keys
+                    .iter()
+                    .map(|k| SortKey {
+                        column: k.clone(),
+                        descending: false,
+                        nulls_first: false,
+                    })
+                    .collect(),
+            };
+            let mut sort_progress = |f: f32| progress(0.5 * f);
+            Some(match self.pipeline.source().mode() {
+                SourceMode::InMemory => {
+                    let batch = sort_in_memory(
+                        &sort,
+                        &input,
+                        input_rows,
+                        &read,
+                        PASS_ROWS,
+                        &mut sort_progress,
+                    )?;
+                    Arc::new(MemorySource::new(input.clone(), vec![batch])?)
+                }
+                SourceMode::Paged => Arc::new(sort_external(
+                    &sort,
+                    &input,
+                    input_rows,
+                    &read,
+                    PASS_ROWS,
+                    None,
+                    &mut sort_progress,
+                )?),
+            })
+        };
+        let read_sorted = |range: Range<usize>| match &sorted {
+            Some(source) => source.read(range),
+            None => read(range),
+        };
+        let key_columns = keys
+            .iter()
+            .map(|k| input.index_of(k))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let converter = if keys.is_empty() {
+            None
+        } else {
+            let fields = key_columns
+                .iter()
+                .map(|&i| arrow::row::SortField::new(input.field(i).data_type().clone()))
+                .collect();
+            Some(arrow::row::RowConverter::new(fields)?)
+        };
+
+        // Groups can span reads: the last, maybe unfinished, group of each
+        // read waits for the next one.
+        let mut start = 0;
+        let mut pending: Option<RecordBatch> = None;
+        let mut next = |progress: &mut dyn FnMut(f32) -> bool| -> Result<Option<RecordBatch>> {
+            loop {
+                if start >= input_rows && pending.is_none() {
+                    return Ok(None);
+                }
+                let end = (start + PASS_ROWS).min(input_rows);
+                let read = (start < end).then(|| read_sorted(start..end)).transpose()?;
+                start = end;
+                let last = start >= input_rows;
+                let batch = match (pending.take(), read) {
+                    (Some(p), Some(r)) => arrow::compute::concat_batches(&input, [&p, &r])?,
+                    (Some(p), None) => p,
+                    (None, Some(r)) => r,
+                    (None, None) => return Ok(None),
+                };
+                let starts = super::nested::group_starts(&batch, &key_columns, converter.as_ref())?;
+                let (groups, complete) = match (last, starts.last()) {
+                    (true, _) => (starts.len(), batch.num_rows()),
+                    (false, Some(&s)) => (starts.len() - 1, s),
+                    (false, None) => (0, 0),
+                };
+                if !last {
+                    pending = Some(batch.slice(complete, batch.num_rows() - complete));
+                }
+                if !progress(0.5 + 0.5 * start as f32 / input_rows.max(1) as f32) {
+                    return Err(Error::Cancelled);
+                }
+                if groups == 0 {
+                    continue;
+                }
+                let mut bounds = starts[..groups].to_vec();
+                bounds.push(complete);
+                let complete = batch.slice(0, complete);
+                return super::nested::collect_groups(&complete, &bounds, keys, &schema).map(Some);
+            }
+        };
+        let mut produce = || next(progress).transpose();
+        self.materialize(schema.clone(), &mut produce)
     }
 
     /// One row per list item, batch by batch.

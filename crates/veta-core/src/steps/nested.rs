@@ -215,6 +215,102 @@ pub(super) fn combine(
     )?)
 }
 
+/// Fields after collecting `columns` into lists, one row per group of
+/// equal `keys`: the keys and the collected columns, in input order; other
+/// columns are dropped.
+pub(super) fn collect_fields(
+    schema: &Schema,
+    keys: &[String],
+    columns: &[String],
+) -> Result<Vec<Field>> {
+    if columns.is_empty() {
+        return Err(invalid("choose the columns to collect into lists".into()));
+    }
+    for (i, name) in keys.iter().chain(columns).enumerate() {
+        column_index(schema, name)?;
+        if keys.iter().chain(columns).take(i).any(|n| n == name) {
+            return Err(invalid(format!("{name:?} is chosen twice")));
+        }
+    }
+    Ok(schema
+        .fields()
+        .iter()
+        .filter_map(|f| {
+            if keys.contains(f.name()) {
+                Some(f.as_ref().clone())
+            } else if columns.contains(f.name()) {
+                Some(Field::new(
+                    f.name(),
+                    DataType::new_list(f.data_type().clone(), true),
+                    true,
+                ))
+            } else {
+                None
+            }
+        })
+        .collect())
+}
+
+/// Row indices where each run of equal `keys` starts in `batch` (all rows
+/// are one group without keys).
+pub(super) fn group_starts(
+    batch: &RecordBatch,
+    keys: &[usize],
+    converter: Option<&arrow::row::RowConverter>,
+) -> Result<Vec<usize>> {
+    if batch.num_rows() == 0 {
+        return Ok(Vec::new());
+    }
+    let Some(converter) = converter else {
+        return Ok(vec![0]);
+    };
+    let columns: Vec<ArrayRef> = keys.iter().map(|&i| batch.column(i).clone()).collect();
+    let rows = converter.convert_columns(&columns)?;
+    let mut starts = vec![0];
+    starts.extend((1..batch.num_rows()).filter(|&i| rows.row(i) != rows.row(i - 1)));
+    Ok(starts)
+}
+
+/// One row per group of `batch`, whose groups start at `bounds` (plus the
+/// end): keys from each group's first row, other columns as lists.
+pub(super) fn collect_groups(
+    batch: &RecordBatch,
+    bounds: &[usize],
+    keys: &[String],
+    schema: &Arc<Schema>,
+) -> Result<RecordBatch> {
+    let groups = bounds.len().saturating_sub(1);
+    let firsts = UInt32Array::from_iter_values(bounds[..groups].iter().map(|&b| b as u32));
+    let offsets = arrow::buffer::OffsetBuffer::new(
+        bounds.iter().map(|&b| b as i32).collect::<Vec<_>>().into(),
+    );
+    let input = batch.schema();
+    let columns = schema
+        .fields()
+        .iter()
+        .map(|field| -> Result<ArrayRef> {
+            let column = batch.column(column_index(&input, field.name())?);
+            if keys.contains(field.name()) {
+                return Ok(take(column, &firsts, None)?);
+            }
+            let DataType::List(item) = field.data_type() else {
+                return Err(invalid(format!("{} is not a list column", field.name())));
+            };
+            Ok(Arc::new(ListArray::try_new(
+                item.clone(),
+                offsets.clone(),
+                column.clone(),
+                None,
+            )?))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(RecordBatch::try_new_with_options(
+        schema.clone(),
+        columns,
+        &arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(groups)),
+    )?)
+}
+
 /// The column type after exploding: the list's item type, or the map's
 /// entry struct.
 pub(super) fn explode_fields(schema: &Schema, column: &str) -> Result<Vec<Field>> {

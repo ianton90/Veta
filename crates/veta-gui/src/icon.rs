@@ -72,6 +72,7 @@ pub enum Icon {
     RecipeLoad,
     RecipeSave,
     Group,
+    ListCollapse,
 }
 
 impl Icon {
@@ -135,6 +136,7 @@ impl Icon {
             Icon::RecipeLoad => 0xe0c5,      // file-input
             Icon::RecipeSave => 0xe0c8,      // file-output
             Icon::Group => 0xe464,           // group
+            Icon::ListCollapse => 0xe59b,    // list-collapse
         };
         char::from_u32(code).unwrap_or('?')
     }
