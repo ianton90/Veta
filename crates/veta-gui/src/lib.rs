@@ -421,6 +421,7 @@ enum MenuItem {
     CombineStruct,
     CollectList,
     InsertItem,
+    InsertItemBelow,
     DeleteItem,
     /// Expand a struct column and the structs inside it.
     ExpandAll,
@@ -468,6 +469,14 @@ struct ListItem {
     index: usize,
     len: usize,
     data_type: veta_core::arrow::datatypes::DataType,
+}
+
+/// Inserting or removing a list item (see `App::insert_or_remove_item`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ItemChange {
+    InsertAbove,
+    InsertBelow,
+    Remove,
 }
 
 /// What the side pane shows.
@@ -958,7 +967,12 @@ impl App {
                 GridEvent::InsertRows | GridEvent::DeleteRows
                     if let Some(item) = self.selected_list_item(id) =>
                 {
-                    self.insert_or_remove_item(id, &item, event == GridEvent::InsertRows);
+                    let change = if event == GridEvent::InsertRows {
+                        ItemChange::InsertAbove
+                    } else {
+                        ItemChange::Remove
+                    };
+                    self.insert_or_remove_item(id, &item, change);
                 }
                 GridEvent::InsertRows => self.insert_rows(id, false),
                 GridEvent::MoveColumn { from, to } => self.move_column(id, from, to),
@@ -1078,10 +1092,14 @@ impl App {
                 match item {
                     MenuItem::KeepRows => self.keep_rows(id),
                     MenuItem::EditCell => return self.start_edit(id, None),
-                    MenuItem::InsertItem | MenuItem::DeleteItem => {
+                    MenuItem::InsertItem | MenuItem::InsertItemBelow | MenuItem::DeleteItem => {
                         if let Some(list_item) = self.selected_list_item(id) {
-                            let insert = item == MenuItem::InsertItem;
-                            self.insert_or_remove_item(id, &list_item, insert);
+                            let change = match item {
+                                MenuItem::InsertItem => ItemChange::InsertAbove,
+                                MenuItem::InsertItemBelow => ItemChange::InsertBelow,
+                                _ => ItemChange::Remove,
+                            };
+                            self.insert_or_remove_item(id, &list_item, change);
                         }
                     }
                     MenuItem::ClearCell => {
@@ -3844,19 +3862,27 @@ impl App {
         })
     }
 
-    /// Inserts a null item at the selected item, or removes it.
-    fn insert_or_remove_item(&mut self, id: DocumentId, item: &ListItem, insert: bool) {
+    /// Inserts a null item above or below the selected item, or removes it,
+    /// and selects the new item (or the one now in its place).
+    fn insert_or_remove_item(&mut self, id: DocumentId, item: &ListItem, change: ItemChange) {
         use veta_core::values::ListEdit;
-        let (change, select) = if insert {
-            (ListEdit::Insert(item.index.min(item.len)), item.index)
-        } else if item.index < item.len {
-            let len = item.len - 1;
-            (
-                ListEdit::Remove(item.index),
-                item.index.min(len.saturating_sub(1)),
-            )
-        } else {
-            return;
+        let (change, select) = match change {
+            ItemChange::InsertAbove => {
+                let at = item.index.min(item.len);
+                (ListEdit::Insert(at), at)
+            }
+            ItemChange::InsertBelow => {
+                let at = (item.index + 1).min(item.len);
+                (ListEdit::Insert(at), at)
+            }
+            ItemChange::Remove if item.index < item.len => {
+                let len = item.len - 1;
+                (
+                    ListEdit::Remove(item.index),
+                    item.index.min(len.saturating_sub(1)),
+                )
+            }
+            ItemChange::Remove => return,
         };
         match self.change_list(id, item, &change) {
             Ok(()) => {
@@ -5639,6 +5665,17 @@ mod tests {
         );
         grid(&mut app, GridEvent::InsertRows);
         assert_eq!(tags(&app, 0).as_deref(), Some("[a, null, B]"));
+        app.menu = Some(ContextMenu {
+            document: id,
+            target: MenuTarget::Item,
+            position: iced::Point::ORIGIN,
+        });
+        let _ = app.update(Message::Menu(MenuItem::InsertItemBelow));
+        assert_eq!(tags(&app, 0).as_deref(), Some("[a, null, null, B]"));
+        assert_eq!(app.selected_list_item(id).map(|i| i.index), Some(2));
+        grid(&mut app, GridEvent::DeleteRows);
+        assert_eq!(tags(&app, 0).as_deref(), Some("[a, null, B]"));
+        grid(&mut app, GridEvent::Navigate(Nav::Up));
         grid(&mut app, GridEvent::DeleteRows);
         assert_eq!(tags(&app, 0).as_deref(), Some("[a, B]"));
         grid(&mut app, GridEvent::Navigate(Nav::Up));

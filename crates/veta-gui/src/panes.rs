@@ -1084,6 +1084,12 @@ pub fn menu_sections(
                     "Ctrl++",
                     MenuItem::InsertItem,
                 ),
+                entry(
+                    Icon::InsertRows,
+                    "Insert item below",
+                    "",
+                    MenuItem::InsertItemBelow,
+                ),
                 entry(Icon::Trash, "Delete item", "Ctrl+-", MenuItem::DeleteItem),
                 entry(Icon::Eraser, "Set to null", "Delete", MenuItem::ClearCell),
             ],
