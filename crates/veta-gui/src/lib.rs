@@ -1100,8 +1100,8 @@ impl App {
                     let id = *document;
                     let cancel = matches!(message, ColumnMessage::Cancel);
                     let replace = *replace;
-                    if let (Some(index), Some(command)) = (replace, dialog.update(message.clone()))
-                    {
+                    let command = dialog.update(message);
+                    if let (Some(index), Some(command)) = (replace, command.clone()) {
                         let step = match command {
                             Command::AddColumn {
                                 name,
@@ -1121,7 +1121,7 @@ impl App {
                         if cancel {
                             self.dialog = None;
                         }
-                    } else if let Some(command) = dialog.update(message) {
+                    } else if let Some(command) = command {
                         let at = match &command {
                             Command::AddColumn { at, .. } => Some(*at),
                             _ => None,
@@ -5369,6 +5369,56 @@ mod tests {
                 ]
             )
         );
+    }
+
+    #[test]
+    fn new_list_and_struct_columns() {
+        use crate::dialogs::{TypeChoice, TypeOption};
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let column = |app: &mut App, message| {
+            let _ = app.update(Message::ColumnDialog(message));
+        };
+        let type_of = |app: &App, name: &str| {
+            let doc = app.workbook.get(id).unwrap();
+            veta_core::display::type_name(doc.schema().field_with_name(name).unwrap().data_type())
+        };
+
+        let _ = app.update(Message::Action(Action::AddColumn));
+        column(&mut app, ColumnMessage::Name("tags".into()));
+        column(&mut app, ColumnMessage::Type(TypeOption::List));
+        column(&mut app, ColumnMessage::Item(TypeChoice::Integer));
+        column(&mut app, ColumnMessage::Submit);
+        assert!(app.dialog.is_none());
+        assert_eq!(type_of(&app, "tags"), "list<int64>");
+
+        let _ = app.update(Message::Action(Action::AddColumn));
+        column(&mut app, ColumnMessage::Name("point".into()));
+        column(&mut app, ColumnMessage::Type(TypeOption::Struct));
+        column(&mut app, ColumnMessage::FieldName(0, "x".into()));
+        column(&mut app, ColumnMessage::FieldType(0, TypeChoice::Decimal));
+        column(&mut app, ColumnMessage::AddField);
+        column(&mut app, ColumnMessage::FieldName(1, "x".into()));
+        column(&mut app, ColumnMessage::Submit);
+        assert!(app.dialog.is_some(), "two fields named x");
+        column(&mut app, ColumnMessage::FieldName(1, "y".into()));
+        column(&mut app, ColumnMessage::AddField);
+        column(&mut app, ColumnMessage::RemoveField(2));
+        column(&mut app, ColumnMessage::Submit);
+        assert!(app.dialog.is_none());
+        assert_eq!(type_of(&app, "point"), "struct<x: float64, y: string>");
+
+        // Editing the step shows the struct's fields again.
+        let _ = app.update(Message::EditStep(1));
+        let Some(Dialog::Column { dialog, .. }) = &app.dialog else {
+            panic!("column dialog");
+        };
+        let debug = format!("{dialog:?}");
+        assert!(debug.contains("choice: Struct"), "{debug}");
+        assert!(debug.contains(r#"("y", Text)"#), "{debug}");
     }
 
     #[test]

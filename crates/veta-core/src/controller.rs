@@ -1301,6 +1301,45 @@ mod tests {
     }
 
     #[test]
+    fn new_nested_columns_save() {
+        use arrow::datatypes::{DataType, Field};
+        let dir = TempDir::new();
+        let mut doc = mixed(&dir);
+        let point = DataType::Struct(
+            vec![
+                Field::new("x", DataType::Float64, true),
+                Field::new("y", DataType::Utf8, true),
+            ]
+            .into(),
+        );
+        for (name, data_type) in [
+            ("point", point),
+            ("tags", DataType::new_list(DataType::Int64, true)),
+        ] {
+            execute(
+                &mut doc,
+                Command::AddColumn {
+                    name: name.into(),
+                    data_type,
+                    at: 0,
+                },
+            )
+            .unwrap();
+        }
+        execute(&mut doc, set_cell(1, "point", Some(r#"{"x": 1.5}"#))).unwrap();
+        execute(&mut doc, set_cell(2, "tags", Some("[1, 2]"))).unwrap();
+        let out = dir.join("nested-new.parquet");
+        doc.save(Some(out.clone())).unwrap();
+        let saved = Document::open(&out, OpenOptions::default()).unwrap();
+        assert_eq!(
+            cell(&saved, 1, "point").as_deref(),
+            Some("{x: 1.5, y: null}")
+        );
+        assert_eq!(cell(&saved, 2, "tags").as_deref(), Some("[1, 2]"));
+        assert_eq!(cell(&saved, 0, "point"), None);
+    }
+
+    #[test]
     fn combine_columns_into_struct() {
         let dir = TempDir::new();
         let path = dir.join("n.parquet");
