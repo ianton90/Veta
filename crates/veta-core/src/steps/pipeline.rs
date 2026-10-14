@@ -384,6 +384,9 @@ impl Pipeline {
                 &schema,
             ),
             Step::Merge(merge) => merge.apply(&self.read_level(previous, range)?, &schema),
+            Step::CombineStruct { columns, name } => {
+                super::nested::combine(&self.read_level(previous, range)?, columns, name, &schema)
+            }
             Step::Replace(replace) => map_columns(
                 &self.read_level(previous, range)?,
                 &schema,

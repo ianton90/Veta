@@ -104,6 +104,13 @@ pub enum Step {
     ExplodeList {
         column: String,
     },
+    /// Columns become the fields of one struct column `name`, placed where
+    /// the first of them was. A `<name>.` prefix is dropped from field
+    /// names, so it reverses [`Step::ExpandStruct`].
+    CombineStruct {
+        columns: Vec<String>,
+        name: String,
+    },
     /// Removes a column if every value in it is null; fails otherwise
     /// (e.g. a cast's error column when nothing failed).
     RemoveEmptyColumn {
@@ -187,6 +194,9 @@ impl Step {
                 all_levels: true,
             } => format!("Expanded {column} (all levels)"),
             Step::ExplodeList { column } => format!("Exploded {column} into rows"),
+            Step::CombineStruct { columns, name } => {
+                format!("Combined {} into {name}", plural(columns.len(), "column"))
+            }
         }
     }
 }

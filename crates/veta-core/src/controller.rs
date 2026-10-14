@@ -321,6 +321,10 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
             let step = Step::ExplodeList { column };
             Ok((step.describe(), Change::PushStep(step)))
         }
+        Command::CombineStruct { columns, name } => {
+            let step = Step::CombineStruct { columns, name };
+            Ok((step.describe(), Change::PushStep(step)))
+        }
         Command::Merge(merge) => Ok((merge.describe(), Change::PushStep(Step::Merge(merge)))),
         Command::CustomColumn(custom) => Ok((
             custom.describe(),
@@ -1224,6 +1228,61 @@ mod tests {
                     .unwrap()
                     .num_rows(),
                 7
+            );
+        }
+    }
+
+    #[test]
+    fn combine_columns_into_struct() {
+        let dir = TempDir::new();
+        let path = dir.join("n.parquet");
+        fixtures::nested(&path);
+        for options in [OpenOptions::default(), OpenOptions::paged()] {
+            let mut doc = Document::open(&path, options).unwrap();
+            let combine = |columns: &[&str], name: &str| Command::CombineStruct {
+                columns: columns.iter().map(|c| c.to_string()).collect(),
+                name: name.into(),
+            };
+            // Reverses Expand: `point.` is dropped from the field names.
+            execute(
+                &mut doc,
+                Command::ExpandStruct {
+                    column: "point".into(),
+                    all_levels: false,
+                },
+            )
+            .unwrap();
+            execute(&mut doc, combine(&["point.x", "point.y"], "point")).unwrap();
+            assert_eq!(doc.schema().index_of("point").unwrap(), 1);
+            assert_eq!(cell(&doc, 0, "point").as_deref(), Some("{x: 1, y: 2}"));
+            assert_eq!(
+                cell(&doc, 2, "point").as_deref(),
+                Some("{x: null, y: null}")
+            );
+
+            execute(&mut doc, combine(&["tags", "id"], "rec")).unwrap();
+            let schema = doc.schema();
+            assert_eq!(schema.field(0).name(), "rec", "where the first column was");
+            assert_eq!(
+                cell(&doc, 0, "rec").as_deref(),
+                Some("{tags: [a, b], id: 0}")
+            );
+            assert_eq!(doc.steps()[2].describe(), "Combined 2 columns into rec");
+
+            assert!(
+                execute(&mut doc, combine(&["path"], "owner")).is_err(),
+                "taken"
+            );
+            assert!(execute(&mut doc, combine(&["path", "path"], "p")).is_err());
+            assert!(execute(&mut doc, combine(&[], "p")).is_err());
+            assert!(execute(&mut doc, combine(&["nope"], "p")).is_err());
+
+            let out = dir.join("combined.parquet");
+            doc.save(Some(out.clone())).unwrap();
+            let saved = Document::open(&out, OpenOptions::default()).unwrap();
+            assert_eq!(
+                cell(&saved, 3, "rec").as_deref(),
+                Some("{tags: [c, null, d], id: 3}")
             );
         }
     }

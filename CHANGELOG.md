@@ -24,7 +24,8 @@ While the major version is 0, minor versions may change behaviour.
   encoding options; values that don't fit a column's type are kept in an
   error column instead of being dropped.
 - Nested types: structs, lists and maps shown as trees and edited as JSON
-  or per value; expand a struct into columns or explode a list into rows.
+  or per value; expand a struct into columns or explode a list into rows;
+  combine columns into a struct.
   Struct columns open in the grid (header arrow) into editable field
   columns; list and map cells show a summary that opens into one line per
   item.

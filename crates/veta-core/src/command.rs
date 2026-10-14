@@ -104,6 +104,11 @@ pub enum Command {
     ExplodeList {
         column: String,
     },
+    /// Columns become the fields of one struct column.
+    CombineStruct {
+        columns: Vec<String>,
+        name: String,
+    },
     /// Adds a column computed from an expression.
     CustomColumn(CustomColumn),
     /// Appends steps (e.g. from a recipe) as one change. Steps that don't

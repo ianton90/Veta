@@ -192,6 +192,10 @@ impl Level {
                 custom.output_fields(&self.schema)?,
                 self.num_rows,
             )),
+            Step::CombineStruct { columns, name } => Ok(with_fields(
+                super::nested::combine_fields(&self.schema, columns, name)?,
+                self.num_rows,
+            )),
             Step::Merge(merge) => Ok(with_fields(
                 merge.output_fields(&self.schema)?,
                 self.num_rows,

@@ -39,10 +39,10 @@ use crate::config::Config;
 use crate::config::ModePreference;
 use crate::dialogs::{
     CastDialog, CastMessage, ChooseColumns, ChooseMessage, ColumnDialog, ColumnMessage,
-    CustomDialog, CustomMessage, ExportDialog, ExportMessage, FilterDialog, FilterMessage,
-    FormatDialog, FormatMessage, ImportDialog, ImportMessage, MergeDialog, MergeMessage,
-    MetadataDialog, MetadataMessage, ReplaceDialog, ReplaceMessage, SortDialog, SortMessage,
-    SplitDialog, SplitMessage, WriterDialog, WriterMessage,
+    CombineDialog, CombineMessage, CustomDialog, CustomMessage, ExportDialog, ExportMessage,
+    FilterDialog, FilterMessage, FormatDialog, FormatMessage, ImportDialog, ImportMessage,
+    MergeDialog, MergeMessage, MetadataDialog, MetadataMessage, ReplaceDialog, ReplaceMessage,
+    SortDialog, SortMessage, SplitDialog, SplitMessage, WriterDialog, WriterMessage,
 };
 use crate::files::FileKind;
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav, Selection};
@@ -417,6 +417,7 @@ enum MenuItem {
     MergeColumns,
     DuplicateColumn,
     ExpandStruct,
+    CombineStruct,
     /// Expand a struct column and the structs inside it.
     ExpandAll,
     ExplodeList,
@@ -474,6 +475,7 @@ fn step_dialog_supported(step: &Step) -> bool {
             | Step::FormatText { .. }
             | Step::Split(_)
             | Step::Merge(_)
+            | Step::CombineStruct { .. }
             | Step::CustomColumn(_)
     )
 }
@@ -524,6 +526,11 @@ enum Dialog {
     Merge {
         document: DocumentId,
         dialog: MergeDialog,
+        replace: Option<usize>,
+    },
+    Combine {
+        document: DocumentId,
+        dialog: CombineDialog,
         replace: Option<usize>,
     },
     Custom {
@@ -605,6 +612,7 @@ enum Message {
     Split(SplitMessage),
     Custom(CustomMessage),
     Merge(MergeMessage),
+    Combine(CombineMessage),
     /// Progress (0–1) of the background pass with this key.
     ComputeProgress(DocumentId, Target, Vec<u64>, f32),
     /// The background pass with this key finished.
@@ -1043,6 +1051,7 @@ impl App {
                     MenuItem::FormatText => self.open_format_dialog(id),
                     MenuItem::SplitColumn => return self.open_split_dialog(id, None),
                     MenuItem::MergeColumns => return self.open_merge_dialog(id, None),
+                    MenuItem::CombineStruct => return self.open_combine_dialog(id, None),
                     MenuItem::DuplicateColumn => self.duplicate_column(id),
                     MenuItem::Cut => return self.copy_selection(id, true),
                     MenuItem::Copy => return self.copy_selection(id, false),
@@ -1308,6 +1317,31 @@ impl App {
                         if let Err(e) =
                             self.add_or_replace(id, replace, Step::Merge(merge), command)
                             && let Some(Dialog::Merge { dialog, .. }) = &mut self.dialog
+                        {
+                            dialog.set_error(e);
+                        }
+                    } else if cancel {
+                        self.dialog = None;
+                    }
+                }
+            }
+            Message::Combine(message) => {
+                if let Some(Dialog::Combine {
+                    document,
+                    dialog,
+                    replace,
+                }) = &mut self.dialog
+                {
+                    let (id, replace) = (*document, *replace);
+                    let cancel = matches!(message, CombineMessage::Cancel);
+                    if let Some((columns, name)) = dialog.update(message) {
+                        let step = Step::CombineStruct {
+                            columns: columns.clone(),
+                            name: name.clone(),
+                        };
+                        let command = Command::CombineStruct { columns, name };
+                        if let Err(e) = self.add_or_replace(id, replace, step, command)
+                            && let Some(Dialog::Combine { dialog, .. }) = &mut self.dialog
                         {
                             dialog.set_error(e);
                         }
@@ -1877,6 +1911,7 @@ impl App {
                 | Action::FormatText
                 | Action::SplitColumn
                 | Action::MergeColumns
+                | Action::CombineStruct
                 | Action::CustomColumn
                 | Action::DuplicateColumn
                 | Action::IndexColumn
@@ -2089,6 +2124,11 @@ impl App {
             Action::MergeColumns => {
                 if let Some(id) = self.active {
                     return self.open_merge_dialog(id, None);
+                }
+            }
+            Action::CombineStruct => {
+                if let Some(id) = self.active {
+                    return self.open_combine_dialog(id, None);
                 }
             }
             Action::DataType => {
@@ -2319,6 +2359,10 @@ impl App {
                 return self.open_custom_dialog(id, Some((index, c.clone())), String::new());
             }
             Step::Merge(m) => return self.open_merge_dialog(id, Some((index, m.clone()))),
+            Step::CombineStruct { columns, name } => {
+                let step = (columns.clone(), name.clone());
+                return self.open_combine_dialog(id, Some((index, step)));
+            }
             Step::FormatText { columns, op } => {
                 self.edit = None;
                 self.dialog = Some(Dialog::Format {
@@ -3013,6 +3057,50 @@ impl App {
             document: id,
             dialog: MergeDialog::new(columns, step.as_ref().map(|(_, m)| m)),
             replace: step.map(|(i, _)| i),
+        });
+        Task::batch([
+            iced::widget::operation::focus(dialogs::NAME_ID),
+            iced::widget::operation::select_all(dialogs::NAME_ID),
+        ])
+    }
+
+    /// Opens the combine dialog on the selected columns, or on the combine
+    /// step at `index`.
+    fn open_combine_dialog(
+        &mut self,
+        id: DocumentId,
+        step: Option<(usize, (Vec<String>, String))>,
+    ) -> Task<Message> {
+        let (replace, columns, name) = match step {
+            Some((i, (columns, name))) => (Some(i), columns, name),
+            None => {
+                let columns = self.selected_column_names(id);
+                // Columns from one expanded struct (`a.x`, `a.y`) go back
+                // into `a`.
+                let prefix = columns
+                    .first()
+                    .and_then(|c| c.rsplit_once('.'))
+                    .map(|(p, _)| p.to_owned())
+                    .filter(|p| {
+                        columns.iter().all(|c| {
+                            c.strip_prefix(p.as_str())
+                                .is_some_and(|r| r.starts_with('.'))
+                        })
+                    });
+                let name = prefix.unwrap_or_else(|| self.unique_name(id, "Struct"));
+                (None, columns, name)
+            }
+        };
+        if columns.is_empty() {
+            self.errors
+                .push("Select the columns to combine (Shift+click the headers).".into());
+            return Task::none();
+        }
+        self.edit = None;
+        self.dialog = Some(Dialog::Combine {
+            document: id,
+            dialog: CombineDialog::new(columns, name),
+            replace,
         });
         Task::batch([
             iced::widget::operation::focus(dialogs::NAME_ID),
@@ -4045,6 +4133,7 @@ impl App {
             Dialog::Split { dialog, .. } => dialog.view(ui.tokens).map(Message::Split),
             Dialog::Custom { dialog, .. } => dialog.view(ui.tokens).map(Message::Custom),
             Dialog::Merge { dialog, .. } => dialog.view(ui.tokens).map(Message::Merge),
+            Dialog::Combine { dialog, .. } => dialog.view(ui.tokens).map(Message::Combine),
             Dialog::ConfirmStep { .. } => settings::confirm_step(ui.tokens),
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
             Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
@@ -5091,6 +5180,54 @@ mod tests {
         let g = &app.tabs[0].grid;
         assert_eq!(g.value(0, 1), Some(Some("{x: 1, y: 20}")));
         assert_eq!(g.value(0, 5), Some(Some("Ana")), "owner still expanded");
+    }
+
+    #[test]
+    fn combine_columns_into_a_struct() {
+        let dir = TempDir::new();
+        let path = dir.join("n.parquet");
+        fixtures::nested(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let names = |app: &App| -> Vec<String> {
+            let doc = app.workbook.get(id).unwrap();
+            doc.schema()
+                .fields()
+                .iter()
+                .map(|f| f.name().clone())
+                .collect()
+        };
+        let select = |app: &mut App, column, extend| {
+            let _ = app.update(Message::Grid(
+                id,
+                GridEvent::SelectColumns { column, extend },
+            ));
+        };
+        // Expanded fields go back into their struct by default.
+        select(&mut app, 1, false);
+        let _ = app.update(Message::Action(Action::ExpandStruct));
+        select(&mut app, 1, false);
+        select(&mut app, 2, true);
+        let _ = app.update(Message::Action(Action::CombineStruct));
+        let _ = app.update(Message::Combine(CombineMessage::Apply));
+        assert!(app.dialog.is_none());
+        assert_eq!(names(&app)[..3], ["id", "point", "tags"]);
+
+        // Other columns get a new name; a taken one keeps the dialog open.
+        select(&mut app, 0, false);
+        select(&mut app, 2, true);
+        let _ = app.update(Message::Action(Action::CombineStruct));
+        let _ = app.update(Message::Combine(CombineMessage::Name("owner".into())));
+        let _ = app.update(Message::Combine(CombineMessage::Apply));
+        assert!(matches!(app.dialog, Some(Dialog::Combine { .. })));
+        let _ = app.update(Message::Combine(CombineMessage::Name("rec".into())));
+        let _ = app.update(Message::Combine(CombineMessage::Apply));
+        assert!(app.dialog.is_none());
+        assert_eq!(names(&app), ["rec", "path", "scores", "owner"]);
+
+        // The step reopens in its dialog.
+        let _ = app.update(Message::EditStep(2));
+        assert!(matches!(app.dialog, Some(Dialog::Combine { .. })));
     }
 
     #[test]

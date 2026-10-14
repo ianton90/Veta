@@ -45,6 +45,7 @@ pub enum Action {
     SortDescending,
     CustomSort,
     ExpandStruct,
+    CombineStruct,
     ExpandAll,
     ExplodeList,
     EditJson,
@@ -335,6 +336,7 @@ fn groups(tab: Tab) -> Vec<Group> {
                 vec![
                     large(A::ExpandStruct, "Expand", Icon::ListTree),
                     large(A::ExpandAll, "Expand All Levels", Icon::Layers),
+                    large(A::CombineStruct, "Combine", Icon::Group),
                 ],
             ),
             group(
@@ -422,6 +424,7 @@ impl Context {
             | A::FillUp
             | A::SplitColumn
             | A::MergeColumns
+            | A::CombineStruct
             | A::FormatText
             | A::Statistics
             | A::Standard

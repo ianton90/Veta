@@ -71,6 +71,7 @@ pub enum Icon {
     FillUp,
     RecipeLoad,
     RecipeSave,
+    Group,
 }
 
 impl Icon {
@@ -133,6 +134,7 @@ impl Icon {
             Icon::FillUp => 0xe45b,          // arrow-up-to-line
             Icon::RecipeLoad => 0xe0c5,      // file-input
             Icon::RecipeSave => 0xe0c8,      // file-output
+            Icon::Group => 0xe464,           // group
         };
         char::from_u32(code).unwrap_or('?')
     }

@@ -1210,7 +1210,16 @@ pub fn menu_sections(
             ],
         ));
     }
-    let nested_entries: Vec<MenuEntry> = nested_items(column_type).into_iter().flatten().collect();
+    let mut nested_entries: Vec<MenuEntry> =
+        nested_items(column_type).into_iter().flatten().collect();
+    if matches!(target, MenuTarget::Column(_)) {
+        nested_entries.push(entry(
+            Icon::Group,
+            "Combine into struct…",
+            "",
+            MenuItem::CombineStruct,
+        ));
+    }
     if !nested_entries.is_empty() {
         sections.push(("Nested", nested_entries));
     }
