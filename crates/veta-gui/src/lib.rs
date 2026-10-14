@@ -435,9 +435,19 @@ struct Edit {
     document: DocumentId,
     row: usize,
     column: String,
+    /// The struct field edited, when the cell is a field of an expanded
+    /// struct column.
+    field: Option<StructField>,
     text: String,
     /// Why the last attempt to apply it failed.
     error: Option<String>,
+}
+
+/// A field inside a struct cell: the field names down to it and its type.
+#[derive(Debug, Clone, PartialEq)]
+struct StructField {
+    path: Vec<String>,
+    data_type: veta_core::arrow::datatypes::DataType,
 }
 
 /// What the side pane shows.
@@ -924,14 +934,22 @@ impl App {
                 }
                 GridEvent::ClearCell => {
                     if let Some((row, column)) = self.selected_cell(id) {
-                        self.execute(
-                            id,
-                            Command::SetCell {
-                                row,
-                                column,
-                                value: None,
+                        match self.selected_struct_field(id) {
+                            Some(field) => match self.set_field(id, row, &column, &field, None) {
+                                Ok(()) => self.refresh(id),
+                                Err(e) => self.errors.push(e),
                             },
-                        );
+                            None => {
+                                self.execute(
+                                    id,
+                                    Command::SetCell {
+                                        row,
+                                        column,
+                                        value: None,
+                                    },
+                                );
+                            }
+                        }
                     }
                 }
                 event => {
@@ -3544,16 +3562,53 @@ impl App {
         Some((row, doc.schema().field(column).name().clone()))
     }
 
+    /// The struct field shown in the selected cell, if it is one.
+    fn selected_struct_field(&self, id: DocumentId) -> Option<StructField> {
+        let tab = self.tabs.iter().find(|t| t.id == id)?;
+        let (path, data_type) = tab.grid.selected_field()?;
+        (!path.is_empty()).then(|| StructField {
+            path: path.to_vec(),
+            data_type: data_type.clone(),
+        })
+    }
+
+    /// Sets one field of a struct cell (`None` or empty: null).
+    fn set_field(
+        &mut self,
+        id: DocumentId,
+        row: usize,
+        column: &str,
+        field: &StructField,
+        text: Option<&str>,
+    ) -> Result<(), String> {
+        let index = self
+            .workbook
+            .get(id)
+            .and_then(|d| d.schema().index_of(column).ok())
+            .ok_or("the column no longer exists")?;
+        let pointer: Vec<_> = field
+            .path
+            .iter()
+            .cloned()
+            .map(veta_core::display::PathPart::Field)
+            .collect();
+        self.change_nested_cell(id, row, index, |json| {
+            veta_core::values::set_nested(json, &pointer, text, &field.data_type)
+        })
+    }
+
     /// Starts editing the selected cell in the formula bar.
     fn start_edit(&mut self, id: DocumentId, initial: Option<String>) -> Task<Message> {
         let Some((row, column)) = self.selected_cell(id) else {
             return Task::none();
         };
         let text = initial.unwrap_or_else(|| self.cell_text(id).unwrap_or_default());
+        let field = self.selected_struct_field(id);
         self.edit = Some(Edit {
             document: id,
             row,
             column,
+            field,
             text,
             error: None,
         });
@@ -3572,8 +3627,9 @@ impl App {
     fn cell_value(&self, id: DocumentId) -> Option<Option<String>> {
         let tab = self.tabs.iter().find(|t| t.id == id)?;
         let (row, column) = tab.grid.selected()?;
-        match tab.grid.edit_value(row, column) {
+        match tab.grid.selected_edit_value() {
             Some(value) => Some(value.map(str::to_owned)),
+            None if self.selected_struct_field(id).is_some() => None,
             None => {
                 let batch = self.workbook.get(id)?.read(row..row + 1).ok()?;
                 let cells = veta_core::display::format_batch(&batch).ok()?;
@@ -3592,14 +3648,19 @@ impl App {
         if self.cell_text(edit.document).as_deref() == Some(edit.text.as_str()) {
             return true;
         }
-        let command = Command::SetCell {
-            row: edit.row,
-            column: edit.column.clone(),
-            value: Some(edit.text.clone()),
-        };
-        let result = match self.workbook.get_mut(edit.document) {
-            Some(doc) => controller::execute(doc, command),
-            None => return false,
+        let result = if let Some(field) = &edit.field {
+            let text = (!edit.text.is_empty()).then_some(edit.text.as_str());
+            self.set_field(edit.document, edit.row, &edit.column, field, text)
+        } else {
+            let command = Command::SetCell {
+                row: edit.row,
+                column: edit.column.clone(),
+                value: Some(edit.text.clone()),
+            };
+            match self.workbook.get_mut(edit.document) {
+                Some(doc) => controller::execute(doc, command).map_err(|e| e.to_string()),
+                None => return false,
+            }
         };
         match result {
             Ok(()) => {
@@ -3607,7 +3668,7 @@ impl App {
                 true
             }
             Err(e) => {
-                edit.error = Some(e.to_string());
+                edit.error = Some(e);
                 self.edit = Some(edit);
                 false
             }
@@ -4965,6 +5026,71 @@ mod tests {
         assert_eq!((tree.label.as_str(), tree.children.len()), ("point", 2));
         let _ = app.update(Message::ToggleNode("point".into()));
         assert!(app.collapsed.contains("point"));
+    }
+
+    #[test]
+    fn struct_columns_expand_into_editable_fields() {
+        let dir = TempDir::new();
+        let path = dir.join("n.parquet");
+        fixtures::nested(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let grid = |app: &mut App, event| {
+            let _ = app.update(Message::Grid(id, event));
+        };
+        let cell = |app: &App, row: usize| {
+            let doc = app.workbook.get(id).unwrap();
+            veta_core::display::format_batch(&doc.read(row..row + 1).unwrap()).unwrap()[0][1]
+                .clone()
+        };
+
+        grid(&mut app, GridEvent::Expand { column: 1 });
+        let g = &app.tabs[0].grid;
+        assert_eq!(g.value(0, 1), Some(Some("1")));
+        assert_eq!(g.value(0, 2), Some(Some("2")));
+        assert_eq!(g.value(2, 1), Some(None), "null struct, null fields");
+        assert_eq!(g.value(0, 3), Some(Some("[a, b]")), "tags moved right");
+
+        // A field cell edits that field of the struct.
+        grid(&mut app, GridEvent::Select { row: 0, column: 2 });
+        assert_eq!(app.tabs[0].grid.selected(), Some((0, 1)));
+        grid(&mut app, GridEvent::StartEdit { initial: None });
+        assert_eq!(app.edit.as_ref().unwrap().text, "2");
+        let _ = app.update(Message::EditInput("20".into()));
+        let _ = app.update(Message::CommitEdit);
+        assert_eq!(cell(&app, 0).as_deref(), Some("{x: 1, y: 20}"));
+        grid(&mut app, GridEvent::Select { row: 2, column: 2 });
+        grid(&mut app, GridEvent::StartEdit { initial: None });
+        let _ = app.update(Message::EditInput("5".into()));
+        let _ = app.update(Message::CommitEdit);
+        assert_eq!(cell(&app, 2).as_deref(), Some("{x: null, y: 5}"));
+        grid(&mut app, GridEvent::Select { row: 2, column: 2 });
+        grid(&mut app, GridEvent::ClearCell);
+        assert_eq!(cell(&app, 2).as_deref(), Some("{x: null, y: null}"));
+
+        // Column commands see document columns.
+        grid(
+            &mut app,
+            GridEvent::SelectColumns {
+                column: 2,
+                extend: false,
+            },
+        );
+        assert_eq!(app.tabs[0].grid.selected_columns(), Some(1..2));
+        app.tabs[0].grid.select_columns(2..3);
+        assert_eq!(app.tabs[0].grid.selection(), Selection::Columns(2..3));
+
+        // Nested structs expand level by level; collapsing restores.
+        grid(&mut app, GridEvent::Expand { column: 6 });
+        grid(&mut app, GridEvent::Expand { column: 7 });
+        let g = &app.tabs[0].grid;
+        assert_eq!(g.value(0, 6), Some(Some("Ana")));
+        assert_eq!(g.value(0, 8), Some(Some("6")), "owner.home.y");
+        grid(&mut app, GridEvent::Collapse { column: 7 });
+        grid(&mut app, GridEvent::Collapse { column: 1 });
+        let g = &app.tabs[0].grid;
+        assert_eq!(g.value(0, 1), Some(Some("{x: 1, y: 20}")));
+        assert_eq!(g.value(0, 5), Some(Some("Ana")), "owner still expanded");
     }
 
     #[test]

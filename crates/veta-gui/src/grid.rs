@@ -18,11 +18,17 @@ use iced::{
     Border, Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Renderer, Size, Theme,
     font,
 };
+use std::collections::BTreeSet;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 use veta_core::Document;
+use veta_core::arrow::array::{Array, ArrayRef, StructArray, make_array};
+use veta_core::arrow::buffer::NullBuffer;
+use veta_core::arrow::datatypes::{DataType, Field, Schema};
+use veta_core::arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use veta_core::steps::{ComputeJob, Computed, Filter, Pipeline, Status};
 
+use crate::icon::{self, Icon};
 use crate::theme::Tokens;
 use veta_core::display::{format_batch, is_numeric, type_name};
 
@@ -115,6 +121,14 @@ pub enum GridEvent {
     },
     /// Arrow up/down or Tab while editing a cell: apply the edit and move.
     EditMove(Nav),
+    /// Show the fields of the struct column as sub-columns (view only).
+    Expand {
+        column: usize,
+    },
+    /// Fold the sub-columns starting at `column` back into their struct.
+    Collapse {
+        column: usize,
+    },
     /// Right-click; `position` is in window coordinates.
     ContextMenu {
         target: MenuTarget,
@@ -155,12 +169,94 @@ pub enum Nav {
     Bottom,
 }
 
+/// A column on screen: a document column, or a field of an expanded struct
+/// column.
 #[derive(Debug, Clone)]
 struct Column {
+    /// The document column's name followed by the field names down to this
+    /// column.
+    key: Vec<String>,
+    /// Index of the document column.
+    source: usize,
     name: String,
+    data_type: DataType,
     type_name: String,
     numeric: bool,
     width: f32,
+    /// A struct whose fields aren't shown.
+    expandable: bool,
+    /// The expanded struct whose first field this is (collapse button).
+    collapses: Option<Vec<String>>,
+}
+
+impl Column {
+    /// Field names below the document column.
+    fn path(&self) -> &[String] {
+        &self.key[1..]
+    }
+}
+
+/// The columns on screen for `schema`, with the structs in `expanded` shown
+/// as their fields.
+fn display_columns(schema: &Schema, expanded: &BTreeSet<Vec<String>>) -> Vec<Column> {
+    fn push(
+        out: &mut Vec<Column>,
+        source: usize,
+        key: Vec<String>,
+        field: &Field,
+        collapses: Option<Vec<String>>,
+        expanded: &BTreeSet<Vec<String>>,
+    ) {
+        let data_type = field.data_type();
+        if let DataType::Struct(children) = data_type
+            && !children.is_empty()
+            && expanded.contains(&key)
+        {
+            for (i, child) in children.iter().enumerate() {
+                let mut child_key = key.clone();
+                child_key.push(child.name().clone());
+                let starts = (i == 0).then(|| key.clone());
+                push(out, source, child_key, child, starts, expanded);
+            }
+            return;
+        }
+        out.push(Column {
+            name: key.join("."),
+            source,
+            expandable: matches!(data_type, DataType::Struct(c) if !c.is_empty()),
+            data_type: data_type.clone(),
+            type_name: type_name(data_type),
+            numeric: is_numeric(data_type),
+            width: MIN_COLUMN_WIDTH,
+            collapses,
+            key,
+        });
+    }
+    let mut out = Vec::new();
+    for (i, field) in schema.fields().iter().enumerate() {
+        push(
+            &mut out,
+            i,
+            vec![field.name().clone()],
+            field,
+            None,
+            expanded,
+        );
+    }
+    out
+}
+
+/// The field at `path` of a struct `array`; null wherever a parent is.
+fn field_array(array: &ArrayRef, path: &[String]) -> Option<ArrayRef> {
+    let mut current = array.clone();
+    for name in path {
+        let parent = current.as_any().downcast_ref::<StructArray>()?;
+        let child = parent.column_by_name(name)?;
+        let nulls = NullBuffer::union(parent.nulls(), child.nulls());
+        let data = child.to_data().into_builder().nulls(nulls).build().ok()?;
+        current = make_array(data);
+    }
+    Some(current)
 }
 
 /// Per-tab grid state.
@@ -188,6 +284,8 @@ pub struct GridView {
     /// JSON text of nested cells in `cells` (row-major, by column index),
     /// for editing; other cells are edited as displayed.
     json: Vec<Vec<Option<Option<String>>>>,
+    /// Struct columns shown as their fields, by column key.
+    expanded: BTreeSet<Vec<String>>,
     error: Option<String>,
     /// A temporary filter over the document's output (not a step).
     filter: Option<FilterView>,
@@ -211,16 +309,7 @@ impl GridView {
         let schema = document
             .schema_at(document.evaluated_steps())
             .unwrap_or_else(|| document.schema());
-        let columns = schema
-            .fields()
-            .iter()
-            .map(|f| Column {
-                name: f.name().clone(),
-                type_name: type_name(f.data_type()),
-                numeric: is_numeric(f.data_type()),
-                width: MIN_COLUMN_WIDTH,
-            })
-            .collect();
+        let columns = display_columns(&schema, &BTreeSet::new());
         let mut view = Self {
             at: None,
             metrics: Metrics::new(text_size),
@@ -236,6 +325,7 @@ impl GridView {
             window_start: 0,
             cells: Vec::new(),
             json: Vec::new(),
+            expanded: BTreeSet::new(),
             error: None,
             filter: None,
         };
@@ -258,19 +348,64 @@ impl GridView {
             .iter()
             .filter_map(|row| row.get(i))
             .map(|v| v.as_deref().unwrap_or(NULL_TEXT).chars().count());
+        let toggles = usize::from(column.expandable) + usize::from(column.collapses.is_some());
+        let header = column.name.chars().count() as f32 * self.metrics.char_width
+            + toggles as f32 * (self.metrics.text_size + 2.0);
         let chars = values
-            .chain([
-                column.name.chars().count(),
-                column.type_name.chars().count(),
-            ])
+            .chain([column.type_name.chars().count()])
             .max()
             .unwrap_or(0);
-        self.columns[i].width = (chars as f32 * self.metrics.char_width + 2.0 * CELL_PADDING + 4.0)
-            .clamp(MIN_FITTED_WIDTH, MAX_FITTED_WIDTH);
+        let content = (chars as f32 * self.metrics.char_width).max(header);
+        self.columns[i].width =
+            (content + 2.0 * CELL_PADDING + 4.0).clamp(MIN_FITTED_WIDTH, MAX_FITTED_WIDTH);
     }
 
+    /// The selected cell as (row, document column).
     pub fn selected(&self) -> Option<(usize, usize)> {
-        self.selected
+        self.selected.map(|(r, c)| (r, self.columns[c].source))
+    }
+
+    /// Field names from the selected cell's document column down to it
+    /// (empty unless it is a field of an expanded struct), and its type.
+    pub fn selected_field(&self) -> Option<(&[String], &DataType)> {
+        let column = &self.columns[self.selected?.1];
+        Some((column.path(), &column.data_type))
+    }
+
+    /// Text to edit the selected cell with (see [`Self::edit_value`]).
+    pub fn selected_edit_value(&self) -> Option<Option<&str>> {
+        let (row, column) = self.selected?;
+        self.edit_value(row, column)
+    }
+
+    /// Screen columns showing document columns `sources`.
+    fn display_range(&self, sources: Range<usize>) -> Range<usize> {
+        let start = self
+            .columns
+            .iter()
+            .position(|c| c.source >= sources.start)
+            .unwrap_or(self.columns.len());
+        let end = self
+            .columns
+            .iter()
+            .position(|c| c.source >= sources.end)
+            .unwrap_or(self.columns.len());
+        start..end
+    }
+
+    /// Document columns shown by screen columns `range` (inclusive pair).
+    fn source_range(&self, (a, b): (usize, usize)) -> Range<usize> {
+        let (a, b) = (a.min(b), a.max(b));
+        self.columns[a].source..self.columns[b].source + 1
+    }
+
+    /// Selected screen columns, inclusive span.
+    fn selected_display_columns(&self) -> Option<Range<usize>> {
+        match (self.cols, self.selected) {
+            (Some((a, b)), _) => Some(a.min(b)..a.max(b) + 1),
+            (None, Some((_, c))) => Some(c..c + 1),
+            (None, None) => None,
+        }
     }
 
     /// Number of steps shown, if previewing an earlier step.
@@ -355,23 +490,23 @@ impl GridView {
         let span = |(a, b): (usize, usize)| a.min(b)..a.max(b) + 1;
         match (self.rows, self.cols, self.selected) {
             (Some(rows), _, _) => Selection::Rows(span(rows)),
-            (None, Some(cols), _) => Selection::Columns(span(cols)),
-            (None, None, Some((r, c))) => Selection::Cell(r, c),
+            (None, Some(cols), _) => Selection::Columns(self.source_range(cols)),
+            (None, None, Some((r, c))) => Selection::Cell(r, self.columns[c].source),
             (None, None, None) => Selection::None,
         }
     }
 
-    /// Selected columns: the column selection, or the selected cell's column.
+    /// Selected document columns: the column selection, or the selected
+    /// cell's column.
     pub fn selected_columns(&self) -> Option<Range<usize>> {
-        match (self.cols, self.selected) {
-            (Some((a, b)), _) => Some(a.min(b)..a.max(b) + 1),
-            (None, Some((_, c))) => Some(c..c + 1),
-            (None, None) => None,
-        }
+        let range = self.selected_display_columns()?;
+        Some(self.source_range((range.start, range.end - 1)))
     }
 
-    /// Selects whole columns `range` (e.g. after moving or adding one).
+    /// Selects whole document columns `range` (e.g. after moving or adding
+    /// one).
     pub fn select_columns(&mut self, range: Range<usize>) {
+        let range = self.display_range(range);
         if range.is_empty() || range.end > self.columns.len() {
             return;
         }
@@ -400,7 +535,8 @@ impl GridView {
         self.load(document, false);
     }
 
-    /// Text of a loaded cell: `Some(None)` for null, `None` if not loaded.
+    /// Text of a loaded cell (screen column): `Some(None)` for null, `None`
+    /// if not loaded.
     pub fn value(&self, row: usize, column: usize) -> Option<Option<&str>> {
         self.cell(row, column).map(Option::as_deref)
     }
@@ -419,7 +555,7 @@ impl GridView {
         }
     }
 
-    /// The value of one cell, as a one-element array.
+    /// The value of one cell (document column), as a one-element array.
     pub fn cell_array(
         &self,
         row: usize,
@@ -446,23 +582,16 @@ impl GridView {
                 .unwrap_or_else(|| document.schema()),
         };
         let mut fresh = Vec::new();
-        self.columns = schema
-            .fields()
-            .iter()
-            .enumerate()
-            .map(|(i, f)| {
-                let kept = old.iter().find(|c| &c.name == f.name());
-                if kept.is_none() {
+        self.columns = display_columns(&schema, &self.expanded);
+        for (i, column) in self.columns.iter_mut().enumerate() {
+            match old.iter().find(|c| c.key == column.key) {
+                Some(kept) => column.width = kept.width,
+                None => {
+                    column.width = MIN_FITTED_WIDTH;
                     fresh.push(i);
                 }
-                Column {
-                    name: f.name().clone(),
-                    type_name: type_name(f.data_type()),
-                    numeric: is_numeric(f.data_type()),
-                    width: kept.map_or(MIN_FITTED_WIDTH, |c| c.width),
-                }
-            })
-            .collect();
+            }
+        }
         self.num_rows = match self.view() {
             Some(view) => view.num_rows(),
             None => document.num_rows_at(level).unwrap_or(0),
@@ -545,6 +674,21 @@ impl GridView {
                 self.cols = None;
                 self.navigate(nav);
             }
+            GridEvent::Expand { column } => {
+                if let Some(c) = self.columns.get(column).filter(|c| c.expandable) {
+                    let key = c.key.clone();
+                    self.expanded.insert(key.clone());
+                    self.refresh(document);
+                    self.select_key(&key);
+                }
+            }
+            GridEvent::Collapse { column } => {
+                if let Some(key) = self.columns.get(column).and_then(|c| c.collapses.clone()) {
+                    self.expanded.remove(&key);
+                    self.refresh(document);
+                    self.select_key(&key);
+                }
+            }
             GridEvent::AutoFit { column } => {
                 if column < self.columns.len() {
                     self.fit_column(column);
@@ -567,6 +711,21 @@ impl GridView {
             }
         }
         self.load(document, false);
+    }
+
+    /// Selects the first screen column at or below `key` after expanding or
+    /// collapsing it.
+    fn select_key(&mut self, key: &[String]) {
+        let Some(column) = self.columns.iter().position(|c| c.key.starts_with(key)) else {
+            return;
+        };
+        self.cols = None;
+        self.rows = None;
+        if let Some((row, _)) = self.selected {
+            self.selected = Some((row, column));
+        }
+        let row = self.selected.map_or(self.first_row, |(r, _)| r);
+        self.reveal(row, column);
     }
 
     fn max_first_row(&self) -> usize {
@@ -648,7 +807,10 @@ impl GridView {
             Some(view) => view.read(start..end),
             None => document.read_at(self.level(document), start..end),
         };
-        let formatted = batch.and_then(|batch| Ok((format_batch(&batch)?, nested_json(&batch)?)));
+        let formatted = batch.and_then(|batch| {
+            let batch = self.display_batch(batch)?;
+            Ok((format_batch(&batch)?, nested_json(&batch)?))
+        });
         match formatted {
             Ok((cells, json)) => {
                 self.window_start = start;
@@ -662,6 +824,33 @@ impl GridView {
                 self.error = Some(e.to_string());
             }
         }
+    }
+
+    /// `batch` (document columns) as the columns on screen.
+    fn display_batch(&self, batch: RecordBatch) -> veta_core::Result<RecordBatch> {
+        if self.columns.iter().all(|c| c.path().is_empty()) {
+            return Ok(batch);
+        }
+        let mut fields = Vec::new();
+        let mut arrays = Vec::new();
+        for (i, column) in self.columns.iter().enumerate() {
+            let Some(array) = batch
+                .columns()
+                .get(column.source)
+                .and_then(|a| field_array(a, column.path()))
+            else {
+                // Out of step with the document; the next refresh fixes it.
+                return Ok(batch);
+            };
+            fields.push(Field::new(format!("c{i}"), array.data_type().clone(), true));
+            arrays.push(array);
+        }
+        let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+        Ok(RecordBatch::try_new_with_options(
+            std::sync::Arc::new(Schema::new(fields)),
+            arrays,
+            &options,
+        )?)
     }
 
     fn cell(&self, row: usize, column: usize) -> Option<&Option<String>> {
@@ -945,6 +1134,38 @@ impl<Message> Grid<'_, Message> {
                 .sum::<f32>()
     }
 
+    /// Expand or collapse buttons of a header, left to right, with their x.
+    fn toggles(&self, column: usize, x: f32) -> Vec<(GridEvent, Icon, f32)> {
+        let c = &self.view.columns[column];
+        let step = self.view.metrics.text_size + 2.0;
+        let mut x = x + CELL_PADDING;
+        let mut out = Vec::new();
+        if c.collapses.is_some() {
+            out.push((GridEvent::Collapse { column }, Icon::ChevronDown, x));
+            x += step;
+        }
+        if c.expandable {
+            out.push((GridEvent::Expand { column }, Icon::ChevronRight, x));
+        }
+        out
+    }
+
+    /// The expand or collapse button under `position` in the header.
+    fn toggle_at(&self, regions: &Regions, position: Point) -> Option<GridEvent> {
+        if position.y > regions.header.y + regions.m.header_height / 2.0 + 3.0 {
+            return None;
+        }
+        let (column, x, _) = self
+            .visible_columns(regions.body)
+            .into_iter()
+            .find(|&(_, left, w)| position.x >= left && position.x < left + w)?;
+        let step = regions.m.text_size + 2.0;
+        self.toggles(column, x)
+            .into_iter()
+            .find(|&(_, _, left)| position.x >= left - 2.0 && position.x < left + step)
+            .map(|(event, _, _)| event)
+    }
+
     /// Column under an x coordinate.
     fn column_at(&self, regions: &Regions, x: f32) -> Option<usize> {
         self.visible_columns(regions.body)
@@ -1148,7 +1369,9 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                         };
                     }
                 } else if regions.header.contains(position) {
-                    if let Some(column) = self.column_at(&regions, position.x) {
+                    if let Some(event) = self.toggle_at(&regions, position) {
+                        shell.publish((self.on_event)(event));
+                    } else if let Some(column) = self.column_at(&regions, position.x) {
                         shell.publish((self.on_event)(GridEvent::SelectColumns {
                             column,
                             extend: state.modifiers.shift(),
@@ -1238,14 +1461,16 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     })
                 } else if regions.header.contains(position) {
                     self.column_at(&regions, position.x).map(|column| {
-                        let selected = view.selected_columns().is_some_and(|c| c.contains(&column));
+                        let selected = view
+                            .selected_display_columns()
+                            .is_some_and(|c| c.contains(&column));
                         if !selected {
                             shell.publish((self.on_event)(GridEvent::SelectColumns {
                                 column,
                                 extend: false,
                             }));
                         }
-                        MenuTarget::Column(column)
+                        MenuTarget::Column(view.columns[column].source)
                     })
                 } else {
                     Some(MenuTarget::Blank)
@@ -1327,10 +1552,18 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     ..
                 } = state.drag
                 {
+                    // Fields of an expanded struct move with their column.
                     let slot = self.drop_slot(&regions, x);
-                    let to = if slot > column { slot - 1 } else { slot };
-                    if to != column {
-                        shell.publish((self.on_event)(GridEvent::MoveColumn { from: column, to }));
+                    let from = view.columns[column].source;
+                    let slot = view
+                        .columns
+                        .get(slot)
+                        .map_or(view.columns.last().map_or(0, |c| c.source + 1), |c| {
+                            c.source
+                        });
+                    let to = if slot > from { slot - 1 } else { slot };
+                    if to != from {
+                        shell.publish((self.on_event)(GridEvent::MoveColumn { from, to }));
                     }
                 }
                 state.drag = Drag::None;
@@ -1571,7 +1804,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         // Header.
         fill(renderer, regions.header, header_bg);
         let selected_cols = if view.cols.is_some() {
-            view.selected_columns().unwrap_or(0..0)
+            view.selected_display_columns().unwrap_or(0..0)
         } else {
             0..0
         };
@@ -1611,10 +1844,32 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             let Some(clip) = cell.intersection(&regions.header) else {
                 continue;
             };
+            let toggles = self.toggles(column, x);
+            for (_, glyph, left) in &toggles {
+                let button = Rectangle {
+                    x: left - CELL_PADDING,
+                    ..cell
+                };
+                draw_text(
+                    renderer,
+                    glyph.codepoint().to_string(),
+                    button,
+                    false,
+                    m.text_size,
+                    icon::FONT,
+                    t.selection,
+                    clip,
+                );
+            }
+            let indent = toggles.len() as f32 * (m.text_size + 2.0);
+            let name_cell = Rectangle {
+                x: cell.x + indent,
+                ..cell
+            };
             draw_text(
                 renderer,
                 c.name.clone(),
-                cell,
+                name_cell,
                 false,
                 m.text_size,
                 bold,

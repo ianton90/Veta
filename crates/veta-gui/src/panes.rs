@@ -867,13 +867,20 @@ pub fn formula_bar<'a>(
                 .schema()
                 .fields()
                 .get(column)
-                .map(|f| format!("{} · ", f.name()))
+                .map(|f| {
+                    let path = tab.grid.selected_field().map_or(&[][..], |(p, _)| p);
+                    let mut name = f.name().clone();
+                    for part in path {
+                        name = format!("{name}.{part}");
+                    }
+                    format!("{name} · ")
+                })
                 .unwrap_or_default();
             format!("{name}row {}", row + 1)
         }
         None => String::new(),
     };
-    let current = selected.and_then(|(r, c)| tab.grid.edit_value(r, c));
+    let current = tab.grid.selected_edit_value();
     let (value, placeholder) = match (edit, current) {
         (Some(edit), _) => (edit.text.as_str(), ""),
         (None, Some(Some(value))) => (value, ""),

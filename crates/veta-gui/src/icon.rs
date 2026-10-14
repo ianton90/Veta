@@ -57,6 +57,7 @@ pub enum Icon {
     Info,
     ChevronUp,
     ChevronDown,
+    ChevronRight,
     Hash,
     Eraser,
     Scissors,
@@ -118,6 +119,7 @@ impl Icon {
             Icon::Info => 0xe0f9,            // info
             Icon::ChevronUp => 0xe070,       // chevron-up
             Icon::ChevronDown => 0xe06d,     // chevron-down
+            Icon::ChevronRight => 0xe06f,    // chevron-right
             Icon::Hash => 0xe0ef,            // hash
             Icon::Eraser => 0xe28f,          // eraser
             Icon::Scissors => 0xe14e,        // scissors

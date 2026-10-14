@@ -83,8 +83,39 @@ pub fn set_nested(
         }
         None => serde_json::Value::Null,
     };
-    *value_at(&mut root, pointer)? = leaf;
+    *value_at_or_insert(&mut root, pointer)? = leaf;
     Ok(root.to_string())
+}
+
+/// Like [`value_at`], but struct fields that are missing or under a null
+/// parent are created.
+fn value_at_or_insert<'a>(
+    root: &'a mut serde_json::Value,
+    pointer: &[crate::display::PathPart],
+) -> Result<&'a mut serde_json::Value> {
+    use crate::display::PathPart;
+    let mut target = root;
+    for part in pointer {
+        target = match part {
+            PathPart::Field(name) => {
+                if target.is_null() {
+                    *target = serde_json::Value::Object(Default::default());
+                }
+                match target {
+                    serde_json::Value::Object(map) => {
+                        map.entry(name.clone()).or_insert(serde_json::Value::Null)
+                    }
+                    _ => {
+                        return Err(Error::InvalidCommand(
+                            "that part of the value no longer exists".into(),
+                        ));
+                    }
+                }
+            }
+            _ => value_at(target, std::slice::from_ref(part))?,
+        };
+    }
+    Ok(target)
 }
 
 /// `json` indented for reading; returned as is if it isn't valid JSON.
@@ -287,6 +318,9 @@ mod tests {
         let name = [PathPart::Field("name".into())];
         let cleared = set_nested(owner, &name, None, &DataType::Utf8).unwrap();
         assert!(cleared.contains(r#""name":null"#));
+        // A field under a null struct is created.
+        let created = set_nested("null", &home_y, Some("7"), &DataType::Int64).unwrap();
+        assert_eq!(created, r#"{"home":{"y":7}}"#);
         assert!(set_nested(owner, &home_y, Some("a"), &DataType::Int64).is_err());
         let tags = schema.field(2).data_type();
         let list = parse_value(Some(r#"["a", null]"#), tags).unwrap();
