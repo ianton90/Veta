@@ -5049,7 +5049,7 @@ mod tests {
         assert_eq!(g.value(0, 1), Some(Some("1")));
         assert_eq!(g.value(0, 2), Some(Some("2")));
         assert_eq!(g.value(2, 1), Some(None), "null struct, null fields");
-        assert_eq!(g.value(0, 3), Some(Some("[a, b]")), "tags moved right");
+        assert_eq!(g.value(0, 3), Some(Some("[2 items]")), "tags moved right");
 
         // A field cell edits that field of the struct.
         grid(&mut app, GridEvent::Select { row: 0, column: 2 });

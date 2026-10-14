@@ -30,7 +30,7 @@ use veta_core::steps::{ComputeJob, Computed, Filter, Pipeline, Status};
 
 use crate::icon::{self, Icon};
 use crate::theme::Tokens;
-use veta_core::display::{format_batch, is_numeric, type_name};
+use veta_core::display::{format_batch, has_items, is_numeric, type_name};
 
 const SCROLLBAR: f32 = 12.0;
 const MIN_THUMB: f32 = 24.0;
@@ -41,6 +41,8 @@ const MAX_FITTED_WIDTH: f32 = 360.0;
 const RESIZE_GRAB: f32 = 4.0;
 const WHEEL_LINES: f32 = 3.0;
 const NULL_TEXT: &str = "null";
+/// Items of an open list cell shown before "… more".
+const MAX_ITEMS: usize = 100;
 
 /// Sizes derived from the text size.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -129,6 +131,10 @@ pub enum GridEvent {
     Collapse {
         column: usize,
     },
+    /// Show or hide the items of the list and map cells of `row`.
+    ToggleItems {
+        row: usize,
+    },
     /// Right-click; `position` is in window coordinates.
     ContextMenu {
         target: MenuTarget,
@@ -185,6 +191,8 @@ struct Column {
     width: f32,
     /// A struct whose fields aren't shown.
     expandable: bool,
+    /// Lists or maps: cells show a summary and can open into items.
+    items: bool,
     /// The expanded struct whose first field this is (collapse button).
     collapses: Option<Vec<String>>,
 }
@@ -224,6 +232,7 @@ fn display_columns(schema: &Schema, expanded: &BTreeSet<Vec<String>>) -> Vec<Col
             name: key.join("."),
             source,
             expandable: matches!(data_type, DataType::Struct(c) if !c.is_empty()),
+            items: has_items(data_type),
             data_type: data_type.clone(),
             type_name: type_name(data_type),
             numeric: is_numeric(data_type),
@@ -286,9 +295,28 @@ pub struct GridView {
     json: Vec<Vec<Option<Option<String>>>>,
     /// Struct columns shown as their fields, by column key.
     expanded: BTreeSet<Vec<String>>,
+    /// Rows whose list and map cells show their items.
+    open_rows: BTreeSet<usize>,
+    /// Items of the open rows in `cells`: per screen column, (index or key,
+    /// value) pairs, plus the number of items not listed.
+    details: std::collections::HashMap<usize, Vec<Items>>,
     error: Option<String>,
     /// A temporary filter over the document's output (not a step).
     filter: Option<FilterView>,
+}
+
+/// The items listed in an open list or map cell.
+#[derive(Debug, Clone, Default)]
+struct Items {
+    items: Vec<(String, Option<String>)>,
+    more: usize,
+}
+
+impl Items {
+    /// Screen lines the items take.
+    fn lines(&self) -> usize {
+        self.items.len() + usize::from(self.more > 0)
+    }
 }
 
 /// The document's output with a filter applied, computed in the background.
@@ -326,6 +354,8 @@ impl GridView {
             cells: Vec::new(),
             json: Vec::new(),
             expanded: BTreeSet::new(),
+            open_rows: BTreeSet::new(),
+            details: Default::default(),
             error: None,
             filter: None,
         };
@@ -355,7 +385,12 @@ impl GridView {
             .chain([column.type_name.chars().count()])
             .max()
             .unwrap_or(0);
-        let content = (chars as f32 * self.metrics.char_width).max(header);
+        let chevron = if column.items {
+            self.metrics.text_size + 2.0
+        } else {
+            0.0
+        };
+        let content = (chars as f32 * self.metrics.char_width + chevron).max(header);
         self.columns[i].width =
             (content + 2.0 * CELL_PADDING + 4.0).clamp(MIN_FITTED_WIDTH, MAX_FITTED_WIDTH);
     }
@@ -418,6 +453,7 @@ impl GridView {
     pub fn set_preview(&mut self, at: Option<usize>, document: &Document) {
         self.at = at;
         self.filter = None;
+        self.open_rows.clear();
         self.refresh(document);
     }
 
@@ -431,6 +467,7 @@ impl GridView {
     pub fn set_filter(&mut self, view: Option<(Filter, Pipeline)>, document: &Document) {
         self.at = None;
         self.filter = view.map(|(filter, pipeline)| FilterView { filter, pipeline });
+        self.open_rows.clear();
         self.refresh(document);
     }
 
@@ -451,6 +488,7 @@ impl GridView {
         if !view.pipeline.install(computed) {
             return false;
         }
+        self.open_rows.clear();
         self.refresh(document);
         true
     }
@@ -592,10 +630,15 @@ impl GridView {
                 }
             }
         }
-        self.num_rows = match self.view() {
+        let num_rows = match self.view() {
             Some(view) => view.num_rows(),
             None => document.num_rows_at(level).unwrap_or(0),
         };
+        // Row numbers mean other rows now.
+        if num_rows != self.num_rows {
+            self.open_rows.clear();
+        }
+        self.num_rows = num_rows;
         self.selected = self.selected.and_then(|(r, c)| {
             (self.num_rows > 0 && !self.columns.is_empty())
                 .then(|| (r.min(self.num_rows - 1), c.min(self.columns.len() - 1)))
@@ -689,6 +732,13 @@ impl GridView {
                     self.select_key(&key);
                 }
             }
+            GridEvent::ToggleItems { row } => {
+                if !self.open_rows.remove(&row) && row < self.num_rows {
+                    self.open_rows.insert(row);
+                }
+                self.load(document, true);
+                self.reveal(row, self.selected.map_or(0, |(_, c)| c));
+            }
             GridEvent::AutoFit { column } => {
                 if column < self.columns.len() {
                     self.fit_column(column);
@@ -729,7 +779,71 @@ impl GridView {
     }
 
     fn max_first_row(&self) -> usize {
-        self.num_rows.saturating_sub(self.visible_rows)
+        if self.details.is_empty() {
+            return self.num_rows.saturating_sub(self.visible_rows);
+        }
+        // The first row from which the last rows fill the body.
+        let mut first = self.num_rows;
+        let mut lines = 0;
+        while first > 0 {
+            let more = self.row_lines(first - 1);
+            if lines + more > self.visible_rows {
+                break;
+            }
+            lines += more;
+            first -= 1;
+        }
+        first.min(self.num_rows.saturating_sub(1))
+    }
+
+    /// Screen lines `row` takes: one, plus its items while open.
+    fn row_lines(&self, row: usize) -> usize {
+        self.details.get(&row).map_or(1, |columns| {
+            1 + columns.iter().map(Items::lines).max().unwrap_or(0)
+        })
+    }
+
+    /// Rows from `first` that fit fully in the body (at least one).
+    fn rows_fitting(&self, first: usize) -> usize {
+        let mut lines = 0;
+        let mut rows = 0;
+        for row in first..self.num_rows {
+            lines += self.row_lines(row);
+            if lines > self.visible_rows {
+                break;
+            }
+            rows += 1;
+        }
+        rows.max(1)
+    }
+
+    /// The row at screen line `line` of the body, and the line within it.
+    fn row_at_line(&self, line: usize) -> Option<(usize, usize)> {
+        let mut start = 0;
+        for row in self.first_row..self.num_rows {
+            let lines = self.row_lines(row);
+            if line < start + lines {
+                return Some((row, line - start));
+            }
+            start += lines;
+        }
+        None
+    }
+
+    /// First screen line of `row`; `None` above the view, and some line
+    /// below the body for rows past it.
+    fn line_of(&self, row: usize) -> Option<usize> {
+        if row < self.first_row {
+            return None;
+        }
+        let mut line = 0;
+        for r in self.first_row..row {
+            line += self.row_lines(r);
+            if line > self.visible_rows + 1 {
+                break;
+            }
+        }
+        Some(line)
     }
 
     fn content_width(&self) -> f32 {
@@ -750,8 +864,14 @@ impl GridView {
         let mut first_row = self.first_row;
         if row < first_row {
             first_row = row;
-        } else if row >= first_row + self.visible_rows {
-            first_row = row + 1 - self.visible_rows;
+        } else if row >= first_row + self.rows_fitting(first_row) {
+            // Make `row` the last row fully shown.
+            let mut lines = self.row_lines(row);
+            first_row = row;
+            while first_row > 0 && lines + self.row_lines(first_row - 1) <= self.visible_rows {
+                first_row -= 1;
+                lines += self.row_lines(first_row);
+            }
         }
         let Some(width) = self.columns.get(column).map(|c| c.width) else {
             // No columns (a new file with rows only): scroll rows only.
@@ -809,18 +929,47 @@ impl GridView {
         };
         let formatted = batch.and_then(|batch| {
             let batch = self.display_batch(batch)?;
-            Ok((format_batch(&batch)?, nested_json(&batch)?))
+            let mut cells = format_batch(&batch)?;
+            let mut details = std::collections::HashMap::new();
+            for (i, column) in batch.columns().iter().enumerate() {
+                if !has_items(column.data_type()) {
+                    continue;
+                }
+                for (row, cells) in cells.iter_mut().enumerate() {
+                    if let Some(summary) = veta_core::display::items_summary(column.as_ref(), row) {
+                        cells[i] = Some(summary);
+                    }
+                }
+            }
+            for &row in self.open_rows.range(start..end) {
+                let local = row - start;
+                let columns = batch
+                    .columns()
+                    .iter()
+                    .map(|column| {
+                        let array = column.as_ref();
+                        let items = veta_core::display::list_items(array, local, MAX_ITEMS)
+                            .unwrap_or_default();
+                        let more = veta_core::display::item_count(array, local) - items.len();
+                        Items { items, more }
+                    })
+                    .collect();
+                details.insert(row, columns);
+            }
+            Ok((cells, nested_json(&batch)?, details))
         });
         match formatted {
-            Ok((cells, json)) => {
+            Ok((cells, json, details)) => {
                 self.window_start = start;
                 self.cells = cells;
                 self.json = json;
+                self.details = details;
                 self.error = None;
             }
             Err(e) => {
                 self.cells.clear();
                 self.json.clear();
+                self.details.clear();
                 self.error = Some(e.to_string());
             }
         }
@@ -851,6 +1000,12 @@ impl GridView {
             arrays,
             &options,
         )?)
+    }
+
+    /// Whether a loaded list or map cell has items to open.
+    fn has_items(&self, row: usize, column: usize) -> bool {
+        self.columns.get(column).is_some_and(|c| c.items)
+            && matches!(self.value(row, column), Some(Some(v)) if v != "[]" && v != "{}")
     }
 
     fn cell(&self, row: usize, column: usize) -> Option<&Option<String>> {
@@ -1086,17 +1241,14 @@ impl<Message> Grid<'_, Message> {
     /// Screen rectangle of the selected cell, if it is visible.
     fn selected_cell_rect(&self, regions: &Regions) -> Option<Rectangle> {
         let (row, column) = self.view.selected?;
-        let first = self.view.first_row;
-        if row < first {
-            return None;
-        }
+        let line = self.view.line_of(row)?;
         let (_, x, width) = self
             .visible_columns(regions.body)
             .into_iter()
             .find(|&(c, _, _)| c == column)?;
         let rect = Rectangle {
             x,
-            y: regions.body.y + (row - first) as f32 * regions.m.row_height,
+            y: regions.body.y + line as f32 * regions.m.row_height,
             width,
             height: regions.m.row_height,
         };
@@ -1108,8 +1260,26 @@ impl<Message> Grid<'_, Message> {
         if y < regions.body.y || y >= regions.body.y + regions.body.height {
             return None;
         }
-        let row = self.view.first_row + ((y - regions.body.y) / regions.m.row_height) as usize;
-        (row < self.view.num_rows).then_some(row)
+        let line = ((y - regions.body.y) / regions.m.row_height) as usize;
+        self.view.row_at_line(line).map(|(row, _)| row)
+    }
+
+    /// The row whose item toggle (in a list or map cell) is under
+    /// `position`.
+    fn items_toggle_at(&self, regions: &Regions, position: Point) -> Option<usize> {
+        if !regions.body.contains(position) {
+            return None;
+        }
+        let line = ((position.y - regions.body.y) / regions.m.row_height) as usize;
+        let (row, 0) = self.view.row_at_line(line)? else {
+            return None;
+        };
+        let (column, x, _) = self
+            .visible_columns(regions.body)
+            .into_iter()
+            .find(|&(_, left, w)| position.x >= left && position.x < left + w)?;
+        let on_toggle = position.x < x + CELL_PADDING + regions.m.text_size + 2.0;
+        (on_toggle && self.view.has_items(row, column)).then_some(row)
     }
 
     /// Gap (0 = before the first column, n = after the last) nearest to `x`,
@@ -1178,8 +1348,8 @@ impl<Message> Grid<'_, Message> {
         if !regions.body.contains(position) {
             return None;
         }
-        let row =
-            self.view.first_row + ((position.y - regions.body.y) / regions.m.row_height) as usize;
+        let line = ((position.y - regions.body.y) / regions.m.row_height) as usize;
+        let (row, _) = self.view.row_at_line(line)?;
         let column = self
             .visible_columns(regions.body)
             .into_iter()
@@ -1425,6 +1595,11 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     }
                 } else if let Some((row, column)) = self.cell_at(&regions, position) {
                     shell.publish((self.on_event)(GridEvent::Select { row, column }));
+                    if self.items_toggle_at(&regions, position) == Some(row) {
+                        shell.publish((self.on_event)(GridEvent::ToggleItems { row }));
+                        state.last_click = None;
+                        return;
+                    }
                     let now = Instant::now();
                     let double = state.last_click.is_some_and(|(at, cell)| {
                         cell == (row, column) && now.duration_since(at) < DOUBLE_CLICK
@@ -1700,17 +1875,28 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         } else {
             0..0
         };
-        let rows_on_screen = (regions.body.height / m.row_height).ceil() as usize;
-        let last_row = (view.first_row + rows_on_screen).min(view.num_rows);
+        // Rows on screen with their first line and line count.
+        let lines_on_screen = (regions.body.height / m.row_height).ceil() as usize;
+        let mut rows_shown = Vec::new();
+        let mut next_line = 0;
+        for row in view.first_row..view.num_rows {
+            if next_line >= lines_on_screen {
+                break;
+            }
+            let lines = view.row_lines(row);
+            rows_shown.push((row, next_line, lines));
+            next_line += lines;
+        }
+        let row_y = |line: usize| regions.body.y + line as f32 * m.row_height;
 
         // Body: stripes, selection, cells.
-        for row in view.first_row..last_row {
-            let y = regions.body.y + (row - view.first_row) as f32 * m.row_height;
+        for &(row, line, lines) in &rows_shown {
+            let y = row_y(line);
             let row_rect = Rectangle {
                 x: regions.body.x,
                 y,
                 width: regions.body.width,
-                height: m.row_height,
+                height: lines as f32 * m.row_height,
             }
             .intersection(&regions.body);
             let Some(row_rect) = row_rect else { continue };
@@ -1743,16 +1929,102 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     None => (String::new(), text_color),
                 };
                 let numeric = view.columns[column].numeric;
+                let mut text_cell = cell;
+                if view.has_items(row, column) {
+                    let open = view.open_rows.contains(&row);
+                    let glyph = if open {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronRight
+                    };
+                    draw_text(
+                        renderer,
+                        glyph.codepoint().to_string(),
+                        cell,
+                        false,
+                        m.text_size,
+                        icon::FONT,
+                        t.selection,
+                        clip,
+                    );
+                    text_cell.x += m.text_size + 2.0;
+                }
                 draw_text(
                     renderer,
                     content,
-                    cell,
+                    text_cell,
                     numeric,
                     m.text_size,
                     Font::DEFAULT,
                     color,
                     clip,
                 );
+                // Items of an open row, one per line: index or key, value.
+                let Some(items) = view.details.get(&row).and_then(|d| d.get(column)) else {
+                    continue;
+                };
+                let indent = m.text_size + 2.0;
+                for (k, (label, value)) in items.items.iter().enumerate() {
+                    let line_cell = Rectangle {
+                        x: x + indent,
+                        y: y + (k + 1) as f32 * m.row_height,
+                        width: width - indent,
+                        height: m.row_height,
+                    };
+                    let Some(clip) = line_cell.intersection(&regions.body) else {
+                        continue;
+                    };
+                    draw_text(
+                        renderer,
+                        label.clone(),
+                        line_cell,
+                        false,
+                        m.type_text_size,
+                        Font::DEFAULT,
+                        muted,
+                        clip,
+                    );
+                    let label_width = (label.chars().count() + 1) as f32 * m.char_width;
+                    let value_cell = Rectangle {
+                        x: line_cell.x + label_width,
+                        width: line_cell.width - label_width,
+                        ..line_cell
+                    };
+                    let (text, color) = match value {
+                        Some(v) => (single_line(v), text_color),
+                        None => (NULL_TEXT.to_owned(), muted),
+                    };
+                    draw_text(
+                        renderer,
+                        text,
+                        value_cell,
+                        false,
+                        m.text_size,
+                        Font::DEFAULT,
+                        color,
+                        clip,
+                    );
+                }
+                if items.more > 0 {
+                    let line_cell = Rectangle {
+                        x: x + indent,
+                        y: y + (items.items.len() + 1) as f32 * m.row_height,
+                        width: width - indent,
+                        height: m.row_height,
+                    };
+                    if let Some(clip) = line_cell.intersection(&regions.body) {
+                        draw_text(
+                            renderer,
+                            format!("… {} more", items.more),
+                            line_cell,
+                            false,
+                            m.text_size,
+                            Font::DEFAULT,
+                            muted,
+                            clip,
+                        );
+                    }
+                }
             }
         }
 
@@ -1775,13 +2047,12 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
 
         // Selection outline.
         if let Some((row, column)) = view.selected
-            && row >= view.first_row
-            && row < last_row
+            && let Some(&(_, line, _)) = rows_shown.iter().find(|(r, _, _)| *r == row)
             && let Some(&(_, x, width)) = columns.iter().find(|(c, _, _)| *c == column)
         {
             let rect = Rectangle {
                 x,
-                y: regions.body.y + (row - view.first_row) as f32 * m.row_height,
+                y: row_y(line),
                 width,
                 height: m.row_height,
             };
@@ -1914,10 +2185,10 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         };
         fill(renderer, corner, header_bg);
         let highlighted = view.selected_rows().unwrap_or(0..0);
-        for row in view.first_row..last_row {
+        for &(row, line, _) in &rows_shown {
             let cell = Rectangle {
                 x: regions.row_numbers.x,
-                y: regions.body.y + (row - view.first_row) as f32 * m.row_height,
+                y: row_y(line),
                 width: regions.row_numbers.width - CELL_PADDING / 2.0,
                 height: m.row_height,
             };
@@ -2173,6 +2444,39 @@ mod tests {
             "first visible row is loaded"
         );
         assert_eq!(view.cell(150_020, 2), Some(&Some("row-150020".to_owned())));
+    }
+
+    #[test]
+    fn list_cells_open_into_item_lines() {
+        let dir = TempDir::new();
+        let path = dir.join("n.parquet");
+        fixtures::nested(&path);
+        let doc = Document::open(&path, OpenOptions::default()).unwrap();
+        let mut view = GridView::new(&doc, 13.0);
+        resized(&mut view, &doc, 4);
+        assert_eq!(view.value(0, 2), Some(Some("[2 items]")));
+        assert_eq!(view.value(0, 4), Some(Some("{2 entries}")));
+        assert!(view.has_items(3, 2) && !view.has_items(1, 2) && !view.has_items(0, 0));
+
+        view.apply(GridEvent::ToggleItems { row: 3 }, &doc);
+        // Row 3: tags has 3 items, scores 1 entry.
+        assert_eq!(view.row_lines(3), 4);
+        assert_eq!(view.row_at_line(0), Some((view.first_row, 0)));
+        assert_eq!(view.first_row, 3, "scrolled so the open row fits");
+        assert_eq!(view.max_first_row(), 3);
+        view.apply(
+            GridEvent::Scroll {
+                first_row: 0,
+                scroll_x: 0.0,
+            },
+            &doc,
+        );
+        assert_eq!(view.row_at_line(3), Some((3, 0)));
+        assert_eq!(view.row_at_line(5), Some((3, 2)));
+        assert_eq!(view.rows_fitting(0), 3);
+        view.apply(GridEvent::ToggleItems { row: 3 }, &doc);
+        assert_eq!(view.row_lines(3), 1);
+        assert_eq!(view.max_first_row(), 0);
     }
 
     #[test]

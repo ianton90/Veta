@@ -26,7 +26,8 @@ While the major version is 0, minor versions may change behaviour.
 - Nested types: structs, lists and maps shown as trees and edited as JSON
   or per value; expand a struct into columns or explode a list into rows.
   Struct columns open in the grid (header arrow) into editable field
-  columns.
+  columns; list and map cells show a summary that opens into one line per
+  item.
 - Ribbon, light and dark themes (TOML), settings.
 
 **Command line (`veta-cli`)**

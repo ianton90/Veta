@@ -91,6 +91,117 @@ pub fn json_column(array: &dyn Array) -> Result<arrow::array::StringArray> {
         .collect())
 }
 
+/// The item range, values and (for maps) keys of a list or map value;
+/// `None` for other types and nulls.
+fn items_of(
+    array: &dyn Array,
+    row: usize,
+) -> Option<(
+    std::ops::Range<usize>,
+    arrow::array::ArrayRef,
+    Option<arrow::array::ArrayRef>,
+)> {
+    use arrow::array::AsArray;
+    if array.is_null(row) {
+        return None;
+    }
+    match array.data_type() {
+        DataType::List(_) => {
+            let list = array.as_list::<i32>();
+            let o = list.value_offsets();
+            Some((
+                o[row] as usize..o[row + 1] as usize,
+                list.values().clone(),
+                None,
+            ))
+        }
+        DataType::LargeList(_) => {
+            let list = array.as_list::<i64>();
+            let o = list.value_offsets();
+            Some((
+                o[row] as usize..o[row + 1] as usize,
+                list.values().clone(),
+                None,
+            ))
+        }
+        DataType::FixedSizeList(_, size) => {
+            let list = array.as_fixed_size_list();
+            let size = *size as usize;
+            Some((row * size..(row + 1) * size, list.values().clone(), None))
+        }
+        DataType::Map(..) => {
+            let map = array.as_map();
+            let o = map.value_offsets();
+            Some((
+                o[row] as usize..o[row + 1] as usize,
+                map.values().clone(),
+                Some(map.keys().clone()),
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Whether values of `data_type` are lists or maps.
+pub fn has_items(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::List(_)
+            | DataType::LargeList(_)
+            | DataType::FixedSizeList(..)
+            | DataType::Map(..)
+    )
+}
+
+/// A short summary of a list or map value: `[3 items]`, `{2 entries}`,
+/// `[]`; `None` for other types and nulls.
+pub fn items_summary(array: &dyn Array, row: usize) -> Option<String> {
+    let (range, _, keys) = items_of(array, row)?;
+    Some(match (range.len(), keys.is_some()) {
+        (0, false) => "[]".into(),
+        (0, true) => "{}".into(),
+        (1, false) => "[1 item]".into(),
+        (1, true) => "{1 entry}".into(),
+        (n, false) => format!("[{n} items]"),
+        (n, true) => format!("{{{n} entries}}"),
+    })
+}
+
+/// The items of a list or map value as (index or key, value) text pairs,
+/// at most `limit` of them; the value is `None` for null. `None` for other
+/// types and nulls.
+pub fn list_items(
+    array: &dyn Array,
+    row: usize,
+    limit: usize,
+) -> Option<Vec<(String, Option<String>)>> {
+    let (range, values, keys) = items_of(array, row)?;
+    let options = FormatOptions::default().with_null("null");
+    let value_text = ArrayFormatter::try_new(values.as_ref(), &options).ok()?;
+    let key_text = match &keys {
+        Some(keys) => Some(ArrayFormatter::try_new(keys.as_ref(), &options).ok()?),
+        None => None,
+    };
+    Some(
+        range
+            .take(limit)
+            .enumerate()
+            .map(|(k, i)| {
+                let label = key_text
+                    .as_ref()
+                    .map_or_else(|| k.to_string(), |f| f.value(i).to_string());
+                let value = (!values.is_null(i)).then(|| value_text.value(i).to_string());
+                (label, value)
+            })
+            .collect(),
+    )
+}
+
+/// Number of items in a list or map value (0 for other types and nulls).
+pub fn item_count(array: &dyn Array, row: usize) -> usize {
+    items_of(array, row).map_or(0, |(range, _, _)| range.len())
+}
+
 /// A value laid out as a tree, for showing nested values.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValueNode {
@@ -441,6 +552,37 @@ mod tests {
                 vec![None, Some("x".to_owned())]
             ]
         );
+    }
+
+    #[test]
+    fn list_and_map_items() {
+        let dir = veta_testkit::TempDir::new();
+        let path = dir.join("n.parquet");
+        veta_testkit::fixtures::nested(&path);
+        let doc = crate::Document::open(&path, crate::OpenOptions::default()).unwrap();
+        let batch = doc.read(0..4).unwrap();
+        let (tags, scores) = (batch.column(2), batch.column(4));
+        assert_eq!(
+            items_summary(tags.as_ref(), 0).as_deref(),
+            Some("[2 items]")
+        );
+        assert_eq!(items_summary(tags.as_ref(), 1).as_deref(), Some("[]"));
+        assert_eq!(items_summary(tags.as_ref(), 2), None, "null");
+        assert_eq!(
+            items_summary(scores.as_ref(), 0).as_deref(),
+            Some("{2 entries}")
+        );
+        assert_eq!(item_count(tags.as_ref(), 3), 3);
+        let items = list_items(tags.as_ref(), 3, 2).unwrap();
+        assert_eq!(
+            items,
+            vec![("0".into(), Some("c".into())), ("1".into(), None)]
+        );
+        let entries = list_items(scores.as_ref(), 0, 10).unwrap();
+        assert_eq!(entries[1], ("art".into(), Some("7".into())));
+        let path_items = list_items(batch.column(3).as_ref(), 0, 10).unwrap();
+        assert_eq!(path_items[1].1.as_deref(), Some("{x: 3, y: 4}"));
+        assert!(!has_items(&DataType::Int64));
     }
 
     #[test]
