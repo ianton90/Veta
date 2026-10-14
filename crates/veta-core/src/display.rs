@@ -167,14 +167,21 @@ pub fn items_summary(array: &dyn Array, row: usize) -> Option<String> {
     })
 }
 
-/// The items of a list or map value as (index or key, value) text pairs,
-/// at most `limit` of them; the value is `None` for null. `None` for other
-/// types and nulls.
-pub fn list_items(
-    array: &dyn Array,
-    row: usize,
-    limit: usize,
-) -> Option<Vec<(String, Option<String>)>> {
+/// One item of a list or map value, as text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListItem {
+    /// Index, or the map key.
+    pub label: String,
+    /// The value as displayed; `None` for null.
+    pub text: Option<String>,
+    /// The value to edit it with: JSON for nested values, otherwise as
+    /// displayed.
+    pub edit: Option<String>,
+}
+
+/// The items of a list or map value, at most `limit` of them. `None` for
+/// other types and nulls.
+pub fn list_items(array: &dyn Array, row: usize, limit: usize) -> Option<Vec<ListItem>> {
     let (range, values, keys) = items_of(array, row)?;
     let options = FormatOptions::default().with_null("null");
     let value_text = ArrayFormatter::try_new(values.as_ref(), &options).ok()?;
@@ -182,6 +189,7 @@ pub fn list_items(
         Some(keys) => Some(ArrayFormatter::try_new(keys.as_ref(), &options).ok()?),
         None => None,
     };
+    let nested = values.data_type().is_nested();
     Some(
         range
             .take(limit)
@@ -190,8 +198,13 @@ pub fn list_items(
                 let label = key_text
                     .as_ref()
                     .map_or_else(|| k.to_string(), |f| f.value(i).to_string());
-                let value = (!values.is_null(i)).then(|| value_text.value(i).to_string());
-                (label, value)
+                let text = (!values.is_null(i)).then(|| value_text.value(i).to_string());
+                let edit = if nested {
+                    value_json(values.as_ref(), i).ok().flatten()
+                } else {
+                    text.clone()
+                };
+                ListItem { label, text, edit }
             })
             .collect(),
     )
@@ -574,14 +587,19 @@ mod tests {
         );
         assert_eq!(item_count(tags.as_ref(), 3), 3);
         let items = list_items(tags.as_ref(), 3, 2).unwrap();
-        assert_eq!(
-            items,
-            vec![("0".into(), Some("c".into())), ("1".into(), None)]
-        );
+        let pairs: Vec<_> = items
+            .iter()
+            .map(|i| (i.label.as_str(), i.text.as_deref()))
+            .collect();
+        assert_eq!(pairs, [("0", Some("c")), ("1", None)]);
         let entries = list_items(scores.as_ref(), 0, 10).unwrap();
-        assert_eq!(entries[1], ("art".into(), Some("7".into())));
+        assert_eq!(
+            (entries[1].label.as_str(), entries[1].text.as_deref()),
+            ("art", Some("7"))
+        );
         let path_items = list_items(batch.column(3).as_ref(), 0, 10).unwrap();
-        assert_eq!(path_items[1].1.as_deref(), Some("{x: 3, y: 4}"));
+        assert_eq!(path_items[1].text.as_deref(), Some("{x: 3, y: 4}"));
+        assert_eq!(path_items[1].edit.as_deref(), Some(r#"{"x":3,"y":4}"#));
         assert!(!has_items(&DataType::Int64));
     }
 

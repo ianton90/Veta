@@ -87,6 +87,69 @@ pub fn set_nested(
     Ok(root.to_string())
 }
 
+/// A change to one item of a list inside a cell (see [`edit_list`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ListEdit<'a> {
+    /// Sets the item at `index` (read as `item_type`; empty or `None` is
+    /// null). `index` may be the list's length, which appends.
+    Set {
+        index: usize,
+        text: Option<&'a str>,
+        item_type: &'a DataType,
+    },
+    /// Inserts a null item at `index` (up to the list's length).
+    Insert(usize),
+    /// Removes the item at `index`.
+    Remove(usize),
+}
+
+/// The JSON of a cell with the list at `list` changed by `edit`. A null
+/// list (or struct on the way to it) counts as empty.
+pub fn edit_list(
+    cell_json: &str,
+    list: &[crate::display::PathPart],
+    edit: &ListEdit,
+) -> Result<String> {
+    let mut root: serde_json::Value = serde_json::from_str(cell_json)
+        .map_err(|e| Error::InvalidCommand(format!("the cell is not valid JSON: {e}")))?;
+    let target = value_at_or_insert(&mut root, list)?;
+    if target.is_null() {
+        *target = serde_json::Value::Array(Vec::new());
+    }
+    let serde_json::Value::Array(items) = target else {
+        return Err(Error::InvalidCommand("that value is not a list".into()));
+    };
+    let gone = || Error::InvalidCommand("that item no longer exists".into());
+    match *edit {
+        ListEdit::Set {
+            index,
+            text,
+            item_type,
+        } => {
+            let item = parse_value(text, item_type)?;
+            let item = match crate::display::value_json(item.as_ref(), 0)? {
+                Some(json) => {
+                    serde_json::from_str(&json).map_err(|e| Error::InvalidCommand(e.to_string()))?
+                }
+                None => serde_json::Value::Null,
+            };
+            match index.cmp(&items.len()) {
+                std::cmp::Ordering::Less => items[index] = item,
+                std::cmp::Ordering::Equal => items.push(item),
+                std::cmp::Ordering::Greater => return Err(gone()),
+            }
+        }
+        ListEdit::Insert(index) if index <= items.len() => {
+            items.insert(index, serde_json::Value::Null);
+        }
+        ListEdit::Remove(index) if index < items.len() => {
+            items.remove(index);
+        }
+        ListEdit::Insert(_) | ListEdit::Remove(_) => return Err(gone()),
+    }
+    Ok(root.to_string())
+}
+
 /// Like [`value_at`], but struct fields that are missing or under a null
 /// parent are created.
 fn value_at_or_insert<'a>(
@@ -318,6 +381,39 @@ mod tests {
         let name = [PathPart::Field("name".into())];
         let cleared = set_nested(owner, &name, None, &DataType::Utf8).unwrap();
         assert!(cleared.contains(r#""name":null"#));
+        // List items: set, append (also to a null list), insert, remove.
+        let int = DataType::Int64;
+        let set = |json: &str, index, text| {
+            edit_list(
+                json,
+                &[],
+                &ListEdit::Set {
+                    index,
+                    text,
+                    item_type: &int,
+                },
+            )
+        };
+        assert_eq!(set("[1,2]", 1, Some("5")).unwrap(), "[1,5]");
+        assert_eq!(set("[1,2]", 2, Some("3")).unwrap(), "[1,2,3]");
+        assert_eq!(set("null", 0, Some("7")).unwrap(), "[7]");
+        assert_eq!(set("[1]", 0, None).unwrap(), "[null]");
+        assert!(set("[1]", 3, Some("1")).is_err());
+        assert!(set("[1]", 0, Some("x")).is_err());
+        assert_eq!(
+            edit_list("[1,2]", &[], &ListEdit::Insert(1)).unwrap(),
+            "[1,null,2]"
+        );
+        assert_eq!(
+            edit_list("[1,2]", &[], &ListEdit::Remove(0)).unwrap(),
+            "[2]"
+        );
+        assert!(edit_list("[1]", &[], &ListEdit::Remove(1)).is_err());
+        let tags = [PathPart::Field("tags".into())];
+        assert_eq!(
+            edit_list("null", &tags, &ListEdit::Insert(0)).unwrap(),
+            r#"{"tags":[null]}"#
+        );
         // A field under a null struct is created.
         let created = set_nested("null", &home_y, Some("7"), &DataType::Int64).unwrap();
         assert_eq!(created, r#"{"home":{"y":7}}"#);

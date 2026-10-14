@@ -420,6 +420,8 @@ enum MenuItem {
     ExpandStruct,
     CombineStruct,
     CollectList,
+    InsertItem,
+    DeleteItem,
     /// Expand a struct column and the structs inside it.
     ExpandAll,
     ExplodeList,
@@ -441,6 +443,8 @@ struct Edit {
     /// The struct field edited, when the cell is a field of an expanded
     /// struct column.
     field: Option<StructField>,
+    /// The list item edited, when an item of an open list cell is.
+    item: Option<ListItem>,
     text: String,
     /// Why the last attempt to apply it failed.
     error: Option<String>,
@@ -450,6 +454,19 @@ struct Edit {
 #[derive(Debug, Clone, PartialEq)]
 struct StructField {
     path: Vec<String>,
+    data_type: veta_core::arrow::datatypes::DataType,
+}
+
+/// An item of a list in a cell (or in a struct field of it).
+#[derive(Debug, Clone, PartialEq)]
+struct ListItem {
+    row: usize,
+    column: String,
+    /// Struct fields down to the list (empty: the cell is the list).
+    list: Vec<String>,
+    /// Item index; the number of items for a new item.
+    index: usize,
+    len: usize,
     data_type: veta_core::arrow::datatypes::DataType,
 }
 
@@ -938,6 +955,11 @@ impl App {
                         return iced::widget::operation::focus(GRID_ID);
                     }
                 }
+                GridEvent::InsertRows | GridEvent::DeleteRows
+                    if let Some(item) = self.selected_list_item(id) =>
+                {
+                    self.insert_or_remove_item(id, &item, event == GridEvent::InsertRows);
+                }
                 GridEvent::InsertRows => self.insert_rows(id, false),
                 GridEvent::MoveColumn { from, to } => self.move_column(id, from, to),
                 GridEvent::DeleteRows => self.delete_rows(id),
@@ -948,6 +970,19 @@ impl App {
                         target,
                         position,
                     });
+                }
+                GridEvent::ClearCell if let Some(item) = self.selected_list_item(id) => {
+                    if item.index < item.len {
+                        let change = veta_core::values::ListEdit::Set {
+                            index: item.index,
+                            text: None,
+                            item_type: &item.data_type,
+                        };
+                        match self.change_list(id, &item, &change) {
+                            Ok(()) => self.refresh(id),
+                            Err(e) => self.errors.push(e),
+                        }
+                    }
                 }
                 GridEvent::ClearCell => {
                     if let Some((row, column)) = self.selected_cell(id) {
@@ -973,6 +1008,7 @@ impl App {
                     if matches!(
                         event,
                         GridEvent::Select { .. }
+                            | GridEvent::SelectItem { .. }
                             | GridEvent::SelectRows { .. }
                             | GridEvent::Navigate(_)
                     ) {
@@ -1002,10 +1038,24 @@ impl App {
                 }
             },
             Message::CommitEdit => {
+                // A value entered in the last item of a list, or in the slot
+                // for a new one, goes on to a new item at the end; an empty
+                // new item ends.
+                let item = self.edit.as_ref().and_then(|e| e.item.clone());
+                let empty = self.edit.as_ref().is_some_and(|e| e.text.is_empty());
                 if self.commit_edit()
                     && let Some(id) = self.active
                 {
-                    self.grid_event(id, GridEvent::Navigate(Nav::Down));
+                    match item {
+                        Some(item) if item.index == item.len && empty => {
+                            self.select_item(id, None);
+                        }
+                        Some(item) if item.index + 1 >= item.len => {
+                            self.select_item(id, Some(usize::MAX));
+                            return self.start_edit(id, None);
+                        }
+                        _ => self.grid_event(id, GridEvent::Navigate(Nav::Down)),
+                    }
                     return iced::widget::operation::focus(GRID_ID);
                 }
             }
@@ -1028,6 +1078,12 @@ impl App {
                 match item {
                     MenuItem::KeepRows => self.keep_rows(id),
                     MenuItem::EditCell => return self.start_edit(id, None),
+                    MenuItem::InsertItem | MenuItem::DeleteItem => {
+                        if let Some(list_item) = self.selected_list_item(id) {
+                            let insert = item == MenuItem::InsertItem;
+                            self.insert_or_remove_item(id, &list_item, insert);
+                        }
+                    }
                     MenuItem::ClearCell => {
                         return self.update(Message::Grid(id, GridEvent::ClearCell));
                     }
@@ -3738,6 +3794,79 @@ impl App {
         Some((row, doc.schema().field(column).name().clone()))
     }
 
+    /// Selects item `item` of the selected list cell (opening its row), or
+    /// the cell itself.
+    fn select_item(&mut self, id: DocumentId, item: Option<usize>) {
+        if let (Some(doc), Some(tab)) = (
+            self.workbook.get(id),
+            self.tabs.iter_mut().find(|t| t.id == id),
+        ) {
+            tab.grid.select_item(item, doc);
+        }
+    }
+
+    /// The selected item of an open list cell, if one is.
+    fn selected_list_item(&self, id: DocumentId) -> Option<ListItem> {
+        let (row, column) = self.selected_cell(id)?;
+        let tab = self.tabs.iter().find(|t| t.id == id)?;
+        let (index, len, data_type) = tab.grid.selected_item()?;
+        let list = tab.grid.selected_field()?.0.to_vec();
+        Some(ListItem {
+            row,
+            column,
+            list,
+            index,
+            len,
+            data_type,
+        })
+    }
+
+    /// Changes the list holding `item`.
+    fn change_list(
+        &mut self,
+        id: DocumentId,
+        item: &ListItem,
+        change: &veta_core::values::ListEdit,
+    ) -> Result<(), String> {
+        let index = self
+            .workbook
+            .get(id)
+            .and_then(|d| d.schema().index_of(&item.column).ok())
+            .ok_or("the column no longer exists")?;
+        let pointer: Vec<_> = item
+            .list
+            .iter()
+            .cloned()
+            .map(veta_core::display::PathPart::Field)
+            .collect();
+        self.change_nested_cell(id, item.row, index, |json| {
+            veta_core::values::edit_list(json, &pointer, change)
+        })
+    }
+
+    /// Inserts a null item at the selected item, or removes it.
+    fn insert_or_remove_item(&mut self, id: DocumentId, item: &ListItem, insert: bool) {
+        use veta_core::values::ListEdit;
+        let (change, select) = if insert {
+            (ListEdit::Insert(item.index.min(item.len)), item.index)
+        } else if item.index < item.len {
+            let len = item.len - 1;
+            (
+                ListEdit::Remove(item.index),
+                item.index.min(len.saturating_sub(1)),
+            )
+        } else {
+            return;
+        };
+        match self.change_list(id, item, &change) {
+            Ok(()) => {
+                self.refresh(id);
+                self.select_item(id, Some(select));
+            }
+            Err(e) => self.errors.push(e),
+        }
+    }
+
     /// The struct field shown in the selected cell, if it is one.
     fn selected_struct_field(&self, id: DocumentId) -> Option<StructField> {
         let tab = self.tabs.iter().find(|t| t.id == id)?;
@@ -3778,13 +3907,28 @@ impl App {
         let Some((row, column)) = self.selected_cell(id) else {
             return Task::none();
         };
+        // Lists are edited item by item: Enter edits the first item, typing
+        // starts a new one at the end.
+        if let Some(tab) = self.tabs.iter().find(|t| t.id == id)
+            && tab.grid.selected_is_list()
+            && tab.grid.selected_item().is_none()
+        {
+            let item = if initial.is_some() { usize::MAX } else { 0 };
+            self.select_item(id, Some(item));
+        }
         let text = initial.unwrap_or_else(|| self.cell_text(id).unwrap_or_default());
-        let field = self.selected_struct_field(id);
+        let item = self.selected_list_item(id);
+        let field = if item.is_some() {
+            None
+        } else {
+            self.selected_struct_field(id)
+        };
         self.edit = Some(Edit {
             document: id,
             row,
             column,
             field,
+            item,
             text,
             error: None,
         });
@@ -3824,7 +3968,15 @@ impl App {
         if self.cell_text(edit.document).as_deref() == Some(edit.text.as_str()) {
             return true;
         }
-        let result = if let Some(field) = &edit.field {
+        let result = if let Some(item) = &edit.item {
+            let text = (!edit.text.is_empty()).then_some(edit.text.as_str());
+            let change = veta_core::values::ListEdit::Set {
+                index: item.index,
+                text,
+                item_type: &item.data_type,
+            };
+            self.change_list(edit.document, item, &change)
+        } else if let Some(field) = &edit.field {
             let text = (!edit.text.is_empty()).then_some(edit.text.as_str());
             self.set_field(edit.document, edit.row, &edit.column, field, text)
         } else {
@@ -5422,6 +5574,95 @@ mod tests {
     }
 
     #[test]
+    fn list_items_edit_in_place() {
+        let dir = TempDir::new();
+        let path = dir.join("n.parquet");
+        fixtures::nested(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let grid = |app: &mut App, event| {
+            let _ = app.update(Message::Grid(id, event));
+        };
+        let enter = |app: &mut App, text: &str| {
+            let _ = app.update(Message::EditInput(text.into()));
+            let _ = app.update(Message::CommitEdit);
+        };
+        let tags = |app: &App, row: usize| {
+            let doc = app.workbook.get(id).unwrap();
+            veta_core::display::format_batch(&doc.read(row..row + 1).unwrap()).unwrap()[0][2]
+                .clone()
+        };
+        let editing = |app: &App| {
+            app.edit
+                .as_ref()
+                .and_then(|e| e.item.as_ref())
+                .map(|i| i.index)
+        };
+
+        // An empty list: Enter edits the "empty" slot; each value goes on to
+        // a new item at the end, an empty one ends.
+        grid(&mut app, GridEvent::Select { row: 1, column: 2 });
+        grid(&mut app, GridEvent::StartEdit { initial: None });
+        assert_eq!(editing(&app), Some(0));
+        enter(&mut app, "x");
+        assert_eq!(tags(&app, 1).as_deref(), Some("[x]"));
+        assert_eq!(editing(&app), Some(1), "goes on at the end");
+        enter(&mut app, "y");
+        enter(&mut app, "");
+        assert!(app.edit.is_none());
+        assert_eq!(tags(&app, 1).as_deref(), Some("[x, y]"));
+
+        // Editing the last item also goes on at the end.
+        grid(
+            &mut app,
+            GridEvent::SelectItem {
+                row: 0,
+                column: 2,
+                item: 1,
+            },
+        );
+        grid(&mut app, GridEvent::StartEdit { initial: None });
+        assert_eq!(app.edit.as_ref().unwrap().text, "b");
+        enter(&mut app, "B");
+        assert_eq!(editing(&app), Some(2));
+        enter(&mut app, "");
+        assert_eq!(tags(&app, 0).as_deref(), Some("[a, B]"));
+
+        // Insert a null in the middle, delete it, set an item to null.
+        grid(
+            &mut app,
+            GridEvent::SelectItem {
+                row: 0,
+                column: 2,
+                item: 1,
+            },
+        );
+        grid(&mut app, GridEvent::InsertRows);
+        assert_eq!(tags(&app, 0).as_deref(), Some("[a, null, B]"));
+        grid(&mut app, GridEvent::DeleteRows);
+        assert_eq!(tags(&app, 0).as_deref(), Some("[a, B]"));
+        grid(&mut app, GridEvent::Navigate(Nav::Up));
+        grid(&mut app, GridEvent::ClearCell);
+        assert_eq!(tags(&app, 0).as_deref(), Some("[null, B]"));
+
+        // Typing on a list cell adds an item at the end; a null list too.
+        grid(&mut app, GridEvent::Select { row: 3, column: 2 });
+        grid(
+            &mut app,
+            GridEvent::StartEdit {
+                initial: Some("z".into()),
+            },
+        );
+        let _ = app.update(Message::CommitEdit);
+        assert_eq!(tags(&app, 3).as_deref(), Some("[c, null, d, z]"));
+        let _ = app.update(Message::CommitEdit);
+        grid(&mut app, GridEvent::Select { row: 2, column: 2 });
+        grid(&mut app, GridEvent::StartEdit { initial: None });
+        enter(&mut app, "q");
+        assert_eq!(tags(&app, 2).as_deref(), Some("[q]"));
+    }
+
+    #[test]
     fn edit_nested_values_and_expand_explode() {
         use veta_core::display::PathPart;
         let dir = TempDir::new();
@@ -5457,13 +5698,20 @@ mod tests {
             Some("{name: Ana, home: {x: 5, y: 60}}")
         );
 
-        // Whole cells edit as JSON in the cell editor.
+        // Lists edit item by item; other nested cells as JSON.
         let _ = app.update(Message::Grid(id, GridEvent::Select { row: 1, column: 2 }));
         let _ = app.update(Message::Grid(id, GridEvent::StartEdit { initial: None }));
-        assert_eq!(app.edit.as_ref().unwrap().text, "[]");
-        let _ = app.update(Message::EditInput(r#"["x", "y"]"#.into()));
-        let _ = app.update(Message::CommitEdit);
+        for text in ["x", "y", ""] {
+            let _ = app.update(Message::EditInput(text.into()));
+            let _ = app.update(Message::CommitEdit);
+        }
         assert_eq!(cell(&app, 1, "tags").as_deref(), Some("[x, y]"));
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 1, column: 4 }));
+        let _ = app.update(Message::Grid(id, GridEvent::StartEdit { initial: None }));
+        assert_eq!(app.edit.as_ref().unwrap().text, "{}");
+        let _ = app.update(Message::EditInput(r#"{"a": 1}"#.into()));
+        let _ = app.update(Message::CommitEdit);
+        assert_eq!(cell(&app, 1, "scores").as_deref(), Some("{a: 1}"));
 
         // Column menu: expand the struct, explode the list.
         let _ = app.update(Message::Grid(

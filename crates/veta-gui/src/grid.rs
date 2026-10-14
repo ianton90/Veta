@@ -135,6 +135,13 @@ pub enum GridEvent {
     ToggleItems {
         row: usize,
     },
+    /// An item of an open list cell was clicked (`item` may be the list's
+    /// length: the slot for a new item).
+    SelectItem {
+        row: usize,
+        column: usize,
+        item: usize,
+    },
     /// Right-click; `position` is in window coordinates.
     ContextMenu {
         target: MenuTarget,
@@ -155,6 +162,8 @@ pub enum Selection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuTarget {
     Cell,
+    /// An item of an open list cell.
+    Item,
     /// The empty area around the cells (e.g. a table with no rows).
     Blank,
     Rows,
@@ -193,6 +202,8 @@ struct Column {
     expandable: bool,
     /// Lists or maps: cells show a summary and can open into items.
     items: bool,
+    /// Lists whose items can be edited, added and removed in place.
+    list: bool,
     /// The expanded struct whose first field this is (collapse button).
     collapses: Option<Vec<String>>,
 }
@@ -233,6 +244,7 @@ fn display_columns(schema: &Schema, expanded: &BTreeSet<Vec<String>>) -> Vec<Col
             source,
             expandable: matches!(data_type, DataType::Struct(c) if !c.is_empty()),
             items: has_items(data_type),
+            list: matches!(data_type, DataType::List(_) | DataType::LargeList(_)),
             data_type: data_type.clone(),
             type_name: type_name(data_type),
             numeric: is_numeric(data_type),
@@ -282,6 +294,8 @@ pub struct GridView {
     body_width: f32,
     scroll_x: f32,
     selected: Option<(usize, usize)>,
+    /// Selected item of the selected (open, list) cell.
+    item: Option<usize>,
     /// Whole-row selection as (anchor, end), inclusive, set by clicking row
     /// numbers.
     rows: Option<(usize, usize)>,
@@ -308,14 +322,30 @@ pub struct GridView {
 /// The items listed in an open list or map cell.
 #[derive(Debug, Clone, Default)]
 struct Items {
-    items: Vec<(String, Option<String>)>,
+    items: Vec<veta_core::display::ListItem>,
     more: usize,
+    /// An editable list (see [`Column::list`]).
+    list: bool,
 }
 
 impl Items {
-    /// Screen lines the items take.
-    fn lines(&self) -> usize {
-        self.items.len() + usize::from(self.more > 0)
+    /// Screen lines the items take, with the slot for a new item when the
+    /// list is empty or `appending`.
+    fn lines(&self, appending: bool) -> usize {
+        self.items.len() + usize::from(self.more > 0 || self.has_slot(appending))
+    }
+
+    /// Whether the slot for a new item is shown.
+    fn has_slot(&self, appending: bool) -> bool {
+        self.list && self.more == 0 && (self.items.is_empty() || appending)
+    }
+
+    /// Items that can be selected: the items and the slot, if shown.
+    fn selectable(&self, appending: bool) -> usize {
+        if !self.list {
+            return 0;
+        }
+        self.items.len() + usize::from(self.has_slot(appending))
     }
 }
 
@@ -348,6 +378,7 @@ impl GridView {
             body_width: 800.0,
             scroll_x: 0.0,
             selected: None,
+            item: None,
             rows: None,
             cols: None,
             window_start: 0,
@@ -410,7 +441,53 @@ impl GridView {
     /// Text to edit the selected cell with (see [`Self::edit_value`]).
     pub fn selected_edit_value(&self) -> Option<Option<&str>> {
         let (row, column) = self.selected?;
+        if let Some(item) = self.item {
+            let items = self.items(row, column)?;
+            return Some(match items.items.get(item) {
+                Some(i) => i.edit.as_deref(),
+                None => Some(""),
+            });
+        }
         self.edit_value(row, column)
+    }
+
+    /// The selected list item: its index, the number of items and the item
+    /// type. The list is at [`Self::selected_field`] in the cell. The index
+    /// equals the number of items for the slot of a new item.
+    pub fn selected_item(&self) -> Option<(usize, usize, DataType)> {
+        let (row, column) = self.selected?;
+        let item = self.item?;
+        let len = self.items(row, column)?.items.len();
+        let (DataType::List(f) | DataType::LargeList(f)) = &self.columns[column].data_type else {
+            return None;
+        };
+        Some((item, len, f.data_type().clone()))
+    }
+
+    /// Whether the selected cell is a list whose items can be edited.
+    pub fn selected_is_list(&self) -> bool {
+        self.selected
+            .is_some_and(|(_, c)| self.columns.get(c).is_some_and(|c| c.list))
+    }
+
+    /// Opens the selected cell's row and selects item `item` of it (`None`:
+    /// the cell itself). An item past the end selects the new-item slot.
+    pub fn select_item(&mut self, item: Option<usize>, document: &Document) {
+        let Some((row, column)) = self.selected else {
+            return;
+        };
+        if item.is_some() && !self.open_rows.contains(&row) {
+            self.open_rows.insert(row);
+            self.load(document, true);
+        }
+        let len = self.items(row, column).map(|i| i.items.len());
+        self.item = match (item, len) {
+            (Some(i), Some(len)) => Some(i.min(len)),
+            _ => None,
+        };
+        self.rows = None;
+        self.cols = None;
+        self.reveal(row, column);
     }
 
     /// Screen columns showing document columns `sources`.
@@ -548,6 +625,7 @@ impl GridView {
         if range.is_empty() || range.end > self.columns.len() {
             return;
         }
+        self.item = None;
         self.rows = None;
         self.cols = Some((range.start, range.end - 1));
         let row = self.selected.map_or(self.first_row, |(r, _)| r);
@@ -563,6 +641,7 @@ impl GridView {
             return;
         }
         let column = self.selected.map_or(0, |(_, c)| c);
+        self.item = None;
         self.rows = Some((range.start, range.end - 1));
         self.cols = None;
         self.selected = Some((range.start, column));
@@ -643,10 +722,14 @@ impl GridView {
             self.open_rows.clear();
         }
         self.num_rows = num_rows;
+        let before = self.selected;
         self.selected = self.selected.and_then(|(r, c)| {
             (self.num_rows > 0 && !self.columns.is_empty())
                 .then(|| (r.min(self.num_rows - 1), c.min(self.columns.len() - 1)))
         });
+        if self.selected != before {
+            self.item = None;
+        }
         let n = self.columns.len();
         self.cols = self
             .cols
@@ -677,8 +760,15 @@ impl GridView {
                 first_row,
                 scroll_x,
             } => self.set_scroll(first_row, scroll_x),
+            GridEvent::SelectItem { row, column, item } => {
+                if row < self.num_rows && column < self.columns.len() {
+                    self.selected = Some((row, column));
+                    self.select_item(Some(item), document);
+                }
+            }
             GridEvent::Select { row, column } => {
                 if row < self.num_rows && column < self.columns.len() {
+                    self.item = None;
                     self.selected = Some((row, column));
                     self.rows = None;
                     self.cols = None;
@@ -686,6 +776,7 @@ impl GridView {
                 }
             }
             GridEvent::SelectRows { row, extend } => {
+                self.item = None;
                 if row < self.num_rows && !self.columns.is_empty() {
                     let anchor = match (extend, self.rows, self.selected) {
                         (true, Some((anchor, _)), _) => anchor,
@@ -700,6 +791,7 @@ impl GridView {
                 }
             }
             GridEvent::SelectColumns { column, extend } => {
+                self.item = None;
                 if column < self.columns.len() {
                     let anchor = match (extend, self.cols, self.selected) {
                         (true, Some((anchor, _)), _) => anchor,
@@ -719,7 +811,10 @@ impl GridView {
             GridEvent::Navigate(nav) => {
                 self.rows = None;
                 self.cols = None;
-                self.navigate(nav);
+                if !self.navigate_items(nav) {
+                    self.item = None;
+                    self.navigate(nav);
+                }
             }
             GridEvent::Expand { column } => {
                 if let Some(c) = self.columns.get(column).filter(|c| c.expandable) {
@@ -803,8 +898,33 @@ impl GridView {
     /// Screen lines `row` takes: one, plus its items while open.
     fn row_lines(&self, row: usize) -> usize {
         self.details.get(&row).map_or(1, |columns| {
-            1 + columns.iter().map(Items::lines).max().unwrap_or(0)
+            let lines = columns
+                .iter()
+                .enumerate()
+                .map(|(c, items)| items.lines(self.appending(row, c)))
+                .max()
+                .unwrap_or(0);
+            1 + lines
         })
+    }
+
+    /// Whether the slot for a new item of cell (`row`, `column`) is selected.
+    fn appending(&self, row: usize, column: usize) -> bool {
+        self.selected == Some((row, column))
+            && self.item.is_some()
+            && self.item == self.items(row, column).map(|i| i.items.len())
+    }
+
+    /// The listed items of a cell of an open row.
+    fn items(&self, row: usize, column: usize) -> Option<&Items> {
+        self.details.get(&row)?.get(column)
+    }
+
+    /// Items that can be selected in cell (`row`, `column`): 0 unless it is
+    /// an editable list in an open row.
+    fn selectable_items(&self, row: usize, column: usize) -> usize {
+        self.items(row, column)
+            .map_or(0, |i| i.selectable(self.appending(row, column)))
     }
 
     /// Rows from `first` that fit fully in the body (at least one).
@@ -893,6 +1013,33 @@ impl GridView {
         self.set_scroll(first_row, scroll_x);
     }
 
+    /// Up and down through the items of open list cells. Returns whether
+    /// it handled `nav`.
+    fn navigate_items(&mut self, nav: Nav) -> bool {
+        let Some((row, column)) = self.selected else {
+            return false;
+        };
+        let count = self.selectable_items(row, column);
+        match (nav, self.item) {
+            (Nav::Down, None) if count > 0 => self.item = Some(0),
+            (Nav::Down, Some(i)) if i + 1 < count => self.item = Some(i + 1),
+            (Nav::Down, Some(_)) => {
+                self.item = None;
+                return false;
+            }
+            (Nav::Up, Some(0)) => self.item = None,
+            (Nav::Up, Some(i)) => self.item = Some(i - 1),
+            (Nav::Up, None) if row > 0 && self.selectable_items(row - 1, column) > 0 => {
+                let items = self.items(row - 1, column).map_or(0, |i| i.items.len());
+                self.selected = Some((row - 1, column));
+                self.item = Some(items.saturating_sub(1));
+            }
+            _ => return false,
+        }
+        self.reveal(row, column);
+        true
+    }
+
     fn navigate(&mut self, nav: Nav) {
         if self.num_rows == 0 || self.columns.is_empty() {
             return;
@@ -955,7 +1102,11 @@ impl GridView {
                         let items = veta_core::display::list_items(array, local, MAX_ITEMS)
                             .unwrap_or_default();
                         let more = veta_core::display::item_count(array, local) - items.len();
-                        Items { items, more }
+                        let list = matches!(
+                            array.data_type(),
+                            DataType::List(_) | DataType::LargeList(_)
+                        );
+                        Items { items, more, list }
                     })
                     .collect();
                 details.insert(row, columns);
@@ -1008,8 +1159,12 @@ impl GridView {
 
     /// Whether a loaded list or map cell has items to open.
     fn has_items(&self, row: usize, column: usize) -> bool {
-        self.columns.get(column).is_some_and(|c| c.items)
-            && matches!(self.value(row, column), Some(Some(v)) if v != "[]" && v != "{}")
+        // Editable lists open even when empty, to add items.
+        self.columns
+            .get(column)
+            .is_some_and(|c| c.list && self.value(row, column).is_some())
+            || self.columns.get(column).is_some_and(|c| c.items)
+                && matches!(self.value(row, column), Some(Some(v)) if v != "[]" && v != "{}")
     }
 
     fn cell(&self, row: usize, column: usize) -> Option<&Option<String>> {
@@ -1062,13 +1217,16 @@ pub fn grid<'a, Message>(
     }
 }
 
+/// A clicked cell: row, column and list item.
+type ClickedCell = (usize, usize, Option<usize>);
+
 #[derive(Debug, Default)]
 struct State {
     focused: bool,
     drag: Drag,
     reported: Option<(usize, u32)>,
     /// Time and cell of the last click, to detect double-clicks.
-    last_click: Option<(Instant, (usize, usize))>,
+    last_click: Option<(Instant, ClickedCell)>,
     /// Time and column of the last press on a column edge.
     last_edge_click: Option<(Instant, usize)>,
     modifiers: keyboard::Modifiers,
@@ -1250,10 +1408,15 @@ impl<Message> Grid<'_, Message> {
             .visible_columns(regions.body)
             .into_iter()
             .find(|&(c, _, _)| c == column)?;
+        // An item: its line, after the item labels' indent.
+        let (line, indent) = match self.view.item {
+            Some(item) => (line + 1 + item, regions.m.text_size + 2.0),
+            None => (line, 0.0),
+        };
         let rect = Rectangle {
-            x,
+            x: x + indent,
             y: regions.body.y + line as f32 * regions.m.row_height,
-            width,
+            width: width - indent,
             height: regions.m.row_height,
         };
         rect.intersection(&regions.body)
@@ -1346,6 +1509,21 @@ impl<Message> Grid<'_, Message> {
             .into_iter()
             .find(|&(_, left, w)| x >= left && x < left + w)
             .map(|(i, _, _)| i)
+    }
+
+    /// The item of an open list cell under `position`: (row, column, item).
+    fn item_at(&self, regions: &Regions, position: Point) -> Option<(usize, usize, usize)> {
+        if !regions.body.contains(position) {
+            return None;
+        }
+        let line = ((position.y - regions.body.y) / regions.m.row_height) as usize;
+        let (row, sub) = self.view.row_at_line(line)?;
+        let item = sub.checked_sub(1)?;
+        let (column, _, _) = self
+            .visible_columns(regions.body)
+            .into_iter()
+            .find(|&(_, x, w)| position.x >= x && position.x < x + w)?;
+        (item < self.view.selectable_items(row, column)).then_some((row, column, item))
     }
 
     fn cell_at(&self, regions: &Regions, position: Point) -> Option<(usize, usize)> {
@@ -1598,21 +1776,31 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                         }
                     }
                 } else if let Some((row, column)) = self.cell_at(&regions, position) {
-                    shell.publish((self.on_event)(GridEvent::Select { row, column }));
-                    if self.items_toggle_at(&regions, position) == Some(row) {
+                    let item = self.item_at(&regions, position).map(|(_, _, i)| i);
+                    match item {
+                        Some(item) => {
+                            shell.publish((self.on_event)(GridEvent::SelectItem {
+                                row,
+                                column,
+                                item,
+                            }));
+                        }
+                        None => shell.publish((self.on_event)(GridEvent::Select { row, column })),
+                    }
+                    if item.is_none() && self.items_toggle_at(&regions, position) == Some(row) {
                         shell.publish((self.on_event)(GridEvent::ToggleItems { row }));
                         state.last_click = None;
                         return;
                     }
                     let now = Instant::now();
                     let double = state.last_click.is_some_and(|(at, cell)| {
-                        cell == (row, column) && now.duration_since(at) < DOUBLE_CLICK
+                        cell == (row, column, item) && now.duration_since(at) < DOUBLE_CLICK
                     });
                     if double {
                         state.last_click = None;
                         shell.publish((self.on_event)(GridEvent::StartEdit { initial: None }));
                     } else {
-                        state.last_click = Some((now, (row, column)));
+                        state.last_click = Some((now, (row, column, item)));
                     }
                 }
             }
@@ -1623,7 +1811,10 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 state.focused = true;
                 shell.capture_event();
                 let in_rows = |row: usize| view.selected_rows().is_some_and(|r| r.contains(&row));
-                let target = if let Some((row, column)) = self.cell_at(&regions, position) {
+                let target = if let Some((row, column, item)) = self.item_at(&regions, position) {
+                    shell.publish((self.on_event)(GridEvent::SelectItem { row, column, item }));
+                    Some(MenuTarget::Item)
+                } else if let Some((row, column)) = self.cell_at(&regions, position) {
                     if !(view.rows.is_some() && in_rows(row)) {
                         shell.publish((self.on_event)(GridEvent::Select { row, column }));
                     }
@@ -1968,7 +2159,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     continue;
                 };
                 let indent = m.text_size + 2.0;
-                for (k, (label, value)) in items.items.iter().enumerate() {
+                for (k, item) in items.items.iter().enumerate() {
+                    let (label, value) = (&item.label, &item.text);
                     let line_cell = Rectangle {
                         x: x + indent,
                         y: y + (k + 1) as f32 * m.row_height,
@@ -2008,6 +2200,32 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                         color,
                         clip,
                     );
+                }
+                // The slot for a new item.
+                if items.has_slot(view.appending(row, column)) {
+                    let line_cell = Rectangle {
+                        x: x + indent,
+                        y: y + (items.items.len() + 1) as f32 * m.row_height,
+                        width: width - indent,
+                        height: m.row_height,
+                    };
+                    if let Some(clip) = line_cell.intersection(&regions.body) {
+                        let text = if items.items.is_empty() {
+                            "empty".to_owned()
+                        } else {
+                            items.items.len().to_string()
+                        };
+                        draw_text(
+                            renderer,
+                            text,
+                            line_cell,
+                            false,
+                            m.type_text_size,
+                            Font::DEFAULT,
+                            muted,
+                            clip,
+                        );
+                    }
                 }
                 if items.more > 0 {
                     let line_cell = Rectangle {
@@ -2054,10 +2272,14 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             && let Some(&(_, line, _)) = rows_shown.iter().find(|(r, _, _)| *r == row)
             && let Some(&(_, x, width)) = columns.iter().find(|(c, _, _)| *c == column)
         {
+            let (line, indent) = match view.item {
+                Some(item) => (line + 1 + item, m.text_size + 2.0),
+                None => (line, 0.0),
+            };
             let rect = Rectangle {
-                x,
+                x: x + indent,
+                width: width - indent,
                 y: row_y(line),
-                width,
                 height: m.row_height,
             };
             if let Some(clip) = rect.intersection(&regions.body) {
@@ -2460,7 +2682,9 @@ mod tests {
         resized(&mut view, &doc, 4);
         assert_eq!(view.value(0, 2), Some(Some("[2 items]")));
         assert_eq!(view.value(0, 4), Some(Some("{2 entries}")));
-        assert!(view.has_items(3, 2) && !view.has_items(1, 2) && !view.has_items(0, 0));
+        assert!(view.has_items(3, 2) && !view.has_items(0, 0));
+        assert!(view.has_items(1, 2), "empty lists open, to add items");
+        assert!(!view.has_items(1, 4), "empty maps don't");
 
         view.apply(GridEvent::ToggleItems { row: 3 }, &doc);
         // Row 3: tags has 3 items, scores 1 entry.

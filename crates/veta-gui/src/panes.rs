@@ -873,6 +873,9 @@ pub fn formula_bar<'a>(
                     for part in path {
                         name = format!("{name}.{part}");
                     }
+                    if let Some((item, _, _)) = tab.grid.selected_item() {
+                        name = format!("{name}[{item}]");
+                    }
                     format!("{name} · ")
                 })
                 .unwrap_or_default();
@@ -1066,6 +1069,23 @@ pub fn menu_sections(
             vec![
                 entry(Icon::InsertRows, "Add row", "Ctrl++", MenuItem::AddRow),
                 entry(Icon::Plus, "Add column…", "", MenuItem::AddColumn),
+            ],
+        ));
+        return sections;
+    }
+    if target == MenuTarget::Item {
+        sections.push((
+            "List item",
+            vec![
+                entry(Icon::Rename, "Edit item", "Enter", MenuItem::EditCell),
+                entry(
+                    Icon::InsertRows,
+                    "Insert item above",
+                    "Ctrl++",
+                    MenuItem::InsertItem,
+                ),
+                entry(Icon::Trash, "Delete item", "Ctrl+-", MenuItem::DeleteItem),
+                entry(Icon::Eraser, "Set to null", "Delete", MenuItem::ClearCell),
             ],
         ));
         return sections;
