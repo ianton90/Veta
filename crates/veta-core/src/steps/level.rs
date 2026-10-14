@@ -195,6 +195,18 @@ impl Level {
                 custom.output_fields(&self.schema)?,
                 self.num_rows,
             )),
+            Step::AddField {
+                column,
+                name,
+                data_type,
+            } => Ok(with_fields(
+                super::nested::change_field_fields(&self.schema, column, name, Some(data_type))?,
+                self.num_rows,
+            )),
+            Step::RemoveField { column, name } => Ok(with_fields(
+                super::nested::change_field_fields(&self.schema, column, name, None)?,
+                self.num_rows,
+            )),
             Step::CombineStruct { columns, name } => Ok(with_fields(
                 super::nested::combine_fields(&self.schema, columns, name)?,
                 self.num_rows,

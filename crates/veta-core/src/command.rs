@@ -104,6 +104,17 @@ pub enum Command {
     ExplodeList {
         column: String,
     },
+    /// Adds a null field at the end of a struct column.
+    AddField {
+        column: String,
+        name: String,
+        data_type: DataType,
+    },
+    /// Removes a field from a struct column.
+    RemoveField {
+        column: String,
+        name: String,
+    },
     /// One row per group of equal keys, other chosen columns as lists.
     CollectList {
         keys: Vec<String>,

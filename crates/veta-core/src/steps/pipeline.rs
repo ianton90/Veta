@@ -384,6 +384,9 @@ impl Pipeline {
                 &schema,
             ),
             Step::Merge(merge) => merge.apply(&self.read_level(previous, range)?, &schema),
+            Step::AddField { column, .. } | Step::RemoveField { column, .. } => {
+                super::nested::change_field(&self.read_level(previous, range)?, column, &schema)
+            }
             Step::CombineStruct { columns, name } => {
                 super::nested::combine(&self.read_level(previous, range)?, columns, name, &schema)
             }

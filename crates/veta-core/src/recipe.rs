@@ -192,6 +192,16 @@ enum RecipeStep {
         keys: Vec<String>,
         columns: Vec<String>,
     },
+    AddField {
+        column: String,
+        name: String,
+        #[serde(rename = "type")]
+        data_type: String,
+    },
+    RemoveField {
+        column: String,
+        name: String,
+    },
 }
 
 fn dot() -> char {
@@ -409,6 +419,19 @@ impl RecipeStep {
                 column: column.clone(),
                 all_levels: *all_levels,
             },
+            Step::AddField {
+                column,
+                name,
+                data_type,
+            } => RecipeStep::AddField {
+                column: column.clone(),
+                name: name.clone(),
+                data_type: type_name(data_type),
+            },
+            Step::RemoveField { column, name } => RecipeStep::RemoveField {
+                column: column.clone(),
+                name: name.clone(),
+            },
             Step::CollectList { keys, columns } => RecipeStep::CollectList {
                 keys: keys.clone(),
                 columns: columns.clone(),
@@ -555,6 +578,16 @@ impl RecipeStep {
             RecipeStep::ExplodeList { column } => Step::ExplodeList { column },
             RecipeStep::CombineStruct { columns, name } => Step::CombineStruct { columns, name },
             RecipeStep::CollectList { keys, columns } => Step::CollectList { keys, columns },
+            RecipeStep::AddField {
+                column,
+                name,
+                data_type,
+            } => Step::AddField {
+                column,
+                name,
+                data_type: parse_type(&data_type)?,
+            },
+            RecipeStep::RemoveField { column, name } => Step::RemoveField { column, name },
             RecipeStep::CustomColumn {
                 name,
                 expression,
@@ -716,6 +749,15 @@ mod tests {
             Step::CombineStruct {
                 columns: vec!["id".into(), "m".into()],
                 name: "s".into(),
+            },
+            Step::AddField {
+                column: "s".into(),
+                name: "extra".into(),
+                data_type: DataType::new_list(DataType::Int64, true),
+            },
+            Step::RemoveField {
+                column: "s".into(),
+                name: "extra".into(),
             },
             Step::CollectList {
                 keys: vec!["s".into()],

@@ -422,6 +422,8 @@ enum MenuItem {
     CollectList,
     InsertItem,
     InsertItemBelow,
+    AddField,
+    RemoveField,
     DeleteItem,
     /// Expand a struct column and the structs inside it.
     ExpandAll,
@@ -458,17 +460,20 @@ struct StructField {
     data_type: veta_core::arrow::datatypes::DataType,
 }
 
-/// An item of a list in a cell (or in a struct field of it).
+/// An item of a list, or a field of a struct, in a cell (or in a struct
+/// field of it).
 #[derive(Debug, Clone, PartialEq)]
 struct ListItem {
     row: usize,
     column: String,
-    /// Struct fields down to the list (empty: the cell is the list).
+    /// Struct fields down to the list or struct (empty: the cell is it).
     list: Vec<String>,
-    /// Item index; the number of items for a new item.
+    /// Item index (the number of items for a new item), or field index.
     index: usize,
     len: usize,
     data_type: veta_core::arrow::datatypes::DataType,
+    /// The field's name, for a struct field.
+    field: Option<String>,
 }
 
 /// Inserting or removing a list item (see `App::insert_or_remove_item`).
@@ -1061,6 +1066,9 @@ impl App {
                     && let Some(id) = self.active
                 {
                     match item {
+                        Some(item) if item.field.is_some() => {
+                            self.grid_event(id, GridEvent::Navigate(Nav::Down));
+                        }
                         Some(item) if item.index == item.len && empty => {
                             self.select_item(id, None);
                         }
@@ -1092,6 +1100,8 @@ impl App {
                 match item {
                     MenuItem::KeepRows => self.keep_rows(id),
                     MenuItem::EditCell => return self.start_edit(id, None),
+                    MenuItem::AddField => return self.open_add_field(id),
+                    MenuItem::RemoveField => self.remove_field(id),
                     MenuItem::InsertItem | MenuItem::InsertItemBelow | MenuItem::DeleteItem => {
                         if let Some(list_item) = self.selected_list_item(id) {
                             let change = match item {
@@ -3739,6 +3749,52 @@ impl App {
         ])
     }
 
+    /// Opens the Add field dialog on the selected struct column.
+    fn open_add_field(&mut self, id: DocumentId) -> Task<Message> {
+        let column = self.selected_column_names(id).into_iter().next();
+        let is_struct = column.as_ref().is_some_and(|c| {
+            self.workbook.get(id).is_some_and(|d| {
+                d.schema().field_with_name(c).is_ok_and(|f| {
+                    matches!(
+                        f.data_type(),
+                        veta_core::arrow::datatypes::DataType::Struct(_)
+                    )
+                })
+            })
+        });
+        match column {
+            Some(column) if is_struct => {
+                self.open_column_dialog(id, ColumnDialog::add_field(column))
+            }
+            _ => {
+                self.errors.push("Select a struct column first.".into());
+                Task::none()
+            }
+        }
+    }
+
+    /// Removes the selected field of an open struct cell from its column.
+    fn remove_field(&mut self, id: DocumentId) {
+        let Some(item) = self.selected_list_item(id) else {
+            return;
+        };
+        let Some(name) = item.field else {
+            return;
+        };
+        if !item.list.is_empty() {
+            self.errors
+                .push("Only fields of top-level struct columns can be removed.".into());
+            return;
+        }
+        self.execute(
+            id,
+            Command::RemoveField {
+                column: item.column,
+                name,
+            },
+        );
+    }
+
     fn rename_column(&mut self, id: DocumentId) -> Task<Message> {
         let Some(columns) = self.selected_columns(id) else {
             return Task::none();
@@ -3827,15 +3883,16 @@ impl App {
     fn selected_list_item(&self, id: DocumentId) -> Option<ListItem> {
         let (row, column) = self.selected_cell(id)?;
         let tab = self.tabs.iter().find(|t| t.id == id)?;
-        let (index, len, data_type) = tab.grid.selected_item()?;
+        let item = tab.grid.selected_item()?;
         let list = tab.grid.selected_field()?.0.to_vec();
         Some(ListItem {
             row,
             column,
             list,
-            index,
-            len,
-            data_type,
+            index: item.index,
+            len: item.len,
+            data_type: item.data_type,
+            field: item.field,
         })
     }
 
@@ -3851,12 +3908,25 @@ impl App {
             .get(id)
             .and_then(|d| d.schema().index_of(&item.column).ok())
             .ok_or("the column no longer exists")?;
-        let pointer: Vec<_> = item
+        let mut pointer: Vec<_> = item
             .list
             .iter()
             .cloned()
             .map(veta_core::display::PathPart::Field)
             .collect();
+        // A struct field: only its value can be set.
+        if let Some(field) = &item.field {
+            let veta_core::values::ListEdit::Set {
+                text, item_type, ..
+            } = change
+            else {
+                return Err("struct fields can't be inserted or removed here".into());
+            };
+            pointer.push(veta_core::display::PathPart::Field(field.clone()));
+            return self.change_nested_cell(id, item.row, index, |json| {
+                veta_core::values::set_nested(json, &pointer, *text, item_type)
+            });
+        }
         self.change_nested_cell(id, item.row, index, |json| {
             veta_core::values::edit_list(json, &pointer, change)
         })
@@ -3866,6 +3936,9 @@ impl App {
     /// and selects the new item (or the one now in its place).
     fn insert_or_remove_item(&mut self, id: DocumentId, item: &ListItem, change: ItemChange) {
         use veta_core::values::ListEdit;
+        if item.field.is_some() {
+            return;
+        }
         let (change, select) = match change {
             ItemChange::InsertAbove => {
                 let at = item.index.min(item.len);
@@ -3936,10 +4009,13 @@ impl App {
         // Lists are edited item by item: Enter edits the first item, typing
         // starts a new one at the end.
         if let Some(tab) = self.tabs.iter().find(|t| t.id == id)
-            && tab.grid.selected_is_list()
+            && let Some(kind) = tab.grid.selected_opens_items()
             && tab.grid.selected_item().is_none()
         {
-            let item = if initial.is_some() { usize::MAX } else { 0 };
+            let item = match kind {
+                crate::grid::OpenKind::List if initial.is_some() => usize::MAX,
+                _ => 0,
+            };
             self.select_item(id, Some(item));
         }
         let text = initial.unwrap_or_else(|| self.cell_text(id).unwrap_or_default());
@@ -5597,6 +5673,108 @@ mod tests {
         let debug = format!("{dialog:?}");
         assert!(debug.contains("choice: Struct"), "{debug}");
         assert!(debug.contains(r#"("y", Text)"#), "{debug}");
+    }
+
+    #[test]
+    fn struct_fields_edit_in_place() {
+        use crate::dialogs::{TypeChoice, TypeOption};
+        let dir = TempDir::new();
+        let path = dir.join("n.parquet");
+        fixtures::nested(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let grid = |app: &mut App, event| {
+            let _ = app.update(Message::Grid(id, event));
+        };
+        let enter = |app: &mut App, text: &str| {
+            let _ = app.update(Message::EditInput(text.into()));
+            let _ = app.update(Message::CommitEdit);
+        };
+        let cell = |app: &App, row: usize, column: &str| {
+            let doc = app.workbook.get(id).unwrap();
+            let i = doc.schema().index_of(column).unwrap();
+            veta_core::display::format_batch(&doc.read(row..row + 1).unwrap()).unwrap()[0][i]
+                .clone()
+        };
+        let menu = |app: &mut App, target, item| {
+            app.menu = Some(ContextMenu {
+                document: id,
+                target,
+                position: iced::Point::ORIGIN,
+            });
+            let _ = app.update(Message::Menu(item));
+        };
+
+        // Enter on a struct cell edits its first field; Enter moves on.
+        grid(&mut app, GridEvent::Select { row: 0, column: 1 });
+        grid(&mut app, GridEvent::StartEdit { initial: None });
+        assert_eq!(app.edit.as_ref().unwrap().text, "1");
+        enter(&mut app, "10");
+        assert_eq!(cell(&app, 0, "point").as_deref(), Some("{x: 10, y: 2}"));
+        assert_eq!(
+            app.selected_list_item(id).unwrap().field.as_deref(),
+            Some("y")
+        );
+        grid(&mut app, GridEvent::ClearCell);
+        assert_eq!(cell(&app, 0, "point").as_deref(), Some("{x: 10, y: null}"));
+
+        // A null struct gets the field set.
+        grid(&mut app, GridEvent::Select { row: 2, column: 1 });
+        grid(&mut app, GridEvent::StartEdit { initial: None });
+        enter(&mut app, "4");
+        assert_eq!(cell(&app, 2, "point").as_deref(), Some("{x: 4, y: null}"));
+
+        // Nested fields edit as JSON.
+        grid(
+            &mut app,
+            GridEvent::SelectItem {
+                row: 0,
+                column: 5,
+                item: 1,
+            },
+        );
+        grid(&mut app, GridEvent::StartEdit { initial: None });
+        assert_eq!(app.edit.as_ref().unwrap().text, r#"{"x":5,"y":6}"#);
+        enter(&mut app, r#"{"x": 7}"#);
+        assert_eq!(
+            cell(&app, 0, "owner").as_deref(),
+            Some("{name: Ana, home: {x: 7, y: null}}")
+        );
+
+        // Add a field from the field menu, then remove one.
+        grid(
+            &mut app,
+            GridEvent::SelectItem {
+                row: 0,
+                column: 1,
+                item: 0,
+            },
+        );
+        menu(&mut app, MenuTarget::Field, MenuItem::AddField);
+        let column = |app: &mut App, message| {
+            let _ = app.update(Message::ColumnDialog(message));
+        };
+        column(&mut app, ColumnMessage::Name("z".into()));
+        column(
+            &mut app,
+            ColumnMessage::Type(TypeOption::Plain(TypeChoice::Integer)),
+        );
+        column(&mut app, ColumnMessage::Submit);
+        assert!(app.dialog.is_none());
+        assert_eq!(
+            cell(&app, 0, "point").as_deref(),
+            Some("{x: 10, y: null, z: null}")
+        );
+        grid(
+            &mut app,
+            GridEvent::SelectItem {
+                row: 0,
+                column: 1,
+                item: 1,
+            },
+        );
+        menu(&mut app, MenuTarget::Field, MenuItem::RemoveField);
+        assert_eq!(cell(&app, 0, "point").as_deref(), Some("{x: 10, z: null}"));
     }
 
     #[test]

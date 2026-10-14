@@ -321,6 +321,22 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
             let step = Step::ExplodeList { column };
             Ok((step.describe(), Change::PushStep(step)))
         }
+        Command::AddField {
+            column,
+            name,
+            data_type,
+        } => {
+            let step = Step::AddField {
+                column,
+                name,
+                data_type,
+            };
+            Ok((step.describe(), Change::PushStep(step)))
+        }
+        Command::RemoveField { column, name } => {
+            let step = Step::RemoveField { column, name };
+            Ok((step.describe(), Change::PushStep(step)))
+        }
         Command::CollectList { keys, columns } => {
             let step = Step::CollectList { keys, columns };
             Ok((step.describe(), Change::PushStep(step)))
@@ -1337,6 +1353,61 @@ mod tests {
         );
         assert_eq!(cell(&saved, 2, "tags").as_deref(), Some("[1, 2]"));
         assert_eq!(cell(&saved, 0, "point"), None);
+    }
+
+    #[test]
+    fn add_and_remove_struct_fields() {
+        use arrow::datatypes::DataType;
+        let dir = TempDir::new();
+        let path = dir.join("n.parquet");
+        fixtures::nested(&path);
+        for options in [OpenOptions::default(), OpenOptions::paged()] {
+            let mut doc = Document::open(&path, options).unwrap();
+            let add = |name: &str, data_type| Command::AddField {
+                column: "point".into(),
+                name: name.into(),
+                data_type,
+            };
+            execute(&mut doc, add("z", DataType::Utf8)).unwrap();
+            assert_eq!(
+                cell(&doc, 0, "point").as_deref(),
+                Some("{x: 1, y: 2, z: null}")
+            );
+            assert_eq!(cell(&doc, 2, "point"), None, "null structs stay null");
+            assert!(
+                execute(&mut doc, add("x", DataType::Utf8)).is_err(),
+                "taken"
+            );
+            assert!(execute(&mut doc, add(" ", DataType::Utf8)).is_err());
+            execute(
+                &mut doc,
+                set_cell(0, "point", Some(r#"{"x": 1, "y": 2, "z": "a"}"#)),
+            )
+            .unwrap();
+            let remove = |name: &str| Command::RemoveField {
+                column: "point".into(),
+                name: name.into(),
+            };
+            execute(&mut doc, remove("x")).unwrap();
+            assert_eq!(cell(&doc, 0, "point").as_deref(), Some("{y: 2, z: a}"));
+            assert!(execute(&mut doc, remove("nope")).is_err());
+            assert!(
+                execute(
+                    &mut doc,
+                    Command::RemoveField {
+                        column: "id".into(),
+                        name: "x".into()
+                    }
+                )
+                .is_err()
+            );
+            assert_eq!(doc.steps()[0].describe(), "Added field point.z (string)");
+
+            let out = dir.join("fields.parquet");
+            doc.save(Some(out.clone())).unwrap();
+            let saved = Document::open(&out, OpenOptions::default()).unwrap();
+            assert_eq!(cell(&saved, 0, "point").as_deref(), Some("{y: 2, z: a}"));
+        }
     }
 
     #[test]

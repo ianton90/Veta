@@ -170,12 +170,15 @@ fn nested_items(
 ) -> Vec<Option<(Icon, String, &'static str, MenuItem)>> {
     match column_type {
         Some(DataType::Struct(fields)) => {
-            let mut items = vec![Some((
-                Icon::ListTree,
-                "Expand fields to columns".into(),
-                "",
-                MenuItem::ExpandStruct,
-            ))];
+            let mut items = vec![
+                Some((
+                    Icon::ListTree,
+                    "Expand fields to columns".into(),
+                    "",
+                    MenuItem::ExpandStruct,
+                )),
+                Some((Icon::Plus, "Add field…".into(), "", MenuItem::AddField)),
+            ];
             if fields
                 .iter()
                 .any(|f| matches!(f.data_type(), DataType::Struct(_)))
@@ -873,8 +876,11 @@ pub fn formula_bar<'a>(
                     for part in path {
                         name = format!("{name}.{part}");
                     }
-                    if let Some((item, _, _)) = tab.grid.selected_item() {
-                        name = format!("{name}[{item}]");
+                    if let Some(item) = tab.grid.selected_item() {
+                        name = match item.field {
+                            Some(field) => format!("{name}.{field}"),
+                            None => format!("{name}[{}]", item.index),
+                        };
                     }
                     format!("{name} · ")
                 })
@@ -1069,6 +1075,18 @@ pub fn menu_sections(
             vec![
                 entry(Icon::InsertRows, "Add row", "Ctrl++", MenuItem::AddRow),
                 entry(Icon::Plus, "Add column…", "", MenuItem::AddColumn),
+            ],
+        ));
+        return sections;
+    }
+    if target == MenuTarget::Field {
+        sections.push((
+            "Struct field",
+            vec![
+                entry(Icon::Rename, "Edit field", "Enter", MenuItem::EditCell),
+                entry(Icon::Eraser, "Set to null", "Delete", MenuItem::ClearCell),
+                entry(Icon::Plus, "Add field…", "", MenuItem::AddField),
+                entry(Icon::Trash, "Remove field", "", MenuItem::RemoveField),
             ],
         ));
         return sections;

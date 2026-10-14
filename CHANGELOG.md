@@ -30,7 +30,8 @@ While the major version is 0, minor versions may change behaviour.
   Struct columns open in the grid (header arrow) into editable field
   columns; list and map cells show a summary that opens into one line per
   item. List items edit in place, with items added at the end or inserted
-  and deleted anywhere.
+  and deleted anywhere; struct cells open into fields that edit in place.
+  Add or remove fields of struct columns.
 - Ribbon, light and dark themes (TOML), settings.
 
 **Command line (`veta-cli`)**

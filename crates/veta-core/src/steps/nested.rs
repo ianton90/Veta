@@ -132,6 +132,85 @@ pub(super) fn expand_levels(
     Ok(batch)
 }
 
+/// Fields after adding field `name` (`Some` type) to, or removing it from
+/// (`None`), the struct column `column`. Added fields go last.
+pub(super) fn change_field_fields(
+    schema: &Schema,
+    column: &str,
+    name: &str,
+    add: Option<&DataType>,
+) -> Result<Vec<Field>> {
+    let index = column_index(schema, column)?;
+    let DataType::Struct(children) = schema.field(index).data_type() else {
+        return Err(invalid(format!("{column} is not a struct column")));
+    };
+    let exists = children.iter().any(|f| f.name() == name);
+    let children: Vec<Field> = match add {
+        Some(data_type) => {
+            if name.trim().is_empty() {
+                return Err(invalid("field name cannot be empty".into()));
+            }
+            if exists {
+                return Err(invalid(format!("{column} already has a field {name:?}")));
+            }
+            let mut children: Vec<Field> = children.iter().map(|f| f.as_ref().clone()).collect();
+            children.push(Field::new(name, data_type.clone(), true));
+            children
+        }
+        None => {
+            if !exists {
+                return Err(invalid(format!("{column} has no field {name:?}")));
+            }
+            if children.len() == 1 {
+                return Err(invalid("a struct needs at least one field".into()));
+            }
+            children
+                .iter()
+                .filter(|f| f.name() != name)
+                .map(|f| f.as_ref().clone())
+                .collect()
+        }
+    };
+    let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+    fields[index] = schema
+        .field(index)
+        .clone()
+        .with_data_type(DataType::Struct(children.into()));
+    Ok(fields)
+}
+
+/// Adds a null field to, or removes one from, a struct column of `batch`;
+/// `schema` is the output schema.
+pub(super) fn change_field(
+    batch: &RecordBatch,
+    column: &str,
+    schema: &Arc<Schema>,
+) -> Result<RecordBatch> {
+    let index = column_index(&batch.schema(), column)?;
+    let structs = batch.column(index).as_struct();
+    let DataType::Struct(fields) = schema.field(index).data_type() else {
+        return Err(invalid(format!("{column} is not a struct column")));
+    };
+    let children = fields
+        .iter()
+        .map(|f| {
+            structs
+                .column_by_name(f.name())
+                .cloned()
+                .unwrap_or_else(|| new_null_array(f.data_type(), structs.len()))
+        })
+        .collect();
+    let changed =
+        arrow::array::StructArray::try_new(fields.clone(), children, structs.nulls().cloned())?;
+    let mut columns = batch.columns().to_vec();
+    columns[index] = Arc::new(changed);
+    Ok(RecordBatch::try_new_with_options(
+        schema.clone(),
+        columns,
+        &arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+    )?)
+}
+
 /// Fields after combining `columns` into a struct column `name`.
 pub(super) fn combine_fields(
     schema: &Schema,

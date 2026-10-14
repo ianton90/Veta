@@ -185,8 +185,16 @@ pub struct ColumnDialog {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ColumnMode {
-    Add { at: usize },
-    Rename { from: String },
+    Add {
+        at: usize,
+    },
+    Rename {
+        from: String,
+    },
+    /// Add a field to struct column `column`.
+    AddField {
+        column: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -240,6 +248,14 @@ impl ColumnDialog {
             }
         }
         self
+    }
+
+    /// Adds a field to struct column `column`.
+    pub fn add_field(column: String) -> Self {
+        Self {
+            mode: ColumnMode::AddField { column },
+            ..Self::add(0)
+        }
     }
 
     pub fn rename(from: String) -> Self {
@@ -314,17 +330,24 @@ impl ColumnDialog {
             ColumnMessage::Cancel => {}
             ColumnMessage::Submit => {
                 let name = self.name.trim().to_owned();
+                let data_type = match (&self.mode, self.data_type()) {
+                    (ColumnMode::Rename { .. }, _) => DataType::Null,
+                    (_, Ok(data_type)) => data_type,
+                    (_, Err(e)) => {
+                        self.error = Some(e);
+                        return None;
+                    }
+                };
                 return Some(match &self.mode {
                     ColumnMode::Add { at } => Command::AddColumn {
                         name,
-                        data_type: match self.data_type() {
-                            Ok(data_type) => data_type,
-                            Err(e) => {
-                                self.error = Some(e);
-                                return None;
-                            }
-                        },
+                        data_type,
                         at: *at,
+                    },
+                    ColumnMode::AddField { column } => Command::AddField {
+                        column: column.clone(),
+                        name,
+                        data_type,
                     },
                     ColumnMode::Rename { from } => Command::RenameColumn {
                         from: from.clone(),
@@ -337,15 +360,20 @@ impl ColumnDialog {
     }
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, ColumnMessage> {
-        let (title, action) = match &self.mode {
-            ColumnMode::Add { .. } => ("Add column", "Add"),
-            ColumnMode::Rename { .. } => ("Rename column", "Rename"),
+        let title = match &self.mode {
+            ColumnMode::Add { .. } => "Add column".to_owned(),
+            ColumnMode::Rename { .. } => "Rename column".to_owned(),
+            ColumnMode::AddField { column } => format!("Add field to {column}"),
+        };
+        let action = match &self.mode {
+            ColumnMode::Rename { .. } => "Rename",
+            _ => "Add",
         };
         let mut body = column![
             text(title).size(20),
             row![
                 text("Name").width(70),
-                text_input("Column name", &self.name)
+                text_input("Name", &self.name)
                     .id(NAME_ID)
                     .on_input(ColumnMessage::Name)
                     .on_submit(ColumnMessage::Submit),
@@ -354,7 +382,7 @@ impl ColumnDialog {
             .align_y(Alignment::Center),
         ]
         .spacing(16);
-        if let ColumnMode::Add { .. } = self.mode {
+        if !matches!(self.mode, ColumnMode::Rename { .. }) {
             body = body.push(
                 row![
                     text("Type").width(70),
@@ -406,7 +434,11 @@ impl ColumnDialog {
                     );
                 }
             }
-            body = body.push(text("The new column starts empty (null).").color(tokens.muted_text));
+            let note = match self.mode {
+                ColumnMode::AddField { .. } => "The new field starts empty (null) in every row.",
+                _ => "The new column starts empty (null).",
+            };
+            body = body.push(text(note).color(tokens.muted_text));
         }
         if let Some(error) = &self.error {
             body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));

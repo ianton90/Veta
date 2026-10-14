@@ -210,6 +210,41 @@ pub fn list_items(array: &dyn Array, row: usize, limit: usize) -> Option<Vec<Lis
     )
 }
 
+/// The fields of a struct value as items labelled with the field names
+/// (values are null when the struct is). `None` for other types.
+pub fn struct_fields(array: &dyn Array, row: usize) -> Option<Vec<ListItem>> {
+    use arrow::array::AsArray;
+    let DataType::Struct(fields) = array.data_type() else {
+        return None;
+    };
+    let structs = array.as_struct();
+    let null = structs.is_null(row);
+    let options = FormatOptions::default().with_null("null");
+    Some(
+        fields
+            .iter()
+            .zip(structs.columns())
+            .map(|(field, child)| {
+                let valid = !null && child.is_valid(row);
+                let text = valid
+                    .then(|| ArrayFormatter::try_new(child.as_ref(), &options).ok())
+                    .flatten()
+                    .map(|f| f.value(row).to_string());
+                let edit = if child.data_type().is_nested() && valid {
+                    value_json(child.as_ref(), row).ok().flatten()
+                } else {
+                    text.clone()
+                };
+                ListItem {
+                    label: field.name().clone(),
+                    text,
+                    edit,
+                }
+            })
+            .collect(),
+    )
+}
+
 /// Number of items in a list or map value (0 for other types and nulls).
 pub fn item_count(array: &dyn Array, row: usize) -> usize {
     items_of(array, row).map_or(0, |(range, _, _)| range.len())
@@ -480,6 +515,17 @@ pub fn parse_type_name(name: &str) -> Option<DataType> {
         let item = parse_type_name(inner)?;
         return Some(DataType::List(Arc::new(Field::new("item", item, true))));
     }
+    if let Some(inner) = args("struct", '<', '>') {
+        let fields = split_top_level(inner)
+            .into_iter()
+            .filter(|part| !part.trim().is_empty())
+            .map(|part| {
+                let (name, t) = part.split_once(':')?;
+                Some(Field::new(name.trim(), parse_type_name(t)?, true))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        return Some(DataType::Struct(fields.into()));
+    }
     let decimal = args("decimal128", '(', ')')
         .or_else(|| args("decimal256", '(', ')'))
         .or_else(|| args("decimal", '(', ')'));
@@ -494,6 +540,25 @@ pub fn parse_type_name(name: &str) -> Option<DataType> {
         });
     }
     None
+}
+
+/// `text` split at commas that aren't inside `<>`, `()` or `[]`.
+fn split_top_level(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let (mut depth, mut start) = (0i32, 0);
+    for (i, c) in text.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&text[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[start..]);
+    parts
 }
 
 /// Whether values of this type read best right-aligned.
@@ -601,6 +666,27 @@ mod tests {
         assert_eq!(path_items[1].text.as_deref(), Some("{x: 3, y: 4}"));
         assert_eq!(path_items[1].edit.as_deref(), Some(r#"{"x":3,"y":4}"#));
         assert!(!has_items(&DataType::Int64));
+        let owner = struct_fields(batch.column(5).as_ref(), 0).unwrap();
+        assert_eq!(owner[0].text.as_deref(), Some("Ana"));
+        assert_eq!(owner[1].label, "home");
+        assert_eq!(owner[1].edit.as_deref(), Some(r#"{"x":5,"y":6}"#));
+        assert!(
+            struct_fields(batch.column(5).as_ref(), 2).unwrap()[0]
+                .text
+                .is_none()
+        );
+        // Struct type names parse back, nested too.
+        for field in batch.schema().fields() {
+            let name = type_name(field.data_type());
+            if name.starts_with("map") {
+                continue;
+            }
+            assert_eq!(
+                parse_type_name(&name).as_ref(),
+                Some(field.data_type()),
+                "{name}"
+            );
+        }
     }
 
     #[test]

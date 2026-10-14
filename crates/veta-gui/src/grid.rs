@@ -164,6 +164,8 @@ pub enum MenuTarget {
     Cell,
     /// An item of an open list cell.
     Item,
+    /// A field of an open struct cell.
+    Field,
     /// The empty area around the cells (e.g. a table with no rows).
     Blank,
     Rows,
@@ -204,6 +206,8 @@ struct Column {
     items: bool,
     /// Lists whose items can be edited, added and removed in place.
     list: bool,
+    /// Structs: cells open into their fields, edited in place.
+    is_struct: bool,
     /// The expanded struct whose first field this is (collapse button).
     collapses: Option<Vec<String>>,
 }
@@ -245,6 +249,7 @@ fn display_columns(schema: &Schema, expanded: &BTreeSet<Vec<String>>) -> Vec<Col
             expandable: matches!(data_type, DataType::Struct(c) if !c.is_empty()),
             items: has_items(data_type),
             list: matches!(data_type, DataType::List(_) | DataType::LargeList(_)),
+            is_struct: matches!(data_type, DataType::Struct(c) if !c.is_empty()),
             data_type: data_type.clone(),
             type_name: type_name(data_type),
             numeric: is_numeric(data_type),
@@ -319,13 +324,46 @@ pub struct GridView {
     filter: Option<FilterView>,
 }
 
-/// The items listed in an open list or map cell.
+/// The selected item of an open list or struct cell (see
+/// [`GridView::selected_item`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectedItem {
+    /// Item index (the list's length for the new-item slot), or field index.
+    pub index: usize,
+    /// Number of items, or of fields.
+    pub len: usize,
+    /// The item type, or the field's type.
+    pub data_type: DataType,
+    /// The field name, for a struct field.
+    pub field: Option<String>,
+}
+
+/// Cells whose items edit in place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenKind {
+    List,
+    Struct,
+}
+
+/// What kind of value an open cell lists the items of.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ItemsKind {
+    /// Not a list, map or struct: nothing listed.
+    #[default]
+    None,
+    /// An editable list (see [`Column::list`]).
+    List,
+    Map,
+    /// Struct fields, editable.
+    Struct,
+}
+
+/// The items listed in an open list, map or struct cell.
 #[derive(Debug, Clone, Default)]
 struct Items {
     items: Vec<veta_core::display::ListItem>,
     more: usize,
-    /// An editable list (see [`Column::list`]).
-    list: bool,
+    kind: ItemsKind,
 }
 
 impl Items {
@@ -337,15 +375,16 @@ impl Items {
 
     /// Whether the slot for a new item is shown.
     fn has_slot(&self, appending: bool) -> bool {
-        self.list && self.more == 0 && (self.items.is_empty() || appending)
+        self.kind == ItemsKind::List && self.more == 0 && (self.items.is_empty() || appending)
     }
 
     /// Items that can be selected: the items and the slot, if shown.
     fn selectable(&self, appending: bool) -> usize {
-        if !self.list {
-            return 0;
+        match self.kind {
+            ItemsKind::List => self.items.len() + usize::from(self.has_slot(appending)),
+            ItemsKind::Struct => self.items.len(),
+            ItemsKind::None | ItemsKind::Map => 0,
         }
-        self.items.len() + usize::from(self.has_slot(appending))
     }
 }
 
@@ -454,20 +493,41 @@ impl GridView {
     /// The selected list item: its index, the number of items and the item
     /// type. The list is at [`Self::selected_field`] in the cell. The index
     /// equals the number of items for the slot of a new item.
-    pub fn selected_item(&self) -> Option<(usize, usize, DataType)> {
+    pub fn selected_item(&self) -> Option<SelectedItem> {
         let (row, column) = self.selected?;
-        let item = self.item?;
+        let index = self.item?;
         let len = self.items(row, column)?.items.len();
-        let (DataType::List(f) | DataType::LargeList(f)) = &self.columns[column].data_type else {
-            return None;
-        };
-        Some((item, len, f.data_type().clone()))
+        match &self.columns[column].data_type {
+            DataType::List(f) | DataType::LargeList(f) => Some(SelectedItem {
+                index,
+                len,
+                data_type: f.data_type().clone(),
+                field: None,
+            }),
+            DataType::Struct(fields) => {
+                let field = fields.get(index)?;
+                Some(SelectedItem {
+                    index,
+                    len,
+                    data_type: field.data_type().clone(),
+                    field: Some(field.name().clone()),
+                })
+            }
+            _ => None,
+        }
     }
 
-    /// Whether the selected cell is a list whose items can be edited.
-    pub fn selected_is_list(&self) -> bool {
-        self.selected
-            .is_some_and(|(_, c)| self.columns.get(c).is_some_and(|c| c.list))
+    /// Whether the selected cell is a list or struct whose items (fields)
+    /// can be edited in place.
+    pub fn selected_opens_items(&self) -> Option<OpenKind> {
+        let column = self.columns.get(self.selected?.1)?;
+        if column.list {
+            Some(OpenKind::List)
+        } else if column.is_struct {
+            Some(OpenKind::Struct)
+        } else {
+            None
+        }
     }
 
     /// Opens the selected cell's row and selects item `item` of it (`None`:
@@ -528,9 +588,12 @@ impl GridView {
     /// Shows the data after `at` steps (`None`: after all evaluated steps).
     /// Clears the filter, if any.
     pub fn set_preview(&mut self, at: Option<usize>, document: &Document) {
+        // Other rows show after another step or without the filter.
+        if at != self.at || self.filter.is_some() {
+            self.open_rows.clear();
+        }
         self.at = at;
         self.filter = None;
-        self.open_rows.clear();
         self.refresh(document);
     }
 
@@ -1099,14 +1162,25 @@ impl GridView {
                     .iter()
                     .map(|column| {
                         let array = column.as_ref();
+                        let kind = match array.data_type() {
+                            DataType::List(_) | DataType::LargeList(_) => ItemsKind::List,
+                            DataType::Struct(_) => ItemsKind::Struct,
+                            t if has_items(t) => ItemsKind::Map,
+                            _ => ItemsKind::None,
+                        };
+                        if kind == ItemsKind::Struct {
+                            let items =
+                                veta_core::display::struct_fields(array, local).unwrap_or_default();
+                            return Items {
+                                items,
+                                more: 0,
+                                kind,
+                            };
+                        }
                         let items = veta_core::display::list_items(array, local, MAX_ITEMS)
                             .unwrap_or_default();
                         let more = veta_core::display::item_count(array, local) - items.len();
-                        let list = matches!(
-                            array.data_type(),
-                            DataType::List(_) | DataType::LargeList(_)
-                        );
-                        Items { items, more, list }
+                        Items { items, more, kind }
                     })
                     .collect();
                 details.insert(row, columns);
@@ -1162,7 +1236,7 @@ impl GridView {
         // Editable lists open even when empty, to add items.
         self.columns
             .get(column)
-            .is_some_and(|c| c.list && self.value(row, column).is_some())
+            .is_some_and(|c| (c.list || c.is_struct) && self.value(row, column).is_some())
             || self.columns.get(column).is_some_and(|c| c.items)
                 && matches!(self.value(row, column), Some(Some(v)) if v != "[]" && v != "{}")
     }
@@ -1813,7 +1887,11 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 let in_rows = |row: usize| view.selected_rows().is_some_and(|r| r.contains(&row));
                 let target = if let Some((row, column, item)) = self.item_at(&regions, position) {
                     shell.publish((self.on_event)(GridEvent::SelectItem { row, column, item }));
-                    Some(MenuTarget::Item)
+                    if view.columns[column].is_struct {
+                        Some(MenuTarget::Field)
+                    } else {
+                        Some(MenuTarget::Item)
+                    }
                 } else if let Some((row, column)) = self.cell_at(&regions, position) {
                     if !(view.rows.is_some() && in_rows(row)) {
                         shell.publish((self.on_event)(GridEvent::Select { row, column }));

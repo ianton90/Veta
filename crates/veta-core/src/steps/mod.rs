@@ -104,6 +104,17 @@ pub enum Step {
     ExplodeList {
         column: String,
     },
+    /// Adds a null field `name` at the end of struct column `column`.
+    AddField {
+        column: String,
+        name: String,
+        data_type: DataType,
+    },
+    /// Removes field `name` from struct column `column`.
+    RemoveField {
+        column: String,
+        name: String,
+    },
     /// One row per group of equal `keys` (ordered by them), with `columns`
     /// collected into lists; other columns are dropped. Reverses
     /// [`Step::ExplodeList`].
@@ -202,6 +213,12 @@ impl Step {
                 all_levels: true,
             } => format!("Expanded {column} (all levels)"),
             Step::ExplodeList { column } => format!("Exploded {column} into rows"),
+            Step::AddField {
+                column,
+                name,
+                data_type,
+            } => format!("Added field {column}.{name} ({})", type_name(data_type)),
+            Step::RemoveField { column, name } => format!("Removed field {column}.{name}"),
             Step::CollectList { keys, columns } => {
                 let what = match columns.as_slice() {
                     [one] => one.clone(),
