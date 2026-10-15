@@ -132,6 +132,10 @@ pub enum Command {
     AppendSteps {
         steps: Vec<Step>,
     },
+    /// Replaces all steps (e.g. with a recipe's) as one change.
+    ReplaceSteps {
+        steps: Vec<Step>,
+    },
     /// Removes the step at `index`. Later steps may become broken.
     RemoveStep {
         index: usize,

@@ -348,6 +348,37 @@ pub fn confirm_step<'a>(tokens: Tokens) -> Element<'a, crate::Message> {
     card(body.into(), tokens, 460.0)
 }
 
+/// Asked when loading a recipe into a document that has `steps` steps.
+pub fn confirm_recipe<'a>(steps: usize, tokens: Tokens) -> Element<'a, crate::Message> {
+    use crate::Message;
+    let have = if steps == 1 {
+        "This file already has 1 applied step.".to_owned()
+    } else {
+        format!("This file already has {steps} applied steps.")
+    };
+    let body = column![
+        text("Load recipe").size(20),
+        text(format!(
+            "{have} Replace them with the recipe's, which then applies to the original \
+             data, or add the recipe's steps after them?"
+        ))
+        .color(tokens.muted_text),
+        row![
+            iced::widget::Space::new().width(Length::Fill),
+            button(text("Cancel"))
+                .style(button::secondary)
+                .on_press(Message::RecipeChoice(None)),
+            button(text("Add after"))
+                .style(button::secondary)
+                .on_press(Message::RecipeChoice(Some(false))),
+            button(text("Replace")).on_press(Message::RecipeChoice(Some(true))),
+        ]
+        .spacing(8),
+    ]
+    .spacing(14);
+    card(body.into(), tokens, 480.0)
+}
+
 /// "Save changes to X?" when closing a modified document.
 pub fn confirm_close<'a>(name: String, tokens: Tokens) -> Element<'a, crate::Message> {
     use crate::{CloseAnswer, Message};

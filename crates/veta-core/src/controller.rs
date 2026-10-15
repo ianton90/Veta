@@ -382,6 +382,23 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
                 },
             ))
         }
+        Command::ReplaceSteps { steps } => {
+            if steps.is_empty() {
+                return Err(invalid("there are no steps to use".into()));
+            }
+            let label = match steps.len() {
+                1 => "Replace the steps with 1 step".to_owned(),
+                n => format!("Replace the steps with {n} steps"),
+            };
+            Ok((
+                label,
+                Change::Steps {
+                    before: doc.steps().to_vec(),
+                    after: steps,
+                    keep: 0,
+                },
+            ))
+        }
         Command::AppendSteps { steps } => {
             if steps.is_empty() {
                 return Err(invalid("there are no steps to add".into()));
@@ -1092,6 +1109,34 @@ mod tests {
         assert!(undo(&mut other));
         assert!(other.steps().is_empty());
         assert!(execute(&mut other, Command::AppendSteps { steps: vec![] }).is_err());
+        // Replacing: the recipe applies from the source, in one undo.
+        let recipe = crate::recipe::from_json(&text, &other.schema()).unwrap();
+        execute(
+            &mut other,
+            Command::AppendSteps {
+                steps: recipe.clone(),
+            },
+        )
+        .unwrap();
+        execute(
+            &mut other,
+            Command::AppendSteps {
+                steps: recipe.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(other.steps().len(), 2 * recipe.len());
+        execute(
+            &mut other,
+            Command::ReplaceSteps {
+                steps: recipe.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(other.steps(), recipe.as_slice());
+        assert!(undo(&mut other));
+        assert_eq!(other.steps().len(), 2 * recipe.len());
+        assert!(execute(&mut other, Command::ReplaceSteps { steps: vec![] }).is_err());
     }
 
     #[test]

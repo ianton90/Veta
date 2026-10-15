@@ -597,6 +597,12 @@ enum Dialog {
         document: DocumentId,
         command: Command,
     },
+    /// Replace the document's steps with a recipe's, or add them after.
+    ConfirmRecipe {
+        document: DocumentId,
+        /// The recipe's JSON.
+        text: String,
+    },
     Choose {
         document: DocumentId,
         dialog: ChooseColumns,
@@ -671,6 +677,9 @@ enum Message {
     MoveStep(usize, usize),
     EditStep(usize),
     ConfirmStep(bool),
+    /// Answer to [`Dialog::ConfirmRecipe`]: replace the steps (`Some(true)`),
+    /// add after them (`Some(false)`) or cancel.
+    RecipeChoice(Option<bool>),
     /// Save the active document's steps as a recipe.
     StatsProgress(DocumentId, u64, f32),
     /// Start editing a value inside the selected nested cell.
@@ -1932,24 +1941,19 @@ impl App {
                     return Task::perform(open, move |path| Message::LoadRecipeFrom(id, path));
                 }
             }
-            Message::LoadRecipeFrom(id, Some(path)) => {
-                let steps = std::fs::read_to_string(&path)
-                    .map_err(|e| e.to_string())
-                    .and_then(|text| {
-                        let schema = self.workbook.get(id).map(Document::schema);
-                        let schema = schema.ok_or_else(|| "the document is closed".to_owned())?;
-                        veta_core::recipe::from_json(&text, &schema).map_err(|e| e.to_string())
-                    });
-                match steps {
-                    Ok(steps) if steps.is_empty() => {
-                        self.errors.push("The recipe has no steps.".into());
-                    }
-                    Ok(steps) => {
-                        if self.execute(id, Command::AppendSteps { steps }) {
-                            self.after_compute(id);
-                        }
-                    }
-                    Err(e) => self.errors.push(format!("Could not load the recipe: {e}")),
+            Message::LoadRecipeFrom(id, Some(path)) => match std::fs::read_to_string(&path) {
+                // With steps already there, ask whether to replace them.
+                Ok(text) if self.workbook.get(id).is_some_and(|d| !d.steps().is_empty()) => {
+                    self.dialog = Some(Dialog::ConfirmRecipe { document: id, text });
+                }
+                Ok(text) => self.apply_recipe(id, &text, false),
+                Err(e) => self.errors.push(format!("Could not load the recipe: {e}")),
+            },
+            Message::RecipeChoice(choice) => {
+                if let Some(Dialog::ConfirmRecipe { document, text }) = self.dialog.take()
+                    && let Some(replace) = choice
+                {
+                    self.apply_recipe(document, &text, replace);
                 }
             }
             Message::SaveRecipeTo(_, None) | Message::LoadRecipeFrom(_, None) => {}
@@ -2885,6 +2889,35 @@ impl App {
                 ..filter
             }),
         );
+    }
+
+    /// Adds a recipe's steps (JSON `text`) after the document's, or with
+    /// `replace`, in place of them (the recipe then applies to the source).
+    fn apply_recipe(&mut self, id: DocumentId, text: &str, replace: bool) {
+        let Some(doc) = self.workbook.get(id) else {
+            return;
+        };
+        let schema = if replace {
+            doc.schema_at(0).unwrap_or_else(|| doc.schema())
+        } else {
+            doc.schema()
+        };
+        match veta_core::recipe::from_json(text, &schema) {
+            Ok(steps) if steps.is_empty() => {
+                self.errors.push("The recipe has no steps.".into());
+            }
+            Ok(steps) => {
+                let command = if replace {
+                    Command::ReplaceSteps { steps }
+                } else {
+                    Command::AppendSteps { steps }
+                };
+                if self.execute(id, command) {
+                    self.after_compute(id);
+                }
+            }
+            Err(e) => self.errors.push(format!("Could not load the recipe: {e}")),
+        }
     }
 
     /// Opens the dialog to insert, delete or keep a number of rows.
@@ -4559,6 +4592,10 @@ impl App {
             Dialog::Collect { dialog, .. } => dialog.view(ui.tokens).map(Message::Collect),
             Dialog::Rows { dialog, .. } => dialog.view(ui.tokens).map(Message::Rows),
             Dialog::ConfirmStep { .. } => settings::confirm_step(ui.tokens),
+            Dialog::ConfirmRecipe { document, .. } => {
+                let steps = self.workbook.get(*document).map_or(0, |d| d.steps().len());
+                settings::confirm_recipe(steps, ui.tokens)
+            }
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
             Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
             Dialog::Metadata { dialog, .. } => dialog.view(ui.tokens).map(Message::Metadata),
@@ -6425,7 +6462,7 @@ mod tests {
         assert!(app.errors.is_empty(), "{:?}", app.errors);
 
         let _ = app.update(Message::SelectTab(idb));
-        let _ = app.update(Message::LoadRecipeFrom(idb, Some(recipe)));
+        let _ = app.update(Message::LoadRecipeFrom(idb, Some(recipe.clone())));
         assert_eq!(app.workbook.get(idb).unwrap().steps().len(), 2);
         finish_compute(&mut app, idb);
         let first = |app: &App, id| {
@@ -6433,6 +6470,21 @@ mod tests {
             veta_core::display::format_batch(&doc.read(0..1).unwrap()).unwrap()
         };
         assert_eq!(first(&app, ida), first(&app, idb));
+
+        // Loading it again asks: cancel, add after, or replace.
+        let steps = |app: &App| app.workbook.get(idb).unwrap().steps().len();
+        let _ = app.update(Message::LoadRecipeFrom(idb, Some(recipe.clone())));
+        assert!(matches!(app.dialog, Some(Dialog::ConfirmRecipe { .. })));
+        let _ = app.update(Message::RecipeChoice(None));
+        assert_eq!((steps(&app), app.dialog.is_none()), (2, true));
+        let _ = app.update(Message::LoadRecipeFrom(idb, Some(recipe.clone())));
+        let _ = app.update(Message::RecipeChoice(Some(true)));
+        assert_eq!(steps(&app), 2, "replaced, not stacked");
+        finish_compute(&mut app, idb);
+        assert_eq!(first(&app, ida), first(&app, idb));
+        let _ = app.update(Message::LoadRecipeFrom(idb, Some(recipe)));
+        let _ = app.update(Message::RecipeChoice(Some(false)));
+        assert!(steps(&app) > 2, "added after");
 
         let _ = app.update(Message::LoadRecipeFrom(idb, Some(dir.join("missing.toml"))));
         assert_eq!(app.errors.len(), 1);
