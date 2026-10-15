@@ -66,10 +66,6 @@ pub(crate) struct App {
     pub(crate) computing: Option<Computing>,
     /// Column statistics for the side pane.
     pub(crate) stats: Stats,
-    /// Nodes collapsed in the value tree, by path.
-    pub(crate) collapsed: HashSet<String>,
-    /// A value inside a nested cell being edited in the Value tab.
-    pub(crate) leaf_edit: Option<LeafEdit>,
     /// Exports running in the background.
     /// Imports and exports running in the background.
     pub(crate) transfers: Vec<Transfer>,
@@ -91,20 +87,6 @@ pub(crate) struct Computing {
     pub(crate) step: usize,
     pub(crate) progress: f32,
     pub(crate) cancel: Arc<AtomicBool>,
-}
-
-/// A value inside a nested cell, edited from the Value tab.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct LeafEdit {
-    pub(crate) document: DocumentId,
-    pub(crate) row: usize,
-    pub(crate) column: usize,
-    pub(crate) pointer: Vec<veta_core::display::PathPart>,
-    pub(crate) data_type: veta_core::arrow::datatypes::DataType,
-    pub(crate) text: String,
-    pub(crate) error: Option<String>,
-    /// Renaming the map key at `pointer` instead of editing the value.
-    pub(crate) rename: bool,
 }
 
 /// Statistics computed for the side pane, and the pass running.
@@ -202,8 +184,6 @@ pub(crate) enum SideTab {
     #[default]
     Steps,
     Stats,
-    /// The selected cell's value, as a tree for nested values.
-    Value,
     File,
 }
 
@@ -261,10 +241,6 @@ pub(crate) enum Dialog {
     Metadata {
         document: DocumentId,
         dialog: MetadataDialog,
-    },
-    Json {
-        document: DocumentId,
-        dialog: dialogs::JsonDialog,
     },
     ConfirmClose {
         document: DocumentId,

@@ -79,27 +79,7 @@ impl App {
                     row![
                         grid,
                         divider(ui.tokens, true),
-                        panes::side_pane(
-                            tab,
-                            doc,
-                            self.side_tab,
-                            self.stats_view(id),
-                            panes::ValueView {
-                                tree: self.value_tree(tab, doc),
-                                collapsed: &self.collapsed,
-                                leaf_edit: self
-                                    .leaf_edit
-                                    .as_ref()
-                                    .filter(|e| e.document == id)
-                                    .map(|e| panes::LeafEditView {
-                                        pointer: e.pointer.as_slice(),
-                                        text: e.text.as_str(),
-                                        error: e.error.as_deref(),
-                                        rename: e.rename,
-                                    }),
-                            },
-                            ui
-                        )
+                        panes::side_pane(tab, doc, self.side_tab, self.stats_view(id), ui)
                     ]
                     .into()
                 } else {
@@ -116,9 +96,6 @@ impl App {
         let context = ribbon::Context {
             has_document: self.active.is_some(),
             has_selection: self.active.and_then(|id| self.selected_rows(id)).is_some(),
-            has_cell: self
-                .active_document()
-                .is_some_and(|(tab, _)| matches!(tab.grid.selection(), Selection::Cell(..))),
             editable: self.active.is_some_and(|id| self.editable(id)),
             has_rows: self
                 .active_document()
@@ -281,7 +258,6 @@ impl App {
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
             Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
             Dialog::Metadata { dialog, .. } => dialog.view(ui.tokens).map(Message::Metadata),
-            Dialog::Json { dialog, .. } => dialog.view(ui.tokens).map(Message::Json),
             Dialog::ConfirmClose { document } => {
                 let name = self
                     .workbook

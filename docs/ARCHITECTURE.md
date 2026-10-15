@@ -91,7 +91,7 @@ veta-gui/src/
     input.rs             the Grid widget and its event handling
     draw.rs              drawing
   panes/                 formula bar, status bar, right-click menu,
-                         side_pane/ (steps, stats, value, file tabs)
+                         side_pane/ (steps, stats, file tabs)
   dialogs/               one file per dialog; mod.rs has the shared
                          widgets and the StepDialog trait
   settings/              Settings dialog, config.toml, themes

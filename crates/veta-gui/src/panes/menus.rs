@@ -21,7 +21,6 @@ pub fn menu_sections(
             many.replace("{n}", &n.to_string())
         }
     };
-    let nested = column_type.is_some_and(DataType::is_nested);
     let mut sections: Vec<(&'static str, Vec<MenuEntry>)> = Vec::new();
     if target == MenuTarget::Blank {
         sections.push((
@@ -77,13 +76,10 @@ pub fn menu_sections(
         ],
     ));
     if target == MenuTarget::Cell {
-        let mut cell = vec![
+        let cell = vec![
             entry(Icon::Rename, "Edit cell", "Enter", MenuItem::EditCell),
             entry(Icon::Eraser, "Set to null", "Delete", MenuItem::ClearCell),
         ];
-        if nested {
-            cell.push(entry(Icon::Braces, "Edit as JSON…", "", MenuItem::EditJson));
-        }
         sections.push(("Cell", cell));
         sections.push((
             "Filter",
@@ -310,4 +306,47 @@ pub fn context_menu<'a>(
                 })
         })
         .into()
+}
+
+/// Expand/explode entries for a column of `column_type`.
+fn nested_items(
+    column_type: Option<&DataType>,
+) -> Vec<Option<(Icon, String, &'static str, MenuItem)>> {
+    match column_type {
+        Some(DataType::Struct(fields)) => {
+            let mut items = vec![
+                Some((
+                    Icon::ListTree,
+                    "Expand fields to columns".into(),
+                    "",
+                    MenuItem::ExpandStruct,
+                )),
+                Some((Icon::Plus, "Add field…".into(), "", MenuItem::AddField)),
+            ];
+            if fields
+                .iter()
+                .any(|f| matches!(f.data_type(), DataType::Struct(_)))
+            {
+                items.push(Some((
+                    Icon::ListTree,
+                    "Expand all levels".into(),
+                    "",
+                    MenuItem::ExpandAll,
+                )));
+            }
+            items
+        }
+        Some(
+            DataType::List(_)
+            | DataType::LargeList(_)
+            | DataType::FixedSizeList(..)
+            | DataType::Map(..),
+        ) => vec![Some((
+            Icon::Rows,
+            "Explode to rows".into(),
+            "",
+            MenuItem::ExplodeList,
+        ))],
+        _ => Vec::new(),
+    }
 }

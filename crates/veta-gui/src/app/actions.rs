@@ -36,7 +36,6 @@ impl App {
                 | Action::MoveColumnLeft
                 | Action::MoveColumnRight
                 | Action::ExpandAll
-                | Action::EditJson
         );
         if changes_data
             && let Some(id) = self.active
@@ -68,7 +67,6 @@ impl App {
             | Action::RemoveColumns
             | Action::KeepColumns) => return self.columns_action(a),
             a @ (Action::ExpandAll
-            | Action::EditJson
             | Action::Undo
             | Action::Redo
             | Action::ExpandStruct

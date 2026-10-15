@@ -47,7 +47,7 @@ use iced::{
     Color, Element, Font, Length, Pixels, Size, Subscription, Task, Theme, event, font, keyboard,
     window,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -62,9 +62,6 @@ use veta_core::{Command, Document, DocumentId, OpenOptions, Workbook, controller
 
 /// Id of the formula bar's text input.
 pub(crate) const FORMULA_ID: iced::widget::Id = iced::widget::Id::new("formula");
-
-/// Id of the input editing a value in the Value tab.
-pub(crate) const LEAF_ID: iced::widget::Id = iced::widget::Id::new("leaf-editor");
 
 /// Id of the text input drawn inside the cell being edited.
 pub(crate) const EDITOR_ID: iced::widget::Id = iced::widget::Id::new("cell-editor");
@@ -240,8 +237,6 @@ impl App {
             transfers: Vec::new(),
             next_transfer: 0,
             notice: None,
-            collapsed: HashSet::new(),
-            leaf_edit: None,
         };
         let open = app.open(files);
         let system = iced::system::theme().map(Message::SystemMode);
@@ -371,16 +366,7 @@ impl App {
             m @ (Message::ColumnDialog(..) | Message::Choose(..)) => {
                 return self.columns_message(m);
             }
-            m @ (Message::EditInput(..)
-            | Message::CommitEdit
-            | Message::EditLeaf(..)
-            | Message::EditKey(..)
-            | Message::OpenJsonEditor
-            | Message::Json(..)
-            | Message::NestedEdit(..)
-            | Message::LeafInput(..)
-            | Message::CommitLeaf
-            | Message::ToggleNode(..)) => return self.editing_message(m),
+            m @ (Message::EditInput(..) | Message::CommitEdit) => return self.editing_message(m),
             m @ (Message::OpenDialog
             | Message::FilesPicked(..)
             | Message::Remote(..)
@@ -536,7 +522,7 @@ impl App {
             Message::SideTab(side) => self.side_tab = side,
             Message::Escape => {
                 // Close the innermost thing that is open.
-                if self.leaf_edit.take().is_some() || self.menu.take().is_some() {
+                if self.menu.take().is_some() {
                 } else if self.dialog.is_some() {
                     self.dialog = None;
                     self.closing = None;

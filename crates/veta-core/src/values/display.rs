@@ -284,148 +284,12 @@ pub fn item_count(array: &dyn Array, row: usize) -> usize {
     items_of(array, row).map_or(0, |(range, _, _)| range.len())
 }
 
-/// A value laid out as a tree, for showing nested values.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ValueNode {
-    /// Field name, `[index]` or map key.
-    pub label: String,
-    /// Identifies the node within the tree (`point.x`, `tags[1]`).
-    pub path: String,
-    /// Where the node is inside the cell's value (empty for the cell).
-    pub pointer: Vec<PathPart>,
-    pub data_type: DataType,
-    pub type_name: String,
-    /// The value as text for leaves and nulls; a summary such as
-    /// `3 items` for lists and maps.
-    pub text: String,
-    pub null: bool,
-    pub children: Vec<ValueNode>,
-}
-
 /// A step into a nested value: a struct field, a list index or a map key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathPart {
     Field(String),
     Index(usize),
     Key(String),
-}
-
-/// The value at `row` of `array` as a tree labelled `label`.
-pub fn value_tree(array: &dyn Array, row: usize, label: &str) -> ValueNode {
-    build_node(array, row, label.to_owned(), label.to_owned(), Vec::new())
-}
-
-fn build_node(
-    array: &dyn Array,
-    row: usize,
-    label: String,
-    path: String,
-    pointer: Vec<PathPart>,
-) -> ValueNode {
-    use arrow::array::{AsArray, FixedSizeListArray, LargeListArray, ListArray, MapArray};
-    let mut node = ValueNode {
-        label,
-        pointer,
-        data_type: array.data_type().clone(),
-        type_name: type_name(array.data_type()),
-        text: String::new(),
-        null: array.is_null(row),
-        children: Vec::new(),
-        path,
-    };
-    if node.null {
-        node.text = "null".into();
-        return node;
-    }
-    let items = |values: &dyn Array, range: std::ops::Range<usize>, node: &mut ValueNode| {
-        node.text = match range.len() {
-            1 => "1 item".into(),
-            n => format!("{n} items"),
-        };
-        for (k, i) in range.enumerate() {
-            let path = format!("{}[{k}]", node.path);
-            let mut pointer = node.pointer.clone();
-            pointer.push(PathPart::Index(k));
-            node.children
-                .push(build_node(values, i, format!("[{k}]"), path, pointer));
-        }
-    };
-    match array.data_type() {
-        DataType::Struct(fields) => {
-            let s = array.as_struct();
-            node.text = format!("{} fields", fields.len());
-            for (field, column) in fields.iter().zip(s.columns()) {
-                let path = format!("{}.{}", node.path, field.name());
-                let mut pointer = node.pointer.clone();
-                pointer.push(PathPart::Field(field.name().clone()));
-                node.children.push(build_node(
-                    column.as_ref(),
-                    row,
-                    field.name().clone(),
-                    path,
-                    pointer,
-                ));
-            }
-        }
-        DataType::List(_) => {
-            let list = array.as_any().downcast_ref::<ListArray>().expect("list");
-            let offsets = list.value_offsets();
-            let range = offsets[row] as usize..offsets[row + 1] as usize;
-            items(list.values().as_ref(), range, &mut node);
-        }
-        DataType::LargeList(_) => {
-            let list = array
-                .as_any()
-                .downcast_ref::<LargeListArray>()
-                .expect("list");
-            let offsets = list.value_offsets();
-            let range = offsets[row] as usize..offsets[row + 1] as usize;
-            items(list.values().as_ref(), range, &mut node);
-        }
-        DataType::FixedSizeList(_, size) => {
-            let list = array
-                .as_any()
-                .downcast_ref::<FixedSizeListArray>()
-                .expect("list");
-            let size = *size as usize;
-            items(
-                list.values().as_ref(),
-                row * size..(row + 1) * size,
-                &mut node,
-            );
-        }
-        DataType::Map(..) => {
-            let map = array.as_any().downcast_ref::<MapArray>().expect("map");
-            let offsets = map.value_offsets();
-            let range = offsets[row] as usize..offsets[row + 1] as usize;
-            node.text = match range.len() {
-                1 => "1 entry".into(),
-                n => format!("{n} entries"),
-            };
-            let keys = map.keys();
-            let values = map.values();
-            let options = FormatOptions::default().with_null("null");
-            let key_text = ArrayFormatter::try_new(keys.as_ref(), &options).ok();
-            for i in range {
-                let key = key_text
-                    .as_ref()
-                    .map(|f| f.value(i).to_string())
-                    .unwrap_or_default();
-                let path = format!("{}[{key:?}]", node.path);
-                let mut pointer = node.pointer.clone();
-                pointer.push(PathPart::Key(key.clone()));
-                node.children
-                    .push(build_node(values.as_ref(), i, key, path, pointer));
-            }
-        }
-        _ => {
-            let options = FormatOptions::default().with_null("null");
-            node.text = ArrayFormatter::try_new(array, &options)
-                .map(|f| f.value(row).to_string())
-                .unwrap_or_default();
-        }
-    }
-    node
 }
 
 /// Short, human-friendly name of a type, e.g. `int64`, `string`,
@@ -814,25 +678,12 @@ mod nested_tests {
     use super::*;
 
     #[test]
-    fn value_trees() {
+    fn nested_cells_format() {
         let dir = veta_testkit::TempDir::new();
         let path = dir.join("n.parquet");
         veta_testkit::fixtures::nested(&path);
         let doc = crate::Document::open(&path, crate::OpenOptions::default()).unwrap();
         let batch = doc.read(0..4).unwrap();
-        let owner = value_tree(batch.column(5).as_ref(), 0, "owner");
-        assert_eq!(owner.text, "2 fields");
-        assert_eq!(owner.children[1].children[0].path, "owner.home.x");
-        assert_eq!(owner.children[1].children[0].text, "5");
-        let path_col = value_tree(batch.column(3).as_ref(), 0, "path");
-        assert_eq!(path_col.text, "2 items");
-        assert_eq!(path_col.children[1].children[1].path, "path[1].y");
-        let scores = value_tree(batch.column(4).as_ref(), 0, "scores");
-        assert_eq!(scores.children[0].label, "math");
-        assert_eq!(scores.children[0].text, "9");
-        let tags = value_tree(batch.column(2).as_ref(), 3, "tags");
-        assert!(tags.children[1].null);
-        assert!(value_tree(batch.column(1).as_ref(), 2, "point").null);
         let cells = format_batch(&batch).unwrap();
         assert_eq!(cells[1][1].as_deref(), Some("{x: -1, y: null}"));
     }

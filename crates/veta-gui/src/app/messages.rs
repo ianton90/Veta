@@ -52,23 +52,6 @@ pub(crate) enum Message {
     RecipeChoice(Option<bool>),
     /// Save the active document's steps as a recipe.
     StatsProgress(DocumentId, u64, f32),
-    /// Start editing a value inside the selected nested cell.
-    EditLeaf(
-        Vec<veta_core::display::PathPart>,
-        veta_core::arrow::datatypes::DataType,
-        String,
-    ),
-    /// Start renaming the map key at the pointer.
-    EditKey(Vec<veta_core::display::PathPart>, String),
-    /// Add or remove items and entries inside the selected nested cell.
-    NestedEdit(
-        Vec<veta_core::display::PathPart>,
-        veta_core::values::NestedEdit,
-    ),
-    LeafInput(String),
-    CommitLeaf,
-    /// Open the selected nested cell in the JSON editor.
-    OpenJsonEditor,
     /// Clipboard text read for pasting.
     Pasted(Option<String>),
     /// Rows read in the background for a grid (see `GridView::take_read`).
@@ -77,9 +60,6 @@ pub(crate) enum Message {
         u64,
         Result<veta_core::arrow::record_batch::RecordBatch, String>,
     ),
-    Json(dialogs::JsonMessage),
-    /// Collapse or expand a node of the value tree.
-    ToggleNode(String),
     StatsDone(DocumentId, u64, Result<Vec<ColumnStats>, String>),
     /// A file to import was chosen.
     ImportPicked(Option<PathBuf>),

@@ -52,8 +52,6 @@ pub(crate) enum MenuItem {
     /// Expand a struct column and the structs inside it.
     ExpandAll,
     ExplodeList,
-    /// Open the cell in the JSON editor.
-    EditJson,
     SortAscending,
     SortDescending,
     /// Filter to rows whose value in this column equals the selected cell's.
@@ -138,7 +136,6 @@ impl App {
                     MenuItem::ExpandStruct => self.nested_step(id, false, false),
                     MenuItem::ExpandAll => self.nested_step(id, false, true),
                     MenuItem::ExplodeList => self.nested_step(id, true, false),
-                    MenuItem::EditJson => self.open_json_editor(id),
                     MenuItem::SortAscending | MenuItem::SortDescending => {
                         self.sort_selected(id, item == MenuItem::SortDescending);
                     }

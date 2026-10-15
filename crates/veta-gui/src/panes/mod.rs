@@ -16,13 +16,10 @@ use crate::grid::MenuTarget;
 use crate::platform::icon::{Icon, icon};
 use crate::ribbon::Action;
 use crate::settings::theme::Tokens;
-use std::collections::HashSet;
 
 use veta_core::arrow::datatypes::DataType;
-use veta_core::display::{PathPart, ValueNode};
 use veta_core::stats::ColumnStats;
 use veta_core::steps::Status;
-use veta_core::values::NestedEdit;
 
 mod formula_bar;
 mod menus;

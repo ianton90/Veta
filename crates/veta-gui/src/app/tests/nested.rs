@@ -1,9 +1,9 @@
-//! App tests: struct fields, list items, the Value tab and the JSON editor.
+//! App tests: struct fields, list items and nested columns.
 
 use super::*;
 
 #[test]
-fn nested_values_in_formula_bar_and_value_tab() {
+fn nested_values_in_formula_bar() {
     let dir = TempDir::new();
     let path = dir.join("n.parquet");
     fixtures::nested(&path);
@@ -16,13 +16,6 @@ fn nested_values_in_formula_bar_and_value_tab() {
         Some(Some(r#"{"x":1,"y":2}"#))
     );
     assert_eq!(app.cell_text(id).as_deref(), Some(r#"{"x":1,"y":2}"#));
-    let _ = app.update(Message::SideTab(SideTab::Value));
-    let tab = &app.tabs[0];
-    let doc = app.workbook.get(id).unwrap();
-    let tree = app.value_tree(tab, doc).unwrap();
-    assert_eq!((tree.label.as_str(), tree.children.len()), ("point", 2));
-    let _ = app.update(Message::ToggleNode("point".into()));
-    assert!(app.collapsed.contains("point"));
 }
 
 #[test]
@@ -291,7 +284,6 @@ fn list_items_edit_in_place() {
 
 #[test]
 fn edit_nested_values_and_expand_explode() {
-    use veta_core::display::PathPart;
     let dir = TempDir::new();
     let path = dir.join("n.parquet");
     fixtures::nested(&path);
@@ -302,27 +294,6 @@ fn edit_nested_values_and_expand_explode() {
         let i = doc.schema().index_of(column).unwrap();
         veta_core::display::format_batch(&doc.read(row..row + 1).unwrap()).unwrap()[0][i].clone()
     };
-
-    // Edit owner.home.y from the Value tab.
-    let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 5 }));
-    let _ = app.update(Message::SideTab(SideTab::Value));
-    let pointer = vec![PathPart::Field("home".into()), PathPart::Field("y".into())];
-    let int64 = veta_core::arrow::datatypes::DataType::Int64;
-    let _ = app.update(Message::EditLeaf(
-        pointer.clone(),
-        int64.clone(),
-        "6".into(),
-    ));
-    let _ = app.update(Message::LeafInput("not a number".into()));
-    let _ = app.update(Message::CommitLeaf);
-    assert!(app.leaf_edit.as_ref().unwrap().error.is_some());
-    let _ = app.update(Message::LeafInput("60".into()));
-    let _ = app.update(Message::CommitLeaf);
-    assert!(app.leaf_edit.is_none());
-    assert_eq!(
-        cell(&app, 0, "owner").as_deref(),
-        Some("{name: Ana, home: {x: 5, y: 60}}")
-    );
 
     // Lists edit item by item; other nested cells as JSON.
     let _ = app.update(Message::Grid(id, GridEvent::Select { row: 1, column: 2 }));
@@ -367,61 +338,4 @@ fn edit_nested_values_and_expand_explode() {
     finish_compute(&mut app, id);
     // Row 1 now has two tags: 2 + 2 + 1 (null row) + 3.
     assert_eq!(app.workbook.get(id).unwrap().num_rows(), 8);
-}
-
-#[test]
-fn nested_items_keys_and_json_editor() {
-    use veta_core::display::PathPart;
-    use veta_core::values::NestedEdit;
-    let dir = TempDir::new();
-    let path = dir.join("n.parquet");
-    fixtures::nested(&path);
-    let mut app = app_with(&[&path]);
-    let id = app.tabs[0].id;
-    let cell = |app: &App, row: usize, column: &str| {
-        let doc = app.workbook.get(id).unwrap();
-        let i = doc.schema().index_of(column).unwrap();
-        veta_core::display::format_batch(&doc.read(row..row + 1).unwrap()).unwrap()[0][i].clone()
-    };
-    // tags = [a, b]: add an item, remove the first.
-    let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 2 }));
-    let _ = app.update(Message::NestedEdit(vec![], NestedEdit::AppendItem));
-    assert_eq!(cell(&app, 0, "tags").as_deref(), Some("[a, b, null]"));
-    let _ = app.update(Message::NestedEdit(
-        vec![PathPart::Index(0)],
-        NestedEdit::Remove,
-    ));
-    assert_eq!(cell(&app, 0, "tags").as_deref(), Some("[b, null]"));
-
-    // scores = {math: 9, art: 7}: rename a key (order kept), add an entry.
-    let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 4 }));
-    let math = vec![PathPart::Key("math".into())];
-    let _ = app.update(Message::EditKey(math, "math".into()));
-    let _ = app.update(Message::LeafInput("maths".into()));
-    let _ = app.update(Message::CommitLeaf);
-    assert!(app.leaf_edit.is_none());
-    let _ = app.update(Message::NestedEdit(vec![], NestedEdit::AddEntry));
-    assert_eq!(
-        cell(&app, 0, "scores").as_deref(),
-        Some("{maths: 9, art: 7, key: null}")
-    );
-
-    // The JSON editor replaces the whole value.
-    let _ = app.update(Message::OpenJsonEditor);
-    assert!(matches!(app.dialog, Some(Dialog::Json { .. })));
-    use iced::widget::text_editor::{Action as EditorAction, Edit};
-    let _ = app.update(Message::Json(dialogs::JsonMessage::Edit(
-        EditorAction::SelectAll,
-    )));
-    let _ = app.update(Message::Json(dialogs::JsonMessage::Edit(
-        EditorAction::Edit(Edit::Paste(std::sync::Arc::new("{\"x\": 1".into()))),
-    )));
-    let _ = app.update(Message::Json(dialogs::JsonMessage::Apply));
-    assert!(app.dialog.is_some(), "invalid JSON keeps the editor open");
-    let _ = app.update(Message::Json(dialogs::JsonMessage::Edit(
-        EditorAction::Edit(Edit::Insert('}')),
-    )));
-    let _ = app.update(Message::Json(dialogs::JsonMessage::Apply));
-    assert!(app.dialog.is_none());
-    assert_eq!(cell(&app, 0, "scores").as_deref(), Some("{x: 1}"));
 }

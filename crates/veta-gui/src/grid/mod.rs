@@ -479,21 +479,6 @@ impl GridView {
         }
     }
 
-    /// The value of one cell (document column), as a one-element array.
-    pub fn cell_array(
-        &self,
-        row: usize,
-        column: usize,
-        document: &Document,
-    ) -> Option<veta_core::arrow::array::ArrayRef> {
-        let batch = match self.view() {
-            Some(view) => view.read(row..row + 1).ok()?,
-            None => document.read_at(self.level(document), row..row + 1).ok()?,
-        };
-        (batch.num_rows() == 1 && column < batch.num_columns())
-            .then(|| batch.column(column).clone())
-    }
-
     /// Error from the last read, if it failed.
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()

@@ -47,122 +47,6 @@ impl App {
                     return iced::widget::operation::focus(GRID_ID);
                 }
             }
-            Message::EditLeaf(pointer, data_type, text) => {
-                if let Some(id) = self.active {
-                    if !self.editable(id) {
-                        self.not_editable(id);
-                        return Task::none();
-                    }
-                    let selected = self
-                        .tabs
-                        .iter()
-                        .find(|t| t.id == id)
-                        .and_then(|t| t.grid.selected());
-                    if let Some((row, column)) = selected {
-                        self.edit = None;
-                        self.leaf_edit = Some(LeafEdit {
-                            document: id,
-                            row,
-                            column,
-                            pointer,
-                            data_type,
-                            text,
-                            error: None,
-                            rename: false,
-                        });
-                        return iced::widget::operation::focus(LEAF_ID);
-                    }
-                }
-            }
-            Message::EditKey(pointer, key) => {
-                let selected = self.active.filter(|&id| self.editable(id)).and_then(|id| {
-                    let tab = self.tabs.iter().find(|t| t.id == id)?;
-                    Some((id, tab.grid.selected()?))
-                });
-                if let Some((id, (row, column))) = selected {
-                    self.edit = None;
-                    self.leaf_edit = Some(LeafEdit {
-                        document: id,
-                        row,
-                        column,
-                        pointer,
-                        data_type: veta_core::arrow::datatypes::DataType::Utf8,
-                        text: key,
-                        error: None,
-                        rename: true,
-                    });
-                    return iced::widget::operation::focus(LEAF_ID);
-                }
-            }
-            Message::OpenJsonEditor => {
-                if let Some(id) = self.active {
-                    self.open_json_editor(id);
-                }
-            }
-            Message::Json(message) => {
-                if let Some(Dialog::Json { document, dialog }) = &mut self.dialog {
-                    let id = *document;
-                    let cancel = matches!(message, dialogs::JsonMessage::Cancel);
-                    if let Some(value) = dialog.update(message) {
-                        let command = Command::SetCell {
-                            row: dialog.row,
-                            column: dialog.column.clone(),
-                            value,
-                        };
-                        let result = self
-                            .workbook
-                            .get_mut(id)
-                            .map(|doc| controller::execute(doc, command));
-                        match result {
-                            Some(Ok(())) => {
-                                self.dialog = None;
-                                self.refresh(id);
-                            }
-                            Some(Err(e)) => dialog.set_error(e.to_string()),
-                            None => self.dialog = None,
-                        }
-                    } else if cancel {
-                        self.dialog = None;
-                    }
-                }
-            }
-            Message::NestedEdit(pointer, change) => {
-                let Some(id) = self.active else {
-                    return Task::none();
-                };
-                if !self.editable(id) {
-                    self.not_editable(id);
-                    return Task::none();
-                }
-                let Some((row, column)) = self
-                    .tabs
-                    .iter()
-                    .find(|t| t.id == id)
-                    .and_then(|t| t.grid.selected())
-                else {
-                    return Task::none();
-                };
-                self.leaf_edit = None;
-                let result = self.change_nested_cell(id, row, column, |json| {
-                    veta_core::values::edit_nested(json, &pointer, &change)
-                });
-                match result {
-                    Ok(()) => self.refresh(id),
-                    Err(e) => self.errors.push(e),
-                }
-            }
-            Message::LeafInput(text) => {
-                if let Some(edit) = &mut self.leaf_edit {
-                    edit.text = text;
-                    edit.error = None;
-                }
-            }
-            Message::CommitLeaf => self.commit_leaf(),
-            Message::ToggleNode(path) => {
-                if !self.collapsed.remove(&path) {
-                    self.collapsed.insert(path);
-                }
-            }
             _ => unreachable!("not a editing message"),
         }
         Task::none()
@@ -174,11 +58,6 @@ impl App {
             Action::ExpandAll => {
                 if let Some(id) = self.active {
                     self.nested_step(id, false, true);
-                }
-            }
-            Action::EditJson => {
-                if let Some(id) = self.active {
-                    self.open_json_editor(id);
                 }
             }
             Action::Undo | Action::Redo => {
@@ -218,100 +97,6 @@ impl App {
         Task::none()
     }
 
-    /// Applies the Value tab edit: the cell gets its JSON with the edited
-    /// value replaced.
-    fn commit_leaf(&mut self) {
-        let Some(mut edit) = self.leaf_edit.take() else {
-            return;
-        };
-        let id = edit.document;
-        let text = (!edit.text.is_empty()).then_some(edit.text.clone());
-        let (pointer, data_type, rename) =
-            (edit.pointer.clone(), edit.data_type.clone(), edit.rename);
-        let result = self.change_nested_cell(id, edit.row, edit.column, |json| {
-            if rename {
-                let key = veta_core::values::NestedEdit::RenameKey(text.unwrap_or_default());
-                veta_core::values::edit_nested(json, &pointer, &key)
-            } else {
-                veta_core::values::set_nested(json, &pointer, text.as_deref(), &data_type)
-            }
-        });
-        match result {
-            Ok(()) => self.refresh(id),
-            Err(e) => {
-                edit.error = Some(e);
-                self.leaf_edit = Some(edit);
-            }
-        }
-    }
-
-    /// Opens the selected nested cell in the multi-line JSON editor.
-    pub(crate) fn open_json_editor(&mut self, id: DocumentId) {
-        if !self.editable(id) {
-            self.not_editable(id);
-            return;
-        }
-        let Some(tab) = self.tabs.iter().find(|t| t.id == id) else {
-            return;
-        };
-        let Some(doc) = self.workbook.get(id) else {
-            return;
-        };
-        let Some((row, column)) = tab.grid.selected() else {
-            return;
-        };
-        let schema = doc.schema();
-        let field = schema.field(column);
-        if !field.data_type().is_nested() {
-            return;
-        }
-        let Some(json) = tab
-            .grid
-            .cell_array(row, column, doc)
-            .and_then(|a| veta_core::display::value_json(a.as_ref(), 0).ok())
-        else {
-            return;
-        };
-        self.edit = None;
-        self.leaf_edit = None;
-        self.dialog = Some(Dialog::Json {
-            document: id,
-            dialog: dialogs::JsonDialog::new(row, field.name().clone(), json.as_deref()),
-        });
-    }
-
-    /// Replaces a nested cell with `change` applied to its JSON (`null` for
-    /// a null cell). For Value tab edits, which reach any value (map keys,
-    /// items at any depth); grid edits use the nested value commands.
-    fn change_nested_cell(
-        &mut self,
-        id: DocumentId,
-        row: usize,
-        column: usize,
-        change: impl FnOnce(&str) -> veta_core::Result<String>,
-    ) -> Result<(), String> {
-        let tab = self.tabs.iter().find(|t| t.id == id).ok_or("closed")?;
-        let doc = self.workbook.get(id).ok_or("closed")?;
-        let json = tab
-            .grid
-            .cell_array(row, column, doc)
-            .and_then(|a| veta_core::display::value_json(a.as_ref(), 0).ok())
-            .ok_or("the cell isn't loaded")?
-            .unwrap_or_else(|| "null".into());
-        let value = change(&json).map_err(|e| e.to_string())?;
-        let name = doc.schema().field(column).name().clone();
-        let doc = self.workbook.get_mut(id).ok_or("closed")?;
-        controller::execute(
-            doc,
-            Command::SetCell {
-                row,
-                column: name,
-                value: Some(value),
-            },
-        )
-        .map_err(|e| e.to_string())
-    }
-
     /// Runs a nested value command (a struct field or list item) on a
     /// document, without refreshing its grid.
     fn nested_command(&mut self, id: DocumentId, command: Command) -> Result<(), String> {
@@ -332,25 +117,6 @@ impl App {
             Command::ExpandStruct { column, all_levels }
         };
         self.execute(id, command);
-    }
-
-    /// The selected cell's value as a tree, for the Value tab.
-    pub(crate) fn value_tree(
-        &self,
-        tab: &Tab,
-        doc: &Document,
-    ) -> Option<veta_core::display::ValueNode> {
-        if self.side_tab != SideTab::Value || !self.show_side_pane {
-            return None;
-        }
-        let (row, column) = tab.grid.selected()?;
-        let array = tab.grid.cell_array(row, column, doc)?;
-        let name = doc
-            .schema_at(doc.evaluated_steps())?
-            .field(column)
-            .name()
-            .clone();
-        Some(veta_core::display::value_tree(array.as_ref(), 0, &name))
     }
 
     /// Opens the Add field dialog on the selected struct column.

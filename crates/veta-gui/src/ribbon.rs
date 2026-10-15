@@ -49,7 +49,6 @@ pub enum Action {
     CollectList,
     ExpandAll,
     ExplodeList,
-    EditJson,
     DataType,
     ReplaceValues,
     FillDown,
@@ -339,10 +338,6 @@ fn groups(tab: Tab) -> Vec<Group> {
                     large(A::CollectList, "Collect into Lists", Icon::ListCollapse),
                 ],
             ),
-            group(
-                "Value",
-                vec![large(A::EditJson, "Edit as JSON", Icon::Braces)],
-            ),
         ],
         Tab::View => vec![
             group(
@@ -380,8 +375,6 @@ pub struct Context {
     pub has_document: bool,
     /// Rows are selected, or a cell.
     pub has_selection: bool,
-    /// A cell is selected (not whole rows or columns).
-    pub has_cell: bool,
     /// The document has rows.
     pub has_rows: bool,
     /// The document can be changed (no filter view, step preview or
@@ -439,11 +432,6 @@ impl Context {
                     )
             }
             A::ExplodeList => self.editable && self.column == ColumnKind::List,
-            A::EditJson => {
-                self.editable
-                    && self.has_cell
-                    && matches!(self.column, ColumnKind::Struct { .. } | ColumnKind::List)
-            }
             A::AddColumn
             | A::CustomColumn
             | A::IndexColumn
