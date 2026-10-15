@@ -2056,7 +2056,6 @@ impl App {
         let changes_data = matches!(
             action,
             Action::InsertRowsAt
-                | Action::DeleteRowsAt
                 | Action::AddColumn
                 | Action::RenameColumn
                 | Action::RemoveColumns
@@ -2217,11 +2216,6 @@ impl App {
                     return self.open_rows_dialog(id, dialogs::RowAction::Insert, "Insert rows");
                 }
             }
-            Action::DeleteRowsAt => {
-                if let Some(id) = self.active {
-                    return self.open_rows_dialog(id, dialogs::RowAction::Delete, "Delete rows");
-                }
-            }
             Action::FilterRows => {
                 if let Some(id) = self.active {
                     return self.open_filter_dialog(id);
@@ -2239,6 +2233,8 @@ impl App {
                         .is_some_and(|t| t.grid.filter().is_some());
                     if filtered {
                         self.apply_filter(id, remove);
+                    } else if !self.editable(id) {
+                        self.not_editable(id);
                     } else if remove {
                         return self.open_rows_dialog(
                             id,
@@ -5306,7 +5302,7 @@ mod tests {
             Message::Grid(ida, GridEvent::DeleteRows),
             Message::Grid(ida, GridEvent::InsertRows),
             Message::Grid(ida, GridEvent::MoveColumn { from: 0, to: 1 }),
-            Message::Action(Action::DeleteRowsAt),
+            Message::Action(Action::RemoveRows),
             Message::Action(Action::RemoveColumns),
             Message::Action(Action::SortAscending),
             Message::Action(Action::Undo),
@@ -6536,7 +6532,7 @@ mod tests {
         assert_eq!(app.selected_rows(id), Some(0..3));
 
         // Delete them again: 3 rows from row 1.
-        let _ = app.update(Message::Action(Action::DeleteRowsAt));
+        let _ = app.update(Message::Action(Action::RemoveRows));
         rows_msg(&mut app, RowsMessage::Place(RowPlace::At));
         rows_msg(&mut app, RowsMessage::At("1".into()));
         rows_msg(&mut app, RowsMessage::Apply);
@@ -6549,14 +6545,14 @@ mod tests {
         rows_msg(&mut app, RowsMessage::Place(RowPlace::Bottom));
         rows_msg(&mut app, RowsMessage::Apply);
         assert_eq!(rows(&app), total + 2);
-        let _ = app.update(Message::Action(Action::DeleteRowsAt));
+        let _ = app.update(Message::Action(Action::RemoveRows));
         rows_msg(&mut app, RowsMessage::Count("5".into()));
         rows_msg(&mut app, RowsMessage::Place(RowPlace::Bottom));
         rows_msg(&mut app, RowsMessage::Apply);
         assert_eq!(rows(&app), total - 3);
 
         // Bad input keeps the dialog open.
-        let _ = app.update(Message::Action(Action::DeleteRowsAt));
+        let _ = app.update(Message::Action(Action::RemoveRows));
         for (count, at) in [
             ("0", "1"),
             ("x", "1"),

@@ -167,7 +167,7 @@ veta-cli info | schema <file>
 veta-cli head <file> [-n N]
 veta-cli set-cell <file> --row R --column C (--value V | --null)
 veta-cli insert-rows <file> (--top | --bottom | --at R) [--count N]
-veta-cli delete-rows <file> (--top N | --bottom N | --rows 5,10-20)   # alias remove-rows
+veta-cli remove-rows <file> (--top N | --bottom N | --rows 5,10-20)   # alias delete-rows
 veta-cli keep-rows <file> (--top N | --bottom N | --rows 5,10-20)
 veta-cli add-column <file> <name> --type T [--at P]
 veta-cli remove-column <file> <name>...

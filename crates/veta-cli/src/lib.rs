@@ -70,9 +70,9 @@ pub enum Command {
         #[command(flatten)]
         output: edit::Output,
     },
-    /// Delete rows: the first N, the last N, or row ranges, e.g. --rows 5
+    /// Remove rows: the first N, the last N, or row ranges, e.g. --rows 5
     /// --rows 10-20 or --rows 5,10-20.
-    #[command(visible_alias = "remove-rows")]
+    #[command(name = "remove-rows", visible_alias = "delete-rows")]
     DeleteRows {
         #[command(flatten)]
         rows: RowsArgs,
@@ -80,7 +80,7 @@ pub enum Command {
         output: edit::Output,
     },
     /// Keep only some rows: the first N, the last N, or row ranges (as for
-    /// delete-rows).
+    /// remove-rows).
     KeepRows {
         #[command(flatten)]
         rows: RowsArgs,

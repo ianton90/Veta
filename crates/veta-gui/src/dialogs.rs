@@ -1621,7 +1621,7 @@ impl RowsDialog {
     pub fn view(&self, tokens: Tokens) -> Element<'_, RowsMessage> {
         let action = match self.action {
             RowAction::Insert => "Insert",
-            RowAction::Delete => "Delete",
+            RowAction::Delete => "Remove",
             RowAction::Keep => "Keep",
         };
         let mut body = column![
@@ -1661,7 +1661,7 @@ impl RowsDialog {
                 self.num_rows + 1
             ),
             RowAction::Delete => format!(
-                "Deletes from that row down. The table has {} rows.",
+                "Removes from that row down. The table has {} rows.",
                 self.num_rows
             ),
             RowAction::Keep => format!(

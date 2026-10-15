@@ -39,9 +39,8 @@ pub enum Action {
     FilterRows,
     KeepRows,
     RemoveRows,
-    /// Insert or delete a number of rows at the top, bottom or a position.
+    /// Insert a number of rows at the top, bottom or a position.
     InsertRowsAt,
-    DeleteRowsAt,
     SortAscending,
     SortDescending,
     CustomSort,
@@ -263,13 +262,12 @@ fn groups(tab: Tab) -> Vec<Group> {
             group(
                 "Rows",
                 vec![
-                    large(A::InsertRowsAt, "Insert Rows", Icon::InsertRows),
-                    large(A::DeleteRowsAt, "Delete Rows", Icon::Trash),
+                    large(A::FilterRows, "Filter", Icon::Filter),
                     large(A::KeepRows, "Keep Rows", Icon::FilterPlus),
                     large(A::RemoveRows, "Remove Rows", Icon::Eraser),
+                    large(A::InsertRowsAt, "Insert Rows", Icon::InsertRows),
                 ],
             ),
-            group("Filter", vec![large(A::FilterRows, "Filter", Icon::Filter)]),
             group(
                 "Sort",
                 vec![
@@ -411,7 +409,6 @@ impl Context {
             A::Copy => self.has_selection || column,
             A::Cut | A::Paste => self.editable && (self.has_selection || column),
             A::InsertRowsAt => self.editable,
-            A::DeleteRowsAt => self.editable && self.has_rows,
             A::KeepRows | A::RemoveRows => self.filter_active || (self.editable && self.has_rows),
             A::RenameColumn
             | A::MoveColumnLeft
