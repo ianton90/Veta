@@ -9,8 +9,8 @@ use arrow::compute::{cast, is_null, prep_null_mask_filter};
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
 
-use super::invalid;
 use crate::error::Result;
+use crate::steps::invalid;
 use crate::values::{is_text, parse_value};
 
 /// Replaces values in a column (Power Query's "Replace Values").
@@ -43,7 +43,7 @@ impl Replace {
         is_text(data_type) && !self.whole_cell && self.find.is_some()
     }
 
-    pub(super) fn validate(&self, schema: &Schema) -> Result<()> {
+    pub(crate) fn validate(&self, schema: &Schema) -> Result<()> {
         let field = schema
             .field_with_name(&self.column)
             .map_err(|_| invalid(format!("no column named {:?}", self.column)))?;
@@ -70,7 +70,7 @@ impl Replace {
         Ok(())
     }
 
-    pub(super) fn apply(&self, column: &ArrayRef) -> Result<ArrayRef> {
+    pub(crate) fn apply(&self, column: &ArrayRef) -> Result<ArrayRef> {
         let data_type = column.data_type();
         if self.substring(data_type) {
             let find = self.find.as_deref().unwrap_or_default();
@@ -112,7 +112,7 @@ impl TextOp {
         }
     }
 
-    pub(super) fn validate(self, schema: &Schema, columns: &[String]) -> Result<()> {
+    pub(crate) fn validate(self, schema: &Schema, columns: &[String]) -> Result<()> {
         if columns.is_empty() {
             return Err(invalid("no columns to format".into()));
         }
@@ -127,7 +127,7 @@ impl TextOp {
         Ok(())
     }
 
-    pub(super) fn apply(self, column: &ArrayRef) -> Result<ArrayRef> {
+    pub(crate) fn apply(self, column: &ArrayRef) -> Result<ArrayRef> {
         match self {
             Self::Trim => map_text(column, |s| s.trim().to_owned()),
             Self::Lower => map_text(column, str::to_lowercase),
@@ -189,7 +189,7 @@ fn map_text(column: &ArrayRef, f: impl Fn(&str) -> String) -> Result<ArrayRef> {
 
 /// Replaces the named columns of `batch` using `f`; `schema` is the output
 /// schema.
-pub(super) fn map_columns(
+pub(crate) fn map_columns(
     batch: &RecordBatch,
     schema: &Arc<Schema>,
     names: &[String],

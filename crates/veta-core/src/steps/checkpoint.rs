@@ -132,7 +132,7 @@ impl Checkpoint {
     }
 
     #[cfg(test)]
-    pub(super) fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         self._file.path()
     }
 }

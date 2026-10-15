@@ -9,11 +9,11 @@ use arrow::array::{Array, ArrayRef};
 use arrow::record_batch::RecordBatch;
 
 use super::checkpoint::{Checkpoint, TempFile, write_parquet};
-use super::fill::{Fill, carry_out, fill};
-use super::sort::{sort_external, sort_in_memory};
 use super::{Pipeline, Step, invalid};
 use crate::error::{Error, Result};
 use crate::source::{DataSource, MemorySource, SourceMode};
+use crate::transforms::fill::{Fill, carry_out, fill};
+use crate::transforms::sort::{sort_external, sort_in_memory};
 
 /// Rows read per batch during a full pass.
 pub(super) const PASS_ROWS: usize = 64 * 1024;
@@ -359,13 +359,13 @@ impl ComputeJob {
         input_rows: usize,
         progress: &mut dyn FnMut(f32) -> bool,
     ) -> Result<Arc<dyn DataSource>> {
-        use super::sort::{Sort, SortKey};
+        use crate::transforms::sort::{Sort, SortKey};
         let input = self
             .pipeline
             .schema_at(self.step)
             .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
         let schema = Arc::new(arrow::datatypes::Schema::new_with_metadata(
-            super::nested::collect_fields(&input, keys, columns)?,
+            crate::transforms::nested::collect_fields(&input, keys, columns)?,
             input.metadata().clone(),
         ));
         let read = |range| self.pipeline.read_at(self.step, range);
@@ -443,7 +443,11 @@ impl ComputeJob {
                     (None, Some(r)) => r,
                     (None, None) => return Ok(None),
                 };
-                let starts = super::nested::group_starts(&batch, &key_columns, converter.as_ref())?;
+                let starts = crate::transforms::nested::group_starts(
+                    &batch,
+                    &key_columns,
+                    converter.as_ref(),
+                )?;
                 let (groups, complete) = match (last, starts.last()) {
                     (true, _) => (starts.len(), batch.num_rows()),
                     (false, Some(&s)) => (starts.len() - 1, s),
@@ -461,7 +465,10 @@ impl ComputeJob {
                 let mut bounds = starts[..groups].to_vec();
                 bounds.push(complete);
                 let complete = batch.slice(0, complete);
-                return super::nested::collect_groups(&complete, &bounds, keys, &schema).map(Some);
+                return crate::transforms::nested::collect_groups(
+                    &complete, &bounds, keys, &schema,
+                )
+                .map(Some);
             }
         };
         let mut produce = || next(progress).transpose();
@@ -480,7 +487,7 @@ impl ComputeJob {
             .schema_at(self.step)
             .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
         let schema = Arc::new(arrow::datatypes::Schema::new_with_metadata(
-            super::nested::explode_fields(&input, column)?,
+            crate::transforms::nested::explode_fields(&input, column)?,
             input.metadata().clone(),
         ));
         let mut start = 0;
@@ -492,7 +499,7 @@ impl ComputeJob {
             let result = self
                 .pipeline
                 .read_at(self.step, start..end)
-                .and_then(|batch| super::nested::explode(&batch, column, &schema));
+                .and_then(|batch| crate::transforms::nested::explode(&batch, column, &schema));
             start = end;
             if result.is_ok() && !progress(start as f32 / input_rows as f32) {
                 return Some(Err(Error::Cancelled));

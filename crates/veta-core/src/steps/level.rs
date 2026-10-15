@@ -31,10 +31,10 @@ impl Level {
             Step::Sort(sort) => sort.validate(&self.schema),
             Step::Fill(fill) => fill.validate(&self.schema),
             Step::ExplodeList { column } => {
-                super::nested::explode_fields(&self.schema, column).map(|_| ())
+                crate::transforms::nested::explode_fields(&self.schema, column).map(|_| ())
             }
             Step::CollectList { keys, columns } => {
-                super::nested::collect_fields(&self.schema, keys, columns).map(|_| ())
+                crate::transforms::nested::collect_fields(&self.schema, keys, columns).map(|_| ())
             }
             Step::Cast(cast) => cast.output_fields(&self.schema).map(|_| ()),
             Step::RemoveEmptyColumn { name } => {
@@ -183,7 +183,7 @@ impl Level {
                 self.num_rows,
             )),
             Step::ExpandStruct { column, all_levels } => Ok(with_fields(
-                super::nested::expand_all(&self.schema, column, *all_levels)?
+                crate::transforms::nested::expand_all(&self.schema, column, *all_levels)?
                     .1
                     .fields()
                     .iter()
@@ -200,15 +200,20 @@ impl Level {
                 name,
                 data_type,
             } => Ok(with_fields(
-                super::nested::change_field_fields(&self.schema, column, name, Some(data_type))?,
+                crate::transforms::nested::change_field_fields(
+                    &self.schema,
+                    column,
+                    name,
+                    Some(data_type),
+                )?,
                 self.num_rows,
             )),
             Step::RemoveField { column, name } => Ok(with_fields(
-                super::nested::change_field_fields(&self.schema, column, name, None)?,
+                crate::transforms::nested::change_field_fields(&self.schema, column, name, None)?,
                 self.num_rows,
             )),
             Step::CombineStruct { columns, name } => Ok(with_fields(
-                super::nested::combine_fields(&self.schema, columns, name)?,
+                crate::transforms::nested::combine_fields(&self.schema, columns, name)?,
                 self.num_rows,
             )),
             Step::Merge(merge) => Ok(with_fields(

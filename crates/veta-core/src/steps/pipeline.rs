@@ -10,10 +10,10 @@ use super::compute::{Cache, ComputeJob, Computed};
 use super::edits::CellEdits;
 use super::level::Level;
 use super::rows::kept_ranges;
-use super::text::map_columns;
 use super::{Step, invalid};
 use crate::error::Result;
 use crate::source::DataSource;
+use crate::transforms::text::map_columns;
 
 /// Whether the steps' output can be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -385,11 +385,18 @@ impl Pipeline {
             ),
             Step::Merge(merge) => merge.apply(&self.read_level(previous, range)?, &schema),
             Step::AddField { column, .. } | Step::RemoveField { column, .. } => {
-                super::nested::change_field(&self.read_level(previous, range)?, column, &schema)
+                crate::transforms::nested::change_field(
+                    &self.read_level(previous, range)?,
+                    column,
+                    &schema,
+                )
             }
-            Step::CombineStruct { columns, name } => {
-                super::nested::combine(&self.read_level(previous, range)?, columns, name, &schema)
-            }
+            Step::CombineStruct { columns, name } => crate::transforms::nested::combine(
+                &self.read_level(previous, range)?,
+                columns,
+                name,
+                &schema,
+            ),
             Step::Replace(replace) => map_columns(
                 &self.read_level(previous, range)?,
                 &schema,
@@ -403,7 +410,7 @@ impl Pipeline {
             }
             Step::ExpandStruct { column, all_levels } => {
                 let input = self.read_level(previous, range)?;
-                super::nested::expand_levels(&input, column, *all_levels, &schema)
+                crate::transforms::nested::expand_levels(&input, column, *all_levels, &schema)
             }
             Step::Filter(_)
             | Step::Sort(_)

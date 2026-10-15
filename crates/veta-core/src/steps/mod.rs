@@ -8,20 +8,12 @@
 //! Steps refer to columns by name and to rows by their index in the previous
 //! step's output.
 
-mod cast;
 pub mod checkpoint;
 mod compute;
 mod edits;
-mod expr;
-mod fill;
-mod filter;
 mod level;
-mod nested;
 mod pipeline;
 mod rows;
-mod sort;
-mod split;
-mod text;
 
 use std::ops::Range;
 
@@ -30,17 +22,17 @@ use arrow::datatypes::DataType;
 use crate::display::type_name;
 use crate::error::Error;
 
-pub use cast::{Cast, CastOptions, CastPreview, FORMAT_CODES, OnError};
+pub use crate::formulas::{CustomColumn, expression_help};
+pub use crate::transforms::cast::{Cast, CastOptions, CastPreview, FORMAT_CODES, OnError};
+pub use crate::transforms::fill::Fill;
+pub use crate::transforms::filter::{Condition, Filter, FilterOp};
+pub use crate::transforms::sort::{Sort, SortKey};
+pub use crate::transforms::split::{Merge, Split, SplitBy, count_parts};
+pub use crate::transforms::text::{Replace, TextOp};
 pub use compute::{ComputeJob, Computed};
 pub use edits::CellEdits;
-pub use expr::{CustomColumn, expression_help};
-pub use fill::Fill;
-pub use filter::{Condition, Filter, FilterOp};
 pub use pipeline::{Pipeline, Status};
 pub use rows::normalize_ranges;
-pub use sort::{Sort, SortKey};
-pub use split::{Merge, Split, SplitBy, count_parts};
-pub use text::{Replace, TextOp};
 
 /// One transformation of the data.
 #[derive(Debug, Clone, PartialEq)]
@@ -148,7 +140,7 @@ impl Step {
                 | Step::RemoveEmptyColumn { .. }
                 | Step::ExplodeList { .. }
                 | Step::CollectList { .. }
-        ) || matches!(self, Step::Cast(c) if c.options.on_error == cast::OnError::Fail)
+        ) || matches!(self, Step::Cast(c) if c.options.on_error == OnError::Fail)
     }
 
     /// Whether the step refers to rows by position, so changing an earlier
@@ -253,7 +245,7 @@ pub fn schema_after(
     Ok(level.next(step)?.schema)
 }
 
-fn invalid(message: String) -> Error {
+pub(crate) fn invalid(message: String) -> Error {
     Error::InvalidCommand(message)
 }
 

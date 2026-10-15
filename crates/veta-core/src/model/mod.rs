@@ -2,6 +2,7 @@
 //! [`controller`](crate::controller).
 
 mod document;
+pub mod history;
 mod metadata;
 mod workbook;
 

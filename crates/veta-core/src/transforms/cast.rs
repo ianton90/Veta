@@ -10,9 +10,9 @@ use arrow::compute::{CastOptions as ArrowCastOptions, can_cast_types, cast_with_
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 
-use super::invalid;
 use crate::display::type_name;
 use crate::error::Result;
+use crate::steps::invalid;
 use crate::values::is_text;
 
 /// Converts `column` to type `to`.
@@ -92,7 +92,7 @@ impl Cast {
 
     /// Checks the cast against the input schema and returns the output
     /// fields.
-    pub(super) fn output_fields(&self, schema: &Schema) -> Result<Vec<Field>> {
+    pub(crate) fn output_fields(&self, schema: &Schema) -> Result<Vec<Field>> {
         let index = schema
             .index_of(&self.column)
             .map_err(|_| invalid(format!("no column named {:?}", self.column)))?;
@@ -138,7 +138,7 @@ impl Cast {
     }
 
     /// Converts the column in `batch`; `schema` is the output schema.
-    pub(super) fn apply(&self, batch: &RecordBatch, schema: &Arc<Schema>) -> Result<RecordBatch> {
+    pub(crate) fn apply(&self, batch: &RecordBatch, schema: &Arc<Schema>) -> Result<RecordBatch> {
         let index = batch
             .schema()
             .index_of(&self.column)
@@ -173,7 +173,7 @@ impl Cast {
 
     /// The first row of `batch` whose value can't be converted, and that
     /// value as text.
-    pub(super) fn first_failure(&self, batch: &RecordBatch) -> Result<Option<(usize, String)>> {
+    pub(crate) fn first_failure(&self, batch: &RecordBatch) -> Result<Option<(usize, String)>> {
         let input = batch
             .column_by_name(&self.column)
             .ok_or_else(|| invalid(format!("no column named {:?}", self.column)))?;

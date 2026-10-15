@@ -10,9 +10,9 @@ use arrow::compute::{and_kleene, cast, not, or_kleene, prep_null_mask_filter};
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
 
-use super::invalid;
 use crate::display::type_name;
 use crate::error::Result;
+use crate::steps::invalid;
 use crate::values::{is_text, parse_value};
 
 /// Rows are kept when all (or any) conditions hold.
@@ -125,7 +125,7 @@ impl Filter {
     }
 
     /// Checks the filter against the input schema.
-    pub(super) fn validate(&self, schema: &Schema) -> Result<()> {
+    pub(crate) fn validate(&self, schema: &Schema) -> Result<()> {
         if self.conditions.is_empty() {
             return Err(invalid("a filter needs at least one condition".into()));
         }
@@ -167,7 +167,7 @@ impl Filter {
     }
 
     /// Which rows of `batch` to keep (nulls count as not kept).
-    pub(super) fn evaluate(&self, batch: &RecordBatch) -> Result<BooleanArray> {
+    pub(crate) fn evaluate(&self, batch: &RecordBatch) -> Result<BooleanArray> {
         let mut result: Option<BooleanArray> = None;
         for condition in &self.conditions {
             let mask = condition.evaluate(batch)?;

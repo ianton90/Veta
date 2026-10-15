@@ -4,8 +4,8 @@ use arrow::array::{Array, ArrayRef, UInt32Array, new_null_array};
 use arrow::compute::{concat, take};
 use arrow::datatypes::Schema;
 
-use super::invalid;
 use crate::error::Result;
+use crate::steps::invalid;
 
 /// Fills nulls in `columns` with the previous non-null value (down) or the
 /// next one (up).
@@ -24,7 +24,7 @@ impl Fill {
         }
     }
 
-    pub(super) fn validate(&self, schema: &Schema) -> Result<()> {
+    pub(crate) fn validate(&self, schema: &Schema) -> Result<()> {
         if self.columns.is_empty() {
             return Err(invalid("no columns to fill".into()));
         }
@@ -39,7 +39,7 @@ impl Fill {
 
 /// The value carried into the next batch: the last non-null value of
 /// `column` (first, when filling up), or `carry` if there is none.
-pub(super) fn carry_out(column: &ArrayRef, carry: Option<ArrayRef>, up: bool) -> Option<ArrayRef> {
+pub(crate) fn carry_out(column: &ArrayRef, carry: Option<ArrayRef>, up: bool) -> Option<ArrayRef> {
     let n = column.len();
     let found = if up {
         (0..n).find(|&i| column.is_valid(i))
@@ -54,7 +54,7 @@ pub(super) fn carry_out(column: &ArrayRef, carry: Option<ArrayRef>, up: bool) ->
 
 /// Fills nulls in `column`, using `carry` (one value) for nulls before the
 /// first value (after the last one, when filling up).
-pub(super) fn fill(column: &ArrayRef, carry: Option<&ArrayRef>, up: bool) -> Result<ArrayRef> {
+pub(crate) fn fill(column: &ArrayRef, carry: Option<&ArrayRef>, up: bool) -> Result<ArrayRef> {
     let n = column.len();
     // Index 0 is the carried value; row i is index i + 1.
     let first = match carry {

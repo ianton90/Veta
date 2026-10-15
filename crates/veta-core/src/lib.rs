@@ -1,21 +1,22 @@
 //! Veta core: model, controller and storage. Has no UI dependencies; the GUI
 //! and the CLI are thin layers on top of it. See `docs/ARCHITECTURE.md`.
 
-pub mod clipboard;
-pub mod command;
 pub mod controller;
-pub mod convert;
-pub mod display;
 pub mod error;
-pub mod history;
-pub mod io;
+pub mod files;
+pub mod formulas;
 pub mod model;
-pub mod recipe;
-pub mod rows;
-pub mod source;
 pub mod stats;
 pub mod steps;
+pub mod transforms;
 pub mod values;
+
+// Short paths for the modules the GUI and CLI use most.
+pub use controller::{command, rows};
+pub use files::parquet as io;
+pub use files::{convert, recipe, source};
+pub use model::history;
+pub use values::{clipboard, display};
 
 /// Version information. See `docs/RELEASING.md`.
 pub mod version {

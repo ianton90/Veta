@@ -11,8 +11,8 @@ use arrow::compute::take;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 
-use super::invalid;
 use crate::error::Result;
+use crate::steps::invalid;
 
 fn column_index(schema: &Schema, name: &str) -> Result<usize> {
     schema
@@ -22,7 +22,7 @@ fn column_index(schema: &Schema, name: &str) -> Result<usize> {
 
 /// Fields of a struct column become columns named `<column>.<field>`,
 /// replacing it.
-pub(super) fn expand_fields(schema: &Schema, column: &str) -> Result<Vec<Field>> {
+pub(crate) fn expand_fields(schema: &Schema, column: &str) -> Result<Vec<Field>> {
     let index = column_index(schema, column)?;
     let DataType::Struct(children) = schema.field(index).data_type() else {
         return Err(invalid(format!("{column} is not a struct column")));
@@ -51,7 +51,7 @@ pub(super) fn expand_fields(schema: &Schema, column: &str) -> Result<Vec<Field>>
     Ok(fields)
 }
 
-pub(super) fn expand(
+pub(crate) fn expand(
     batch: &RecordBatch,
     column: &str,
     schema: &Arc<Schema>,
@@ -81,7 +81,7 @@ pub(super) fn expand(
 
 /// The struct columns expanded in order (the column, then with
 /// `all_levels` its struct fields, breadth first) and the schema after.
-pub(super) fn expand_all(
+pub(crate) fn expand_all(
     schema: &Schema,
     column: &str,
     all_levels: bool,
@@ -110,7 +110,7 @@ pub(super) fn expand_all(
 
 /// Expands `column` (and, with `all_levels`, nested structs) in `batch`;
 /// `schema` is the output schema.
-pub(super) fn expand_levels(
+pub(crate) fn expand_levels(
     batch: &RecordBatch,
     column: &str,
     all_levels: bool,
@@ -134,7 +134,7 @@ pub(super) fn expand_levels(
 
 /// Fields after adding field `name` (`Some` type) to, or removing it from
 /// (`None`), the struct column `column`. Added fields go last.
-pub(super) fn change_field_fields(
+pub(crate) fn change_field_fields(
     schema: &Schema,
     column: &str,
     name: &str,
@@ -181,7 +181,7 @@ pub(super) fn change_field_fields(
 
 /// Adds a null field to, or removes one from, a struct column of `batch`;
 /// `schema` is the output schema.
-pub(super) fn change_field(
+pub(crate) fn change_field(
     batch: &RecordBatch,
     column: &str,
     schema: &Arc<Schema>,
@@ -212,7 +212,7 @@ pub(super) fn change_field(
 }
 
 /// Fields after combining `columns` into a struct column `name`.
-pub(super) fn combine_fields(
+pub(crate) fn combine_fields(
     schema: &Schema,
     columns: &[String],
     name: &str,
@@ -257,7 +257,7 @@ pub(super) fn combine_fields(
 
 /// Combines `columns` of `batch` into a struct column; `schema` is the
 /// output schema.
-pub(super) fn combine(
+pub(crate) fn combine(
     batch: &RecordBatch,
     columns: &[String],
     name: &str,
@@ -297,7 +297,7 @@ pub(super) fn combine(
 /// Fields after collecting `columns` into lists, one row per group of
 /// equal `keys`: the keys and the collected columns, in input order; other
 /// columns are dropped.
-pub(super) fn collect_fields(
+pub(crate) fn collect_fields(
     schema: &Schema,
     keys: &[String],
     columns: &[String],
@@ -332,7 +332,7 @@ pub(super) fn collect_fields(
 
 /// Row indices where each run of equal `keys` starts in `batch` (all rows
 /// are one group without keys).
-pub(super) fn group_starts(
+pub(crate) fn group_starts(
     batch: &RecordBatch,
     keys: &[usize],
     converter: Option<&arrow::row::RowConverter>,
@@ -352,7 +352,7 @@ pub(super) fn group_starts(
 
 /// One row per group of `batch`, whose groups start at `bounds` (plus the
 /// end): keys from each group's first row, other columns as lists.
-pub(super) fn collect_groups(
+pub(crate) fn collect_groups(
     batch: &RecordBatch,
     bounds: &[usize],
     keys: &[String],
@@ -392,7 +392,7 @@ pub(super) fn collect_groups(
 
 /// The column type after exploding: the list's item type, or the map's
 /// entry struct.
-pub(super) fn explode_fields(schema: &Schema, column: &str) -> Result<Vec<Field>> {
+pub(crate) fn explode_fields(schema: &Schema, column: &str) -> Result<Vec<Field>> {
     let index = column_index(schema, column)?;
     let item = match schema.field(index).data_type() {
         DataType::List(item) | DataType::LargeList(item) | DataType::FixedSizeList(item, _) => {
@@ -408,7 +408,7 @@ pub(super) fn explode_fields(schema: &Schema, column: &str) -> Result<Vec<Field>
 
 /// One row per item of `column`; empty and null lists give one row with a
 /// null item.
-pub(super) fn explode(
+pub(crate) fn explode(
     batch: &RecordBatch,
     column: &str,
     schema: &Arc<Schema>,

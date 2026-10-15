@@ -17,9 +17,9 @@ use arrow::record_batch::RecordBatch;
 use arrow::row::{OwnedRow, RowConverter, Rows, SortField};
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 
-use super::checkpoint::{Checkpoint, TempFile, write_parquet};
-use super::invalid;
 use crate::error::{Error, Result};
+use crate::steps::checkpoint::{Checkpoint, TempFile, write_parquet};
+use crate::steps::invalid;
 
 /// Sorts rows by `keys`, the first key first. The sort is stable.
 #[derive(Debug, Clone, PartialEq)]
@@ -59,7 +59,7 @@ impl Sort {
     }
 
     /// Checks the sort against the input schema.
-    pub(super) fn validate(&self, schema: &Schema) -> Result<()> {
+    pub(crate) fn validate(&self, schema: &Schema) -> Result<()> {
         self.converter(schema).map(|_| ())
     }
 
@@ -130,10 +130,10 @@ impl Sorter {
 }
 
 /// Reads input rows in `range` of the step being sorted.
-pub(super) type ReadInput<'a> = dyn Fn(std::ops::Range<usize>) -> Result<RecordBatch> + 'a;
+pub(crate) type ReadInput<'a> = dyn Fn(std::ops::Range<usize>) -> Result<RecordBatch> + 'a;
 
 /// Sorts all of the input in memory.
-pub(super) fn sort_in_memory(
+pub(crate) fn sort_in_memory(
     sort: &Sort,
     schema: &SchemaRef,
     num_rows: usize,
@@ -154,7 +154,7 @@ pub(super) fn sort_in_memory(
 
 /// Sorts the input into a temporary Parquet file, in runs of about
 /// `run_rows` rows (estimated from the data when `None`).
-pub(super) fn sort_external(
+pub(crate) fn sort_external(
     sort: &Sort,
     schema: &SchemaRef,
     num_rows: usize,

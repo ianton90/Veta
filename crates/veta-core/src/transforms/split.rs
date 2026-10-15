@@ -7,8 +7,8 @@ use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 
-use super::invalid;
 use crate::error::Result;
+use crate::steps::invalid;
 
 /// Splits a column's text into `parts` new text columns named
 /// `<column>.1`, `<column>.2`, …, which replace it.
@@ -57,7 +57,7 @@ impl Split {
             .collect()
     }
 
-    pub(super) fn output_fields(&self, schema: &Schema) -> Result<Vec<Field>> {
+    pub(crate) fn output_fields(&self, schema: &Schema) -> Result<Vec<Field>> {
         let index = column_index(schema, &self.column)?;
         match &self.by {
             SplitBy::Delimiter { delimiter, parts } => {
@@ -95,7 +95,7 @@ impl Split {
         Ok(fields)
     }
 
-    pub(super) fn apply(&self, batch: &RecordBatch, schema: &Arc<Schema>) -> Result<RecordBatch> {
+    pub(crate) fn apply(&self, batch: &RecordBatch, schema: &Arc<Schema>) -> Result<RecordBatch> {
         let index = column_index(&batch.schema(), &self.column)?;
         let strings = cast(batch.column(index), &DataType::Utf8)?;
         let strings = as_strings(&strings)?;
@@ -150,7 +150,7 @@ impl Merge {
         format!("Merged {} into {}", self.columns.join(", "), self.name)
     }
 
-    pub(super) fn output_fields(&self, schema: &Schema) -> Result<Vec<Field>> {
+    pub(crate) fn output_fields(&self, schema: &Schema) -> Result<Vec<Field>> {
         if self.columns.len() < 2 {
             return Err(invalid("select at least 2 columns to merge".into()));
         }
@@ -183,7 +183,7 @@ impl Merge {
         Ok(fields)
     }
 
-    pub(super) fn apply(&self, batch: &RecordBatch, schema: &Arc<Schema>) -> Result<RecordBatch> {
+    pub(crate) fn apply(&self, batch: &RecordBatch, schema: &Arc<Schema>) -> Result<RecordBatch> {
         let input = batch.schema();
         let indices = self
             .columns
