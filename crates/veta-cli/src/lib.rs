@@ -1,8 +1,10 @@
 //! Veta's command-line interface (the `veta-cli` binary). Parses arguments
 //! with clap and runs headless commands through `veta-core`.
 
-mod edit;
+mod commands;
 mod table;
+
+use commands::{apply, convert, edit, inspect, meta};
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -10,9 +12,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use veta_core::arrow::datatypes::{DataType, Field};
-use veta_core::display::{abbreviate, format_batch, human_bytes, type_name};
-use veta_core::{Command as CoreCommand, Document, OpenOptions};
+use veta_core::{Document, OpenOptions};
 
 /// Read and edit Parquet files from the command line. The desktop app is
 /// `veta`.
@@ -51,7 +51,7 @@ pub enum Command {
         #[arg(long)]
         null: bool,
         #[command(flatten)]
-        output: edit::Output,
+        output: commands::Output,
     },
     /// Insert empty rows at the top, at the bottom, or before row AT (the
     /// row count + 1 also appends).
@@ -68,24 +68,24 @@ pub enum Command {
         #[arg(long, default_value_t = 1)]
         count: usize,
         #[command(flatten)]
-        output: edit::Output,
+        output: commands::Output,
     },
     /// Remove rows: the first N, the last N, or row ranges, e.g. --rows 5
     /// --rows 10-20 or --rows 5,10-20.
     #[command(name = "remove-rows", visible_alias = "delete-rows")]
     DeleteRows {
         #[command(flatten)]
-        rows: RowsArgs,
+        rows: edit::RowsArgs,
         #[command(flatten)]
-        output: edit::Output,
+        output: commands::Output,
     },
     /// Keep only some rows: the first N, the last N, or row ranges (as for
     /// remove-rows).
     KeepRows {
         #[command(flatten)]
-        rows: RowsArgs,
+        rows: edit::RowsArgs,
         #[command(flatten)]
-        output: edit::Output,
+        output: commands::Output,
     },
     /// Add an empty column.
     AddColumn {
@@ -98,7 +98,7 @@ pub enum Command {
         #[arg(long)]
         at: Option<usize>,
         #[command(flatten)]
-        output: edit::Output,
+        output: commands::Output,
     },
     /// Remove columns.
     RemoveColumn {
@@ -106,7 +106,7 @@ pub enum Command {
         #[arg(required = true)]
         names: Vec<String>,
         #[command(flatten)]
-        output: edit::Output,
+        output: commands::Output,
     },
     /// Rename a column.
     RenameColumn {
@@ -114,7 +114,7 @@ pub enum Command {
         from: String,
         to: String,
         #[command(flatten)]
-        output: edit::Output,
+        output: commands::Output,
     },
     /// Move a column to a position, from 1.
     MoveColumn {
@@ -123,15 +123,15 @@ pub enum Command {
         #[arg(long)]
         to: usize,
         #[command(flatten)]
-        output: edit::Output,
+        output: commands::Output,
     },
     /// Read or change key/value metadata.
     Meta {
         #[command(subcommand)]
-        command: edit::MetaCommand,
+        command: meta::MetaCommand,
     },
     /// Show writer settings, or change them with the options below.
-    WriterSettings(edit::WriterArgs),
+    WriterSettings(meta::WriterArgs),
     /// Column statistics: count, nulls, distinct, min, max, mean, std dev.
     Stats {
         file: PathBuf,
@@ -144,14 +144,14 @@ pub enum Command {
     },
     /// Convert between Parquet, CSV and JSON (formats from the file
     /// extensions unless --format is given).
-    Convert(edit::ConvertArgs),
+    Convert(convert::ConvertArgs),
     /// Apply a recipe (steps saved from the desktop app) to a file.
     Apply {
         /// Recipe file (.json).
         recipe: PathBuf,
         file: PathBuf,
         #[command(flatten)]
-        output: edit::Output,
+        output: commands::Output,
     },
 }
 
@@ -181,34 +181,6 @@ pub fn run(command: Command) -> ExitCode {
             let _ = out.flush();
             eprintln!("veta-cli: {e}");
             ExitCode::FAILURE
-        }
-    }
-}
-
-/// Which rows: `--top N`, `--bottom N` or `--rows` ranges.
-#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
-#[command(group(clap::ArgGroup::new("which").required(true).args(["top", "bottom", "rows"])))]
-pub struct RowsArgs {
-    file: PathBuf,
-    /// The first N rows.
-    #[arg(long, value_name = "N")]
-    top: Option<usize>,
-    /// The last N rows.
-    #[arg(long, value_name = "N")]
-    bottom: Option<usize>,
-    /// Row numbers and ranges, from 1, e.g. 5 or 10-20.
-    #[arg(long)]
-    rows: Vec<String>,
-}
-
-impl RowsArgs {
-    /// The rows meant, 0-based, in a table of `num_rows` rows.
-    fn ranges(&self, num_rows: usize) -> Result<Vec<std::ops::Range<usize>>, Error> {
-        use veta_core::rows::{RowPlace, row_range};
-        match (self.top, self.bottom) {
-            (Some(n), _) => Ok(vec![row_range(RowPlace::Top, n, num_rows)?]),
-            (_, Some(n)) => Ok(vec![row_range(RowPlace::Bottom, n, num_rows)?]),
-            _ => edit::parse_rows(&self.rows),
         }
     }
 }
@@ -244,123 +216,30 @@ impl From<std::io::Error> for Error {
 
 fn execute(command: Command, out: &mut impl Write) -> Result<(), Error> {
     match command {
-        Command::Info { file } => info(&open(&file)?, out),
-        Command::Schema { file } => schema(&open(&file)?, out),
-        Command::Head { file, rows } => head(&open(&file)?, rows, out),
-        Command::SetCell {
-            file,
-            row,
-            column,
-            value,
-            null,
-            output,
-        } => {
-            let row = edit::row_index(row)?;
-            let value = if null { None } else { value };
-            edit::edit(&file, &output, out, |_| {
-                Ok(vec![CoreCommand::SetCell { row, column, value }])
-            })
-        }
-        Command::InsertRows {
-            file,
-            top,
-            bottom,
-            at,
-            count,
-            output,
-        } => {
-            use veta_core::rows::{RowAction, RowPlace, rows_command};
-            let place = match (top, bottom, at) {
-                (true, _, _) => RowPlace::Top,
-                (_, true, _) => RowPlace::Bottom,
-                (_, _, Some(at)) => RowPlace::At(edit::row_index(at)?),
-                _ => return Err(Error::Usage("use --top, --bottom or --at".into())),
-            };
-            edit::edit(&file, &output, out, |doc| {
-                Ok(vec![rows_command(
-                    RowAction::Insert,
-                    place,
-                    count,
-                    doc.num_rows(),
-                )?])
-            })
-        }
-        Command::DeleteRows { rows, output } => edit::edit(&rows.file, &output, out, |doc| {
-            let rows = rows.ranges(doc.num_rows())?;
-            Ok(vec![CoreCommand::DeleteRows { rows }])
-        }),
-        Command::KeepRows { rows, output } => edit::edit(&rows.file, &output, out, |doc| {
-            let keep = rows.ranges(doc.num_rows())?;
-            if let Some(bad) = keep.iter().find(|r| r.end > doc.num_rows()) {
-                return Err(Error::Usage(format!(
-                    "row {} is past the last row ({})",
-                    bad.end,
-                    doc.num_rows()
-                )));
-            }
-            let delete = veta_core::rows::keep_only(&keep, doc.num_rows());
-            Ok(if delete.is_empty() {
-                Vec::new()
-            } else {
-                vec![CoreCommand::DeleteRows { rows: delete }]
-            })
-        }),
-        Command::AddColumn {
-            file,
-            name,
-            data_type,
-            at,
-            output,
-        } => {
-            let data_type = edit::parse_type(&data_type)?;
-            let at = at.map(edit::row_index).transpose()?;
-            edit::edit(&file, &output, out, |doc| {
-                Ok(vec![CoreCommand::AddColumn {
-                    name,
-                    data_type,
-                    at: at.unwrap_or(doc.num_columns()),
-                }])
-            })
-        }
-        Command::RemoveColumn {
-            file,
-            names,
-            output,
-        } => edit::edit(&file, &output, out, |_| {
-            Ok(vec![CoreCommand::RemoveColumns { names }])
-        }),
-        Command::RenameColumn {
-            file,
-            from,
-            to,
-            output,
-        } => edit::edit(&file, &output, out, |_| {
-            Ok(vec![CoreCommand::RenameColumn { from, to }])
-        }),
-        Command::MoveColumn {
-            file,
-            name,
-            to,
-            output,
-        } => {
-            let to = edit::row_index(to)?;
-            edit::edit(&file, &output, out, |_| {
-                Ok(vec![CoreCommand::MoveColumn { name, to }])
-            })
-        }
-        Command::Meta { command } => edit::meta(command, out),
-        Command::WriterSettings(args) => edit::writer_settings(args, out),
+        Command::Info { file } => inspect::info(&open(&file)?, out),
+        Command::Schema { file } => inspect::schema(&open(&file)?, out),
+        Command::Head { file, rows } => inspect::head(&open(&file)?, rows, out),
         Command::Stats {
             file,
             columns,
             json,
-        } => stats(&open(&file)?, columns, json, out),
-        Command::Convert(args) => edit::convert(args, out),
+        } => inspect::stats(&open(&file)?, columns, json, out),
+        command @ (Command::SetCell { .. }
+        | Command::InsertRows { .. }
+        | Command::DeleteRows { .. }
+        | Command::KeepRows { .. }
+        | Command::AddColumn { .. }
+        | Command::RemoveColumn { .. }
+        | Command::RenameColumn { .. }
+        | Command::MoveColumn { .. }) => edit::run(command, out),
+        Command::Meta { command } => meta::meta(command, out),
+        Command::WriterSettings(args) => meta::writer_settings(args, out),
+        Command::Convert(args) => convert::convert(args, out),
         Command::Apply {
             recipe,
             file,
             output,
-        } => edit::apply(&recipe, &file, &output, out),
+        } => apply::apply(&recipe, &file, &output, out),
     }
 }
 
@@ -376,712 +255,4 @@ pub(crate) fn open(path: &std::path::Path) -> Result<Document, Error> {
             other => other,
         })
     })
-}
-
-fn info(doc: &Document, out: &mut impl Write) -> Result<(), Error> {
-    let writer = doc.writer_settings();
-    let meta = doc.metadata();
-    if let Some(path) = doc.path() {
-        writeln!(out, "File:        {}", path.display())?;
-    }
-    if let Some(info) = doc.file_info() {
-        writeln!(
-            out,
-            "Size:        {} ({} uncompressed)",
-            human_bytes(info.file_size),
-            human_bytes(info.uncompressed_size())
-        )?;
-        writeln!(out, "Rows:        {}", doc.num_rows())?;
-        writeln!(out, "Columns:     {}", doc.num_columns())?;
-        writeln!(
-            out,
-            "Row groups:  {} (max {} rows)",
-            info.row_groups.len(),
-            writer.max_row_group_rows
-        )?;
-    }
-    writeln!(out, "Format:      {}", writer.format_version)?;
-    if let Some(created_by) = &meta.created_by {
-        writeln!(out, "Created by:  {created_by}")?;
-    }
-
-    if !meta.key_value.is_empty() {
-        writeln!(out, "\nMetadata:")?;
-        for kv in &meta.key_value {
-            match &kv.value {
-                Some(value) => writeln!(out, "  {} = {}", kv.key, abbreviate(value, 80))?,
-                None => writeln!(out, "  {}", kv.key)?,
-            }
-        }
-    }
-
-    writeln!(out)?;
-    print_writer_settings(doc, out)
-}
-
-/// Prints per-column writer settings as a table.
-pub(crate) fn print_writer_settings(doc: &Document, out: &mut impl Write) -> Result<(), Error> {
-    let writer = doc.writer_settings();
-    writeln!(
-        out,
-        "Writer: format {}, {} rows per row group",
-        writer.format_version, writer.max_row_group_rows
-    )?;
-    let schema = doc.schema();
-    let header = [
-        "column",
-        "compression",
-        "encoding",
-        "dictionary",
-        "statistics",
-        "bloom",
-    ];
-    let mut paths: Vec<String> = writer.columns.iter().map(|(p, _)| p.clone()).collect();
-    for f in schema.fields() {
-        if !paths.contains(f.name()) {
-            paths.push(f.name().clone());
-        }
-    }
-    let rows = paths
-        .iter()
-        .map(|path| {
-            let c = writer.column(path);
-            vec![
-                Some(path.clone()),
-                Some(c.compression.to_string()),
-                Some(c.encoding.to_string()),
-                Some(yes_no(c.dictionary).to_owned()),
-                Some(c.statistics.to_string()),
-                Some(yes_no(c.bloom_filter).to_owned()),
-            ]
-        })
-        .collect::<Vec<_>>();
-    table::write(out, &header.map(String::from), None, &rows, &[false; 6])?;
-    Ok(())
-}
-
-fn yes_no(b: bool) -> &'static str {
-    if b { "yes" } else { "no" }
-}
-
-fn schema(doc: &Document, out: &mut impl Write) -> Result<(), Error> {
-    fn field(out: &mut impl Write, f: &Field, depth: usize) -> std::io::Result<()> {
-        let indent = "  ".repeat(depth);
-        let required = if f.is_nullable() { "" } else { " (required)" };
-        let ty = match f.data_type() {
-            DataType::Struct(_) => "struct".to_owned(),
-            other => type_name(other),
-        };
-        writeln!(out, "{indent}{}: {ty}{required}", f.name())?;
-        if let DataType::Struct(children) = f.data_type() {
-            for child in children {
-                field(out, child, depth + 1)?;
-            }
-        }
-        Ok(())
-    }
-    for f in doc.schema().fields() {
-        field(out, f, 0)?;
-    }
-    Ok(())
-}
-
-fn head(doc: &Document, rows: usize, out: &mut impl Write) -> Result<(), Error> {
-    let schema = doc.schema();
-    let batch = doc.read(0..rows)?;
-    let cells = format_batch(&batch)?;
-    let names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
-    let types: Vec<String> = schema
-        .fields()
-        .iter()
-        .map(|f| type_name(f.data_type()))
-        .collect();
-    let right: Vec<bool> = schema
-        .fields()
-        .iter()
-        .map(|f| veta_core::display::is_numeric(f.data_type()))
-        .collect();
-    table::write(out, &names, Some(&types), &cells, &right)?;
-    if doc.num_rows() > rows {
-        writeln!(out, "({} of {} rows)", batch.num_rows(), doc.num_rows())?;
-    }
-    Ok(())
-}
-
-fn stats(
-    doc: &Document,
-    columns: Vec<String>,
-    json: bool,
-    out: &mut impl Write,
-) -> Result<(), Error> {
-    use veta_core::stats::{format_distinct, format_float};
-    let stats = doc.stats_job(columns)?.run(&mut |_| true)?;
-    if json {
-        writeln!(out, "{}", veta_core::stats::to_json(&stats)?)?;
-        return Ok(());
-    }
-    let header: Vec<String> = [
-        "column", "type", "count", "nulls", "distinct", "min", "max", "mean", "std dev",
-    ]
-    .map(String::from)
-    .to_vec();
-    let rows: Vec<Vec<Option<String>>> = stats
-        .iter()
-        .map(|s| {
-            vec![
-                Some(s.column.clone()),
-                Some(s.type_name.clone()),
-                Some(s.count.to_string()),
-                Some(s.nulls.to_string()),
-                format_distinct(s),
-                s.min.clone(),
-                s.max.clone(),
-                s.mean.map(format_float),
-                s.std_dev.map(format_float),
-            ]
-        })
-        .collect();
-    let right = [false, false, true, true, true, false, false, true, true];
-    table::write(out, &header, None, &rows, &right)?;
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::CommandFactory;
-    use veta_testkit::{TempDir, fixtures};
-
-    fn parse_args(args: &[&str]) -> Command {
-        Cli::try_parse_from(args).unwrap().command
-    }
-
-    fn output(command: Command) -> String {
-        let mut out = Vec::new();
-        execute(command, &mut out).unwrap();
-        String::from_utf8(out).unwrap()
-    }
-
-    #[test]
-    fn cli_definition_is_valid() {
-        Cli::command().debug_assert();
-    }
-
-    #[test]
-    fn parses_subcommands() {
-        assert_eq!(
-            parse_args(&["veta-cli", "head", "a.parquet", "-n", "3"]),
-            Command::Head {
-                file: "a.parquet".into(),
-                rows: 3
-            }
-        );
-        assert!(
-            Cli::try_parse_from(["veta-cli"]).is_err(),
-            "a subcommand is required"
-        );
-        assert!(Cli::try_parse_from(["veta-cli", "a.parquet"]).is_err());
-    }
-
-    #[test]
-    fn info_shows_layout_settings_and_metadata() {
-        let dir = TempDir::new();
-        let file = dir.join("mixed.parquet");
-        fixtures::mixed_settings(&file);
-
-        let text = output(Command::Info { file });
-        assert!(text.contains("Rows:        1000"), "{text}");
-        assert!(text.contains("Row groups:  4 (max 300 rows)"), "{text}");
-        assert!(text.contains("owner = veta-tests"), "{text}");
-        assert!(text.contains("delta_binary_packed"), "{text}");
-        assert!(text.contains("zstd"), "{text}");
-    }
-
-    #[test]
-    fn schema_lists_fields() {
-        let dir = TempDir::new();
-        let file = dir.join("mixed.parquet");
-        fixtures::mixed_settings(&file);
-
-        let text = output(Command::Schema { file });
-        assert_eq!(
-            text,
-            "id: int64 (required)\nname: string\nscore: float64\nflag: bool\n"
-        );
-    }
-
-    #[test]
-    fn head_prints_requested_rows() {
-        let dir = TempDir::new();
-        let file = dir.join("mixed.parquet");
-        fixtures::mixed_settings(&file);
-
-        let text = output(Command::Head { file, rows: 3 });
-        let lines: Vec<&str> = text.lines().collect();
-        // header, types, separator, 3 rows, footer
-        assert_eq!(lines.len(), 7, "{text}");
-        assert!(lines[0].contains("id") && lines[0].contains("name"));
-        assert!(lines[1].contains("int64"));
-        assert!(lines[3].contains("null"), "row 0 has a null name: {text}");
-        assert_eq!(lines[6], "(3 of 1000 rows)");
-    }
-
-    fn run_args(args: &[&str]) -> Result<String, String> {
-        let command = parse_args(args);
-        let mut out = Vec::new();
-        execute(command, &mut out).map_err(|e| e.to_string())?;
-        Ok(String::from_utf8(out).unwrap())
-    }
-
-    #[test]
-    fn stats_table_and_json() {
-        let dir = TempDir::new();
-        let file = dir.join("mixed.parquet");
-        fixtures::mixed_settings(&file);
-        let f = file.to_str().unwrap();
-        let table = run_args(&["veta", "stats", f]).unwrap();
-        let lines: Vec<&str> = table.lines().collect();
-        assert!(lines[0].starts_with("column"), "{table}");
-        assert_eq!(lines.len(), 2 + 4, "{table}");
-        let id = lines.iter().find(|l| l.starts_with("id ")).unwrap();
-        assert!(
-            id.contains("1000") && id.contains("499.5") && id.contains("999"),
-            "{id}"
-        );
-
-        let json = run_args(&["veta", "stats", f, "-c", "name", "--json"]).unwrap();
-        assert!(
-            json.contains("\"column\": \"name\"") && json.contains("\"distinct\": 5"),
-            "{json}"
-        );
-        assert!(run_args(&["veta", "stats", f, "-c", "nope"]).is_err());
-    }
-
-    #[test]
-    fn convert_between_formats() {
-        let dir = TempDir::new();
-        let parquet = dir.join("mixed.parquet");
-        fixtures::mixed_settings(&parquet);
-        let p = |path: &std::path::Path| path.to_str().unwrap().to_owned();
-        let csv = dir.join("eu.csv");
-        let out = run_args(&[
-            "veta",
-            "convert",
-            &p(&parquet),
-            &p(&csv),
-            "--delimiter",
-            ";",
-            "--decimal",
-            ",",
-        ])
-        .unwrap();
-        assert!(out.starts_with("Wrote 1000 rows"), "{out}");
-        assert!(std::fs::read_to_string(&csv).unwrap().contains(";0,5;"));
-
-        let json = dir.join("out.ndjson");
-        run_args(&[
-            "veta",
-            "convert",
-            &p(&csv),
-            &p(&json),
-            "--delimiter",
-            ";",
-            "--decimal",
-            ",",
-        ])
-        .unwrap();
-        let back = dir.join("back.parquet");
-        run_args(&["veta", "convert", &p(&json), &p(&back)]).unwrap();
-        let original = run_args(&["veta", "head", &p(&parquet), "-n", "5"]).unwrap();
-        let round_trip = run_args(&["veta", "head", &p(&back), "-n", "5"]).unwrap();
-        assert_eq!(original, round_trip);
-
-        let bad = dir.join("bad.csv");
-        // Types are guessed from the first 1000 rows; a late value doesn't fit.
-        let mut text = String::from("n\n");
-        for i in 0..1100 {
-            text.push_str(&format!("{i}\n"));
-        }
-        text.push_str("three\n");
-        std::fs::write(&bad, text).unwrap();
-        let out = run_args(&["veta", "convert", &p(&bad), &p(&dir.join("bad.parquet"))]).unwrap();
-        assert!(
-            out.contains("1 values didn't fit") && out.contains("n (1)"),
-            "{out}"
-        );
-        let head = run_args(&["veta", "schema", &p(&dir.join("bad.parquet"))]).unwrap();
-        assert!(head.contains("n errors"), "{head}");
-        let err = run_args(&[
-            "veta",
-            "convert",
-            &p(&bad),
-            &p(&dir.join("bad2.parquet")),
-            "--on-error",
-            "fail",
-        ]);
-        assert!(err.unwrap_err().contains("\"three\""));
-
-        let piped = dir.join("p.csv");
-        run_args(&[
-            "veta",
-            "convert",
-            &p(&parquet),
-            &p(&piped),
-            "--delimiter",
-            "|",
-            "--quote",
-            "'",
-        ])
-        .unwrap();
-        assert!(
-            std::fs::read_to_string(&piped)
-                .unwrap()
-                .starts_with("id|name|score|flag")
-        );
-        assert!(run_args(&["veta", "convert", &p(&parquet), &p(&piped), "--quote", "ab"]).is_err());
-
-        let err = run_args(&["veta", "convert", &p(&parquet), &p(&dir.join("x.xyz"))]);
-        assert!(err.unwrap_err().contains("--format"));
-        run_args(&[
-            "veta",
-            "convert",
-            &p(&parquet),
-            &p(&dir.join("x.xyz")),
-            "--format",
-            "json",
-        ])
-        .unwrap();
-    }
-
-    #[test]
-    fn apply_runs_a_recipe() {
-        let dir = TempDir::new();
-        let file = dir.join("mixed.parquet");
-        fixtures::mixed_settings(&file);
-        let recipe = dir.join("r.json");
-        std::fs::write(
-            &recipe,
-            r#"{
-  "format": "veta-recipe",
-  "version": 1,
-  "steps": [
-    { "order": 1, "type": "filter", "settings": {
-        "match_all": true,
-        "conditions": [{ "column": "name", "op": "equals", "value": "ana" }] } },
-    { "order": 2, "type": "sort", "settings": { "keys": [{ "column": "id", "descending": true }] } },
-    { "order": 3, "type": "custom_column", "settings": { "name": "twice", "expression": "id * 2", "at": 1 } }
-  ]
-}"#,
-        )
-        .unwrap();
-        let out = dir.join("out.parquet");
-        let message = run_args(&[
-            "veta",
-            "apply",
-            recipe.to_str().unwrap(),
-            file.to_str().unwrap(),
-            "-o",
-            out.to_str().unwrap(),
-        ])
-        .unwrap();
-        assert!(message.starts_with("Applied 3 steps"), "{message}");
-        let head = run_args(&["veta", "head", out.to_str().unwrap(), "-n", "1"]).unwrap();
-        assert!(head.contains("995") && head.contains("1990"), "{head}");
-
-        let one_step =
-            |step: &str| format!(r#"{{"format": "veta-recipe", "version": 1, "steps": [{step}]}}"#);
-        // A step that doesn't apply stops before saving.
-        std::fs::write(
-            &recipe,
-            one_step(r#"{"order": 1, "type": "remove_columns", "settings": {"names": ["nope"]}}"#),
-        )
-        .unwrap();
-        let err = run_args(&[
-            "veta",
-            "apply",
-            recipe.to_str().unwrap(),
-            file.to_str().unwrap(),
-        ])
-        .unwrap_err();
-        assert!(err.contains("step 1"), "{err}");
-
-        // A cast whose error column isn't empty stops at the check.
-        std::fs::write(
-            &recipe,
-            r#"{"format": "veta-recipe", "version": 1, "steps": [
-              {"order": 1, "type": "cast", "settings": {"column": "name", "type": "int64", "on_error": "error_column"}},
-              {"order": 2, "type": "remove_empty_column", "settings": {"name": "name errors"}}
-            ]}"#,
-        )
-        .unwrap();
-        let err = run_args(&[
-            "veta",
-            "apply",
-            recipe.to_str().unwrap(),
-            file.to_str().unwrap(),
-        ])
-        .unwrap_err();
-        assert!(
-            err.contains("stopped at step 2") && err.contains("isn't empty"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn edit_commands_change_the_file() {
-        let dir = TempDir::new();
-        let file = dir.join("mixed.parquet");
-        fixtures::mixed_settings(&file);
-        let f = file.to_str().unwrap();
-
-        run_args(&[
-            "veta", "set-cell", f, "--row", "1", "--column", "name", "--value", "first",
-        ])
-        .unwrap();
-        run_args(&[
-            "veta", "set-cell", f, "--row", "2", "--column", "score", "--null",
-        ])
-        .unwrap();
-        run_args(&["veta", "insert-rows", f, "--at", "1001", "--count", "2"]).unwrap();
-        run_args(&["veta", "delete-rows", f, "--rows", "3-4,10"]).unwrap();
-        run_args(&[
-            "veta",
-            "add-column",
-            f,
-            "note",
-            "--type",
-            "string",
-            "--at",
-            "1",
-        ])
-        .unwrap();
-        run_args(&["veta", "rename-column", f, "flag", "ok"]).unwrap();
-        run_args(&["veta", "move-column", f, "ok", "--to", "2"]).unwrap();
-        run_args(&["veta", "remove-column", f, "score"]).unwrap();
-
-        let doc = Document::open(&file, OpenOptions::default()).unwrap();
-        assert_eq!(doc.num_rows(), 1000 + 2 - 3);
-        let names: Vec<_> = doc
-            .schema()
-            .fields()
-            .iter()
-            .map(|f| f.name().clone())
-            .collect();
-        assert_eq!(names, ["note", "ok", "id", "name"]);
-        let head = output(Command::Head {
-            file: file.clone(),
-            rows: 2,
-        });
-        assert!(head.contains("first"), "{head}");
-    }
-
-    #[test]
-    fn rows_at_top_bottom_and_ranges() {
-        let dir = TempDir::new();
-        let file = dir.join("mixed.parquet");
-        fixtures::mixed_settings(&file);
-        let f = file.to_str().unwrap();
-        let rows = || {
-            Document::open(&file, OpenOptions::default())
-                .unwrap()
-                .num_rows()
-        };
-        let first_id = || {
-            let doc = Document::open(&file, OpenOptions::default()).unwrap();
-            veta_core::display::format_batch(&doc.read(0..1).unwrap()).unwrap()[0][0].clone()
-        };
-
-        run_args(&["veta", "insert-rows", f, "--top", "--count", "3"]).unwrap();
-        assert_eq!((rows(), first_id()), (1003, None));
-        run_args(&["veta", "insert-rows", f, "--bottom"]).unwrap();
-        assert_eq!(rows(), 1004);
-        run_args(&["veta", "delete-rows", f, "--top", "3"]).unwrap();
-        assert_eq!((rows(), first_id().as_deref()), (1001, Some("0")));
-        run_args(&["veta", "remove-rows", f, "--bottom", "1"]).unwrap();
-        assert_eq!(rows(), 1000);
-        run_args(&["veta", "keep-rows", f, "--rows", "11-20,31-40"]).unwrap();
-        assert_eq!((rows(), first_id().as_deref()), (20, Some("10")));
-        run_args(&["veta", "keep-rows", f, "--bottom", "5"]).unwrap();
-        assert_eq!((rows(), first_id().as_deref()), (5, Some("35")));
-        run_args(&["veta", "keep-rows", f, "--top", "2"]).unwrap();
-        assert_eq!(rows(), 2);
-
-        let usage = |args: &[&str]| Cli::try_parse_from(args).is_err();
-        assert!(usage(&["veta", "insert-rows", f]), "needs a place");
-        assert!(usage(&["veta", "insert-rows", f, "--top", "--bottom"]));
-        assert!(usage(&["veta", "keep-rows", f]));
-        assert!(
-            run_args(&["veta", "delete-rows", f, "--top", "3"]).is_err(),
-            "only 2"
-        );
-        assert!(run_args(&["veta", "keep-rows", f, "--rows", "1-5"]).is_err());
-        assert!(run_args(&["veta", "insert-rows", f, "--at", "4"]).is_err());
-        assert_eq!(rows(), 2);
-    }
-
-    #[test]
-    fn edit_to_output_leaves_source_alone() {
-        let dir = TempDir::new();
-        let file = dir.join("mixed.parquet");
-        fixtures::mixed_settings(&file);
-        let copy = dir.join("copy.parquet");
-        let text = run_args(&[
-            "veta",
-            "delete-rows",
-            file.to_str().unwrap(),
-            "--rows",
-            "1-500",
-            "-o",
-            copy.to_str().unwrap(),
-        ])
-        .unwrap();
-        assert!(text.starts_with("Saved"));
-        assert_eq!(
-            Document::open(&file, OpenOptions::default())
-                .unwrap()
-                .num_rows(),
-            1000
-        );
-        assert_eq!(
-            Document::open(&copy, OpenOptions::default())
-                .unwrap()
-                .num_rows(),
-            500
-        );
-    }
-
-    #[test]
-    fn meta_commands() {
-        let dir = TempDir::new();
-        let file = dir.join("mixed.parquet");
-        fixtures::mixed_settings(&file);
-        let f = file.to_str().unwrap();
-        run_args(&["veta", "meta", "set", f, "team", "data"]).unwrap();
-        assert_eq!(
-            run_args(&["veta", "meta", "get", f, "team"]).unwrap(),
-            "data\n"
-        );
-        run_args(&["veta", "meta", "remove", f, "owner"]).unwrap();
-        let list = run_args(&["veta", "meta", "list", f]).unwrap();
-        assert!(
-            list.contains("team = data") && !list.contains("owner"),
-            "{list}"
-        );
-        assert!(run_args(&["veta", "meta", "get", f, "owner"]).is_err());
-
-        // Column metadata.
-        run_args(&["veta", "meta", "set", f, "unit", "m", "--column", "score"]).unwrap();
-        run_args(&["veta", "meta", "set", f, "note", "x", "-c", "score"]).unwrap();
-        assert_eq!(
-            run_args(&["veta", "meta", "get", f, "unit", "-c", "score"]).unwrap(),
-            "m\n"
-        );
-        run_args(&["veta", "meta", "remove", f, "note", "-c", "score"]).unwrap();
-        assert_eq!(
-            run_args(&["veta", "meta", "list", f, "-c", "score"]).unwrap(),
-            "unit = m\n"
-        );
-        assert!(run_args(&["veta", "meta", "list", f, "-c", "missing"]).is_err());
-        assert!(
-            !run_args(&["veta", "meta", "list", f])
-                .unwrap()
-                .contains("unit")
-        );
-    }
-
-    #[test]
-    fn writer_settings_command() {
-        let dir = TempDir::new();
-        let file = dir.join("mixed.parquet");
-        fixtures::mixed_settings(&file);
-        let f = file.to_str().unwrap();
-        let shown = run_args(&["veta", "writer-settings", f]).unwrap();
-        assert!(shown.contains("300 rows per row group"), "{shown}");
-
-        run_args(&[
-            "veta",
-            "writer-settings",
-            f,
-            "--column",
-            "name",
-            "--compression",
-            "zstd",
-            "--level",
-            "5",
-            "--encoding",
-            "delta-byte-array",
-            "--dictionary",
-            "off",
-            "--row-group-rows",
-            "100",
-        ])
-        .unwrap();
-        let doc = Document::open(&file, OpenOptions::default()).unwrap();
-        let name = doc.writer_settings().column("name");
-        assert!(matches!(name.compression, veta_core::Compression::Zstd(_)));
-        assert_eq!(name.encoding, veta_core::Encoding::DeltaByteArray);
-        assert_eq!(doc.file_info().unwrap().row_groups.len(), 10);
-
-        let err = run_args(&[
-            "veta",
-            "writer-settings",
-            f,
-            "--column",
-            "flag",
-            "--encoding",
-            "delta-byte-array",
-        ])
-        .unwrap_err();
-        assert!(err.contains("does not apply"), "{err}");
-        assert!(run_args(&["veta", "writer-settings", f, "--level", "3"]).is_err());
-    }
-
-    #[test]
-    fn edit_errors_are_reported() {
-        let dir = TempDir::new();
-        let file = dir.join("mixed.parquet");
-        fixtures::mixed_settings(&file);
-        let f = file.to_str().unwrap();
-        let err = run_args(&[
-            "veta", "set-cell", f, "--row", "1", "--column", "score", "--value", "abc",
-        ])
-        .unwrap_err();
-        assert!(err.contains("not a valid float64"), "{err}");
-        assert!(
-            run_args(&[
-                "veta", "set-cell", f, "--row", "0", "--column", "id", "--value", "1"
-            ])
-            .is_err()
-        );
-        assert!(run_args(&["veta", "add-column", f, "x", "--type", "colour"]).is_err());
-        assert!(run_args(&["veta", "remove-column", f, "nope"]).is_err());
-        // Nothing was written by the failed commands.
-        assert!(
-            !Document::open(&file, OpenOptions::default())
-                .unwrap()
-                .is_modified()
-        );
-        assert_eq!(
-            output(Command::Head {
-                file: file.clone(),
-                rows: 1
-            })
-            .lines()
-            .count(),
-            5
-        );
-    }
-
-    #[test]
-    fn missing_file_error_names_the_file() {
-        let mut out = Vec::new();
-        let err = execute(
-            Command::Info {
-                file: "/nonexistent/x.parquet".into(),
-            },
-            &mut out,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("/nonexistent/x.parquet"));
-    }
 }
