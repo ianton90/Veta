@@ -49,7 +49,7 @@ fn list_cells_open_into_item_lines() {
     assert_eq!(view.value(0, 4), Some(Some("{2 entries}")));
     assert!(view.has_items(3, 2) && !view.has_items(0, 0));
     assert!(view.has_items(1, 2), "empty lists open, to add items");
-    assert!(view.has_items(1, 4), "empty maps with text keys too");
+    assert!(view.has_items(1, 4), "empty maps too");
 
     view.apply(GridEvent::ToggleItems { row: 3 }, &doc);
     // Row 3: tags has 3 items, scores 1 entry.

@@ -64,7 +64,6 @@ pub enum TypeOption {
     Plain(TypeChoice),
     List,
     Struct,
-    /// Text keys (other keys can't be edited yet, #120).
     Map,
 }
 
@@ -82,7 +81,7 @@ impl std::fmt::Display for TypeOption {
             Self::Plain(choice) => choice.fmt(f),
             Self::List => f.write_str("List of values"),
             Self::Struct => f.write_str("Struct (named fields)"),
-            Self::Map => f.write_str("Map (text keys → values)"),
+            Self::Map => f.write_str("Map (keys → values)"),
         }
     }
 }
@@ -95,6 +94,8 @@ pub struct ColumnDialog {
     choice: TypeOption,
     /// Type of a list's items, or of a map's values.
     item: TypeChoice,
+    /// Type of a map's keys.
+    key: TypeChoice,
     /// Names and types of a struct's fields.
     fields: Vec<(String, TypeChoice)>,
     error: Option<String>,
@@ -119,6 +120,7 @@ pub enum ColumnMessage {
     Name(String),
     Type(TypeOption),
     Item(TypeChoice),
+    Key(TypeChoice),
     FieldName(usize, String),
     FieldType(usize, TypeChoice),
     AddField,
@@ -134,6 +136,7 @@ impl ColumnDialog {
             name: String::new(),
             choice: TypeOption::Plain(TypeChoice::Text),
             item: TypeChoice::Text,
+            key: TypeChoice::Text,
             fields: vec![("field1".into(), TypeChoice::Text)],
             error: None,
         }
@@ -166,10 +169,11 @@ impl ColumnDialog {
         } else if let DataType::Map(entries, _) = data_type
             && let DataType::Struct(kv) = entries.data_type()
             && kv.len() == 2
-            && kv[0].data_type() == &DataType::Utf8
+            && let Some(key) = TypeChoice::from_type(kv[0].data_type())
             && let Some(value) = TypeChoice::from_type(kv[1].data_type())
         {
             self.choice = TypeOption::Map;
+            self.key = key;
             self.item = value;
         }
         self
@@ -196,7 +200,9 @@ impl ColumnDialog {
         Ok(match self.choice {
             TypeOption::Plain(choice) => choice.data_type(),
             TypeOption::List => DataType::new_list(self.item.data_type(), true),
-            TypeOption::Map => veta_core::display::map_type(DataType::Utf8, self.item.data_type()),
+            TypeOption::Map => {
+                veta_core::display::map_type(self.key.data_type(), self.item.data_type())
+            }
             TypeOption::Struct => {
                 let mut fields = Vec::new();
                 for (name, choice) in &self.fields {
@@ -231,6 +237,7 @@ impl ColumnDialog {
             ColumnMessage::Name(name) => self.name = name,
             ColumnMessage::Type(choice) => self.choice = choice,
             ColumnMessage::Item(item) => self.item = item,
+            ColumnMessage::Key(key) => self.key = key,
             ColumnMessage::FieldName(i, name) => {
                 if let Some(field) = self.fields.get_mut(i) {
                     field.0 = name;
@@ -325,6 +332,17 @@ impl ColumnDialog {
                         TypeOption::List => "Items",
                         _ => "Values",
                     };
+                    if self.choice == TypeOption::Map {
+                        body = body.push(
+                            row![
+                                text("Keys").width(70),
+                                pick_list(TypeChoice::ALL, Some(self.key), ColumnMessage::Key)
+                                    .width(Length::Fill),
+                            ]
+                            .spacing(12)
+                            .align_y(Alignment::Center),
+                        );
+                    }
                     body = body.push(
                         row![
                             text(label).width(70),
@@ -405,8 +423,9 @@ mod tests {
         let mut map = ColumnDialog::add(0);
         map.update(ColumnMessage::Name("scores".into()));
         map.update(ColumnMessage::Type(TypeOption::Map));
+        map.update(ColumnMessage::Key(TypeChoice::Date));
         map.update(ColumnMessage::Item(TypeChoice::Integer));
-        let scores = veta_core::display::map_type(DataType::Utf8, DataType::Int64);
+        let scores = veta_core::display::map_type(DataType::Date32, DataType::Int64);
         assert_eq!(
             map.update(ColumnMessage::Submit),
             Some(Command::AddColumn {
@@ -417,8 +436,8 @@ mod tests {
         );
         let again = ColumnDialog::add(0).with_type(&scores);
         assert_eq!(
-            (again.choice, again.item),
-            (TypeOption::Map, TypeChoice::Integer)
+            (again.choice, again.key, again.item),
+            (TypeOption::Map, TypeChoice::Date, TypeChoice::Integer)
         );
         let mut rename = ColumnDialog::rename("a".into());
         rename.update(ColumnMessage::Name("b".into()));

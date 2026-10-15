@@ -91,8 +91,7 @@ pub enum Command {
     },
     /// Sets the value of entry `index` of a map in a cell from text, parsed
     /// as the value type. `map` names the struct fields from the column down
-    /// to the map (empty: the cell is the map). Only maps with text keys can
-    /// be edited by entry.
+    /// to the map (empty: the cell is the map).
     SetMapValue {
         row: usize,
         column: String,
@@ -100,8 +99,8 @@ pub enum Command {
         index: usize,
         value: Option<String>,
     },
-    /// Renames the key of entry `index` of a map in a cell; keys must stay
-    /// unique. `map` as for [`Command::SetMapValue`].
+    /// Renames the key of entry `index` of a map in a cell, read as the key
+    /// type; keys can't be empty and must stay unique. `map` as for [`Command::SetMapValue`].
     SetMapKey {
         row: usize,
         column: String,

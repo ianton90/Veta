@@ -51,8 +51,11 @@ fn parse_json(text: &str, data_type: &DataType) -> Result<ArrayRef> {
     };
     // Reject trailing text and non-JSON early, with a clear message.
     serde_json::from_str::<serde_json::Value>(text).map_err(|e| invalid(e.to_string()))?;
+    // Maps with other than text keys are read with text keys, then cast.
+    let json_type = crate::display::json_type(data_type);
+    let read_type = json_type.as_ref().unwrap_or(data_type);
     let schema = Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("v", data_type.clone(), true),
+        arrow::datatypes::Field::new("v", read_type.clone(), true),
     ]));
     let line = format!("{{\"v\": {text}}}");
     let mut reader = arrow::json::ReaderBuilder::new(schema)
@@ -63,7 +66,16 @@ fn parse_json(text: &str, data_type: &DataType) -> Result<ArrayRef> {
         .next()
         .ok_or_else(|| invalid("no value".into()))?
         .map_err(|e| invalid(e.to_string()))?;
-    Ok(batch.column(0).clone())
+    let value = batch.column(0).clone();
+    if json_type.is_none() {
+        return Ok(value);
+    }
+    let options = CastOptions {
+        safe: false,
+        ..CastOptions::default()
+    };
+    cast_with_options(&value, data_type, &options)
+        .map_err(|e| invalid(format!("a key doesn't fit its type ({e})")))
 }
 
 /// The JSON of a nested cell with the leaf at `pointer` replaced by
@@ -151,7 +163,7 @@ pub fn edit_list(
 }
 
 /// A change to one entry of a map inside a cell (see [`edit_map`]). Entries
-/// are addressed by position; keys are text and must stay unique.
+/// are addressed by position; keys can't be null and must stay unique.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MapEdit<'a> {
     /// Sets the value of entry `index` (read as `value_type`; empty or
@@ -161,11 +173,19 @@ pub enum MapEdit<'a> {
         text: Option<&'a str>,
         value_type: &'a DataType,
     },
-    /// Renames the key of entry `index`.
-    SetKey { index: usize, key: &'a str },
+    /// Renames the key of entry `index` (read as `key_type`).
+    SetKey {
+        index: usize,
+        key: &'a str,
+        key_type: &'a DataType,
+    },
     /// Inserts an entry with a null value at `index` (up to the number of
     /// entries).
-    Insert { index: usize, key: &'a str },
+    Insert {
+        index: usize,
+        key: &'a str,
+        key_type: &'a DataType,
+    },
     /// Removes entry `index`.
     Remove(usize),
 }
@@ -213,13 +233,23 @@ pub fn edit_map(
             };
             entries.get_mut(index).ok_or_else(gone)?.1 = value;
         }
-        MapEdit::SetKey { index, key } => {
-            taken(&entries, key, Some(index))?;
-            entries.get_mut(index).ok_or_else(gone)?.0 = key.to_owned();
+        MapEdit::SetKey {
+            index,
+            key,
+            key_type,
+        } => {
+            let key = map_key(key, key_type)?;
+            taken(&entries, &key, Some(index))?;
+            entries.get_mut(index).ok_or_else(gone)?.0 = key;
         }
-        MapEdit::Insert { index, key } if index <= entries.len() => {
-            taken(&entries, key, None)?;
-            entries.insert(index, (key.to_owned(), serde_json::Value::Null));
+        MapEdit::Insert {
+            index,
+            key,
+            key_type,
+        } if index <= entries.len() => {
+            let key = map_key(key, key_type)?;
+            taken(&entries, &key, None)?;
+            entries.insert(index, (key, serde_json::Value::Null));
         }
         MapEdit::Remove(index) if index < entries.len() => {
             entries.remove(index);
@@ -228,6 +258,24 @@ pub fn edit_map(
     }
     *object = entries.into_iter().collect();
     Ok(root.to_string())
+}
+
+/// A map key typed by the user as the text it has in JSON: as typed for
+/// text keys, otherwise read as `key_type` and written back (`01` → `1`).
+fn map_key(text: &str, key_type: &DataType) -> Result<String> {
+    if is_text(key_type) {
+        return Ok(text.to_owned());
+    }
+    let key = parse_value(Some(text), key_type)?;
+    if key.is_null(0) {
+        return Err(Error::InvalidCommand("a key can't be empty".into()));
+    }
+    let key = arrow::compute::cast(&key, &DataType::Utf8)?;
+    Ok(key
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .map(|s| s.value(0).to_owned())
+        .unwrap_or_default())
 }
 
 /// Like [`value_at`], but struct fields that are missing or under a null
@@ -389,6 +437,7 @@ mod tests {
             r#"{"tags":[null]}"#
         );
         // Map entries: set a value, rename, insert, remove; keys stay unique.
+        let text = DataType::Utf8;
         let scores = r#"{"math":9,"art":7}"#;
         let map = |edit: MapEdit| edit_map(scores, &[], &edit);
         let set = MapEdit::SetValue {
@@ -400,36 +449,77 @@ mod tests {
         let rename = MapEdit::SetKey {
             index: 0,
             key: "maths",
+            key_type: &text,
         };
         assert_eq!(map(rename).unwrap(), r#"{"maths":9,"art":7}"#);
         let same = MapEdit::SetKey {
             index: 0,
             key: "math",
+            key_type: &text,
         };
         assert_eq!(map(same).unwrap(), scores);
         assert!(
             map(MapEdit::SetKey {
                 index: 0,
-                key: "art"
+                key: "art",
+                key_type: &text,
             })
             .is_err()
         );
         let insert = MapEdit::Insert {
             index: 1,
             key: "pe",
+            key_type: &text,
         };
         assert_eq!(map(insert).unwrap(), r#"{"math":9,"pe":null,"art":7}"#);
         assert!(
             map(MapEdit::Insert {
                 index: 0,
-                key: "art"
+                key: "art",
+                key_type: &text,
             })
             .is_err()
         );
-        assert!(map(MapEdit::Insert { index: 3, key: "x" }).is_err());
+        let past = MapEdit::Insert {
+            index: 3,
+            key: "x",
+            key_type: &text,
+        };
+        assert!(map(past).is_err());
         assert_eq!(map(MapEdit::Remove(0)).unwrap(), r#"{"art":7}"#);
         assert!(map(MapEdit::Remove(2)).is_err());
-        let first = MapEdit::Insert { index: 0, key: "a" };
+        // Other keys are read as their type and kept in JSON as text.
+        let ids = r#"{"1":"a"}"#;
+        let insert = |key| MapEdit::Insert {
+            index: 1,
+            key,
+            key_type: &int,
+        };
+        assert_eq!(
+            edit_map(ids, &[], &insert("02")).unwrap(),
+            r#"{"1":"a","2":null}"#
+        );
+        assert!(edit_map(ids, &[], &insert("01")).is_err(), "01 is 1");
+        assert!(edit_map(ids, &[], &insert("x")).is_err());
+        assert!(edit_map(ids, &[], &insert("")).is_err());
+        let by_id = crate::display::map_type(DataType::Int64, DataType::Utf8);
+        let value = parse_value(Some(r#"{"7": "x", "3": null}"#), &by_id).unwrap();
+        assert_eq!(
+            value_json(value.as_ref(), 0).unwrap().unwrap(),
+            r#"{"7":"x","3":null}"#
+        );
+        assert!(parse_value(Some(r#"{"x": "a"}"#), &by_id).is_err());
+        let by_day = crate::display::map_type(DataType::Date32, DataType::Int64);
+        let days = parse_value(Some(r#"{"2026-10-15": 1}"#), &by_day).unwrap();
+        assert_eq!(
+            value_json(days.as_ref(), 0).unwrap().unwrap(),
+            r#"{"2026-10-15":1}"#
+        );
+        let first = MapEdit::Insert {
+            index: 0,
+            key: "a",
+            key_type: &text,
+        };
         assert_eq!(edit_map("null", &[], &first).unwrap(), r#"{"a":null}"#);
         // A field under a null struct is created.
         let created = set_nested("null", &home_y, Some("7"), &DataType::Int64).unwrap();

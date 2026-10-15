@@ -72,7 +72,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
             index,
             value,
         } => {
-            let value_type = value_type(doc, &column, &map)?;
+            let (_, value_type) = map_types(doc, &column, &map)?;
             let edit = MapEdit::SetValue {
                 index,
                 text: value.as_deref(),
@@ -89,8 +89,12 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
             index,
             key,
         } => {
-            value_type(doc, &column, &map)?;
-            let edit = MapEdit::SetKey { index, key: &key };
+            let (key_type, _) = map_types(doc, &column, &map)?;
+            let edit = MapEdit::SetKey {
+                index,
+                key: &key,
+                key_type: &key_type,
+            };
             edit_cell(doc, row, column, |json| {
                 edit_map(json, &pointer(&map), &edit)
             })
@@ -102,8 +106,12 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
             index,
             key,
         } => {
-            value_type(doc, &column, &map)?;
-            let edit = MapEdit::Insert { index, key: &key };
+            let (key_type, _) = map_types(doc, &column, &map)?;
+            let edit = MapEdit::Insert {
+                index,
+                key: &key,
+                key_type: &key_type,
+            };
             edit_cell(doc, row, column, |json| {
                 edit_map(json, &pointer(&map), &edit)
             })
@@ -114,7 +122,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
             map,
             index,
         } => {
-            value_type(doc, &column, &map)?;
+            map_types(doc, &column, &map)?;
             edit_cell(doc, row, column, |json| {
                 edit_map(json, &pointer(&map), &MapEdit::Remove(index))
             })
@@ -147,27 +155,23 @@ fn item_type(doc: &Document, column: &str, list: &[String]) -> Result<DataType> 
     }
 }
 
-/// The value type of the map at `map` in `column`, which must have text
-/// keys.
-fn value_type(doc: &Document, column: &str, map: &[String]) -> Result<DataType> {
+/// The key and value types of the map at `map` in `column`.
+fn map_types(doc: &Document, column: &str, map: &[String]) -> Result<(DataType, DataType)> {
     let data_type = column_type(doc, column)?;
-    let name = || {
-        std::iter::once(column)
-            .chain(map.iter().map(String::as_str))
-            .collect::<Vec<_>>()
-            .join(".")
-    };
     match field_type(&data_type, map) {
         Some(DataType::Map(entries, _)) => match entries.data_type() {
-            DataType::Struct(kv) if kv.len() == 2 && crate::values::is_text(kv[0].data_type()) => {
-                Ok(kv[1].data_type().clone())
+            DataType::Struct(kv) if kv.len() == 2 => {
+                Ok((kv[0].data_type().clone(), kv[1].data_type().clone()))
             }
-            _ => Err(invalid(format!(
-                "only maps with text keys can be edited by entry ({} has other keys)",
-                name()
-            ))),
+            _ => Err(invalid("that map has no keys and values".into())),
         },
-        _ => Err(invalid(format!("{} is not a map", name()))),
+        _ => Err(invalid(format!(
+            "{} is not a map",
+            std::iter::once(column)
+                .chain(map.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(".")
+        ))),
     }
 }
 

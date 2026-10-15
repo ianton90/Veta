@@ -40,7 +40,7 @@ pub fn value_json(array: &dyn Array, row: usize) -> Result<Option<String>> {
     if array.is_null(row) {
         return Ok(None);
     }
-    let value = array.slice(row, 1);
+    let value = with_text_keys(array.slice(row, 1))?;
     let schema = Arc::new(Schema::new(vec![Field::new(
         "v",
         value.data_type().clone(),
@@ -62,10 +62,67 @@ pub fn value_json(array: &dyn Array, row: usize) -> Result<Option<String>> {
     Ok(Some(inner.to_owned()))
 }
 
+/// `data_type` with the keys of every map in it turned into text, as JSON
+/// needs them (Arrow's JSON reader and writer only take text keys); `None`
+/// if it has no maps with other keys.
+pub fn json_type(data_type: &DataType) -> Option<DataType> {
+    let field = |f: &Arc<Field>| -> Option<Arc<Field>> {
+        json_type(f.data_type()).map(|t| Arc::new(f.as_ref().clone().with_data_type(t)))
+    };
+    match data_type {
+        DataType::List(item) => field(item).map(DataType::List),
+        DataType::LargeList(item) => field(item).map(DataType::LargeList),
+        DataType::FixedSizeList(item, n) => field(item).map(|f| DataType::FixedSizeList(f, *n)),
+        DataType::Struct(fields) => {
+            let changed: Vec<_> = fields.iter().map(field).collect();
+            changed.iter().any(Option::is_some).then(|| {
+                let fields: Vec<Arc<Field>> = changed
+                    .into_iter()
+                    .zip(fields.iter())
+                    .map(|(new, old)| new.unwrap_or_else(|| old.clone()))
+                    .collect();
+                DataType::Struct(fields.into())
+            })
+        }
+        DataType::Map(entries, sorted) => {
+            let DataType::Struct(kv) = entries.data_type() else {
+                return None;
+            };
+            let [key, value] = &kv.iter().cloned().collect::<Vec<_>>()[..] else {
+                return None;
+            };
+            let text_key = !crate::values::is_text(key.data_type());
+            let new_value = field(value);
+            if !text_key && new_value.is_none() {
+                return None;
+            }
+            let key = match text_key {
+                true => Arc::new(key.as_ref().clone().with_data_type(DataType::Utf8)),
+                false => key.clone(),
+            };
+            let value = new_value.unwrap_or_else(|| value.clone());
+            let entries = entries
+                .as_ref()
+                .clone()
+                .with_data_type(DataType::Struct(vec![key, value].into()));
+            Some(DataType::Map(Arc::new(entries), *sorted))
+        }
+        _ => None,
+    }
+}
+
+/// `array` with map keys turned into text (see [`json_type`]).
+fn with_text_keys(array: arrow::array::ArrayRef) -> Result<arrow::array::ArrayRef> {
+    match json_type(array.data_type()) {
+        Some(t) => Ok(arrow::compute::cast(&array, &t)?),
+        None => Ok(array),
+    }
+}
+
 /// Every value of `array` as JSON text (nulls stay null), written in one
 /// pass. Used to filter and search nested columns.
 pub fn json_column(array: &dyn Array) -> Result<arrow::array::StringArray> {
-    let column = arrow::array::make_array(array.to_data());
+    let column = with_text_keys(arrow::array::make_array(array.to_data()))?;
     let schema = Arc::new(Schema::new(vec![Field::new(
         "v",
         column.data_type().clone(),

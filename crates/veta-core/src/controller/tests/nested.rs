@@ -168,6 +168,10 @@ fn new_nested_columns_save() {
             "scores",
             crate::display::map_type(DataType::Utf8, DataType::Int64),
         ),
+        (
+            "names",
+            crate::display::map_type(DataType::Int64, DataType::Utf8),
+        ),
     ] {
         execute(
             &mut doc,
@@ -203,6 +207,45 @@ fn new_nested_columns_save() {
         },
     )
     .unwrap();
+    // A map with whole-number keys.
+    for command in [
+        Command::InsertMapEntry {
+            row: 0,
+            column: "names".into(),
+            map: Vec::new(),
+            index: 0,
+            key: "7".into(),
+        },
+        Command::SetMapValue {
+            row: 0,
+            column: "names".into(),
+            map: Vec::new(),
+            index: 0,
+            value: Some("x".into()),
+        },
+        Command::SetMapKey {
+            row: 0,
+            column: "names".into(),
+            map: Vec::new(),
+            index: 0,
+            key: "8".into(),
+        },
+    ] {
+        execute(&mut doc, command).unwrap();
+    }
+    let bad_key = Command::InsertMapEntry {
+        row: 0,
+        column: "names".into(),
+        map: Vec::new(),
+        index: 1,
+        key: "eight".into(),
+    };
+    assert!(execute(&mut doc, bad_key).is_err());
+    execute(
+        &mut doc,
+        set_cell(2, "names", Some(r#"{"1": "a", "2": null}"#)),
+    )
+    .unwrap();
     let out = dir.join("nested-new.parquet");
     doc.save(Some(out.clone())).unwrap();
     let saved = Document::open(&out, OpenOptions::default()).unwrap();
@@ -214,6 +257,8 @@ fn new_nested_columns_save() {
     assert_eq!(cell(&saved, 1, "scores").as_deref(), Some("{math: 9}"));
     assert_eq!(cell(&saved, 0, "point"), None);
     assert_eq!(cell(&saved, 0, "scores"), None);
+    assert_eq!(cell(&saved, 0, "names").as_deref(), Some("{8: x}"));
+    assert_eq!(cell(&saved, 2, "names").as_deref(), Some("{1: a, 2: null}"));
 }
 
 #[test]

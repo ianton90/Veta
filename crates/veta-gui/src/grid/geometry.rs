@@ -23,7 +23,7 @@ pub(super) struct Column {
     pub(super) items: bool,
     /// Lists whose items can be edited, added and removed in place.
     pub(super) list: bool,
-    /// Maps with text keys: entries edit, add and remove in place.
+    /// Maps: entries edit, add and remove in place.
     pub(super) map: bool,
     /// Structs: cells open into their fields, edited in place.
     pub(super) is_struct: bool,
@@ -544,16 +544,13 @@ impl<Message> Grid<'_, Message> {
     }
 }
 
-/// The key and value types of a map with text keys (the maps whose entries
-/// edit in place).
+/// The key and value types of a map.
 pub(super) fn map_types(data_type: &DataType) -> Option<(&DataType, &DataType)> {
     let DataType::Map(entries, _) = data_type else {
         return None;
     };
     match entries.data_type() {
-        DataType::Struct(kv) if kv.len() == 2 && veta_core::values::is_text(kv[0].data_type()) => {
-            Some((kv[0].data_type(), kv[1].data_type()))
-        }
+        DataType::Struct(kv) if kv.len() == 2 => Some((kv[0].data_type(), kv[1].data_type())),
         _ => None,
     }
 }

@@ -10,9 +10,9 @@ pub(super) enum ItemsKind {
     None,
     /// An editable list (see [`Column::list`]).
     List,
-    /// A map with text keys: entries editable (see [`Column::map`]).
+    /// A map: entries editable (see [`Column::map`]).
     Map,
-    /// Other maps and fixed-size lists: shown only.
+    /// Fixed-size lists: shown only.
     ReadOnly,
     /// Struct fields, editable.
     Struct,
