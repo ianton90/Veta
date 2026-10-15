@@ -56,9 +56,6 @@ pub enum Action {
     SplitColumn,
     MergeColumns,
     FormatText,
-    Statistics,
-    Standard,
-    DateTime,
     CustomColumn,
     IndexColumn,
     ToggleDetails,
@@ -248,12 +245,12 @@ fn groups(tab: Tab) -> Vec<Group> {
                 "Data",
                 vec![
                     large(A::FilterRows, "Filter", Icon::Filter),
-                    small(A::SortAscending, "Sort Ascending", Icon::SortAsc),
-                    small(A::SortDescending, "Sort Descending", Icon::SortDesc),
-                    small(A::DataType, "Data Type", Icon::Type),
+                    small(A::KeepRows, "Keep Rows", Icon::FilterPlus),
+                    small(A::RemoveRows, "Remove Rows", Icon::Eraser),
                     small(A::ReplaceValues, "Replace Values", Icon::Replace),
-                    small(A::KeepColumns, "Keep Columns", Icon::Columns),
-                    small(A::RemoveColumns, "Remove Columns", Icon::Trash),
+                    small(A::SortAscending, "Sort Ascending", Icon::SortAsc),
+                    small(A::CustomSort, "Custom Sort", Icon::Sliders),
+                    small(A::SortDescending, "Sort Descending", Icon::SortDesc),
                 ],
             ),
         ],
@@ -285,15 +282,6 @@ fn groups(tab: Tab) -> Vec<Group> {
         ],
         Tab::Columns => vec![
             group(
-                "Add",
-                vec![
-                    large(A::AddColumn, "New Column", Icon::Plus),
-                    large(A::CustomColumn, "Custom Column", Icon::Function),
-                    small(A::IndexColumn, "Index Column", Icon::ListOrdered),
-                    small(A::DuplicateColumn, "Duplicate", Icon::Copy),
-                ],
-            ),
-            group(
                 "Manage",
                 vec![
                     small(A::RenameColumn, "Rename", Icon::Rename),
@@ -301,6 +289,15 @@ fn groups(tab: Tab) -> Vec<Group> {
                     small(A::MoveColumnRight, "Move Right", Icon::ArrowRight),
                     large(A::KeepColumns, "Keep Columns", Icon::Columns),
                     large(A::RemoveColumns, "Remove Columns", Icon::Trash),
+                ],
+            ),
+            group(
+                "Add",
+                vec![
+                    large(A::AddColumn, "Empty Column", Icon::Plus),
+                    large(A::CustomColumn, "Formula Column", Icon::MathSymbols),
+                    small(A::IndexColumn, "Index Column", Icon::ListOrdered),
+                    small(A::DuplicateColumn, "Duplicate", Icon::Copy),
                 ],
             ),
             group(
@@ -313,14 +310,8 @@ fn groups(tab: Tab) -> Vec<Group> {
                     small(A::MergeColumns, "Merge Columns", Icon::Merge),
                 ],
             ),
-            group(
-                "Calculate",
-                vec![
-                    small(A::Standard, "Standard", Icon::Calculator),
-                    small(A::Statistics, "Statistics", Icon::Sigma),
-                    small(A::DateTime, "Date", Icon::Calendar),
-                ],
-            ),
+            // Empty until the function library (#74).
+            group("Calculate", vec![]),
         ],
         Tab::Nested => vec![
             group(
@@ -416,9 +407,6 @@ impl Context {
             | A::CombineStruct
             | A::CollectList
             | A::FormatText
-            | A::Statistics
-            | A::Standard
-            | A::DateTime
             | A::SortAscending
             | A::SortDescending => self.editable && column,
             A::ExpandStruct => self.editable && matches!(self.column, ColumnKind::Struct { .. }),
@@ -749,10 +737,14 @@ mod tests {
     }
 
     #[test]
-    fn no_empty_groups() {
+    fn only_calculate_is_empty() {
         for tab in Tab::ALL {
             for group in groups(tab) {
-                assert!(!group.items.is_empty(), "{} is empty", group.label);
+                assert!(
+                    !group.items.is_empty() || group.label == "Calculate",
+                    "{} is empty",
+                    group.label
+                );
             }
         }
     }

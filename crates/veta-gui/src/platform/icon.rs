@@ -2,7 +2,8 @@
 //!
 //! To add an icon, add it below with its Lucide name and codepoint (from the
 //! `lucide-static` package's `font/codepoints.json`; currently 1.56.0), then
-//! regenerate the subset with `scripts/icons.sh <path to lucide.ttf>`.
+//! regenerate the subset with `scripts/icons.sh <path to lucide.ttf>`. Icons
+//! Lucide lacks are drawn in `scripts/icon_glyphs.py` (codepoints from U+F000).
 
 use iced::widget::{Text, text};
 use iced::{Font, Pixels};
@@ -37,6 +38,7 @@ pub enum Icon {
     Calculator,
     Calendar,
     Function,
+    MathSymbols,
     ListOrdered,
     Copy,
     PanelRight,
@@ -101,6 +103,7 @@ impl Icon {
             Icon::Calculator => 0xe1bc,      // calculator
             Icon::Calendar => 0xe063,        // calendar
             Icon::Function => 0xe22d,        // square-function
+            Icon::MathSymbols => 0xf000,     // veta-math-symbols (own)
             Icon::ListOrdered => 0xe1d1,     // list-ordered
             Icon::Copy => 0xe09e,            // copy
             Icon::PanelRight => 0xe431,      // panel-right

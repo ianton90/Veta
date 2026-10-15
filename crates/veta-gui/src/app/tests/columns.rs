@@ -507,7 +507,7 @@ fn custom_duplicate_and_index_columns() {
             extend: false,
         },
     ));
-    let _ = app.update(Message::Action(Action::Standard));
+    let _ = app.update(Message::Action(Action::CustomColumn));
     let _ = app.update(Message::Step(StepMessage::Custom(
         CustomMessage::Expression("[score] * \"x\"".into()),
     )));

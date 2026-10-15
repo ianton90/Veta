@@ -28,8 +28,6 @@ impl App {
                 | Action::CustomColumn
                 | Action::DuplicateColumn
                 | Action::IndexColumn
-                | Action::Standard
-                | Action::DateTime
                 | Action::Cut
                 | Action::Paste
                 | Action::FillUp
@@ -53,8 +51,6 @@ impl App {
             | Action::FillDown
             | Action::FormatText
             | Action::CustomColumn
-            | Action::Standard
-            | Action::DateTime
             | Action::DuplicateColumn
             | Action::IndexColumn
             | Action::SplitColumn
@@ -94,7 +90,7 @@ impl App {
                 self.show_side_pane = true;
                 self.side_tab = SideTab::Steps;
             }
-            Action::StatisticsPane | Action::Statistics => {
+            Action::StatisticsPane => {
                 self.show_side_pane = true;
                 self.side_tab = SideTab::Stats;
             }

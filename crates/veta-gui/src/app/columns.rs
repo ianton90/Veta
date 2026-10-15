@@ -110,16 +110,9 @@ impl App {
                     self.open_format_dialog(id);
                 }
             }
-            Action::CustomColumn | Action::Standard | Action::DateTime => {
+            Action::CustomColumn => {
                 if let Some(id) = self.active {
-                    let column = self.selected_column_names(id).into_iter().next();
-                    let reference = column.as_deref().map(formula_reference);
-                    let expression = match (action, reference) {
-                        (Action::Standard, Some(c)) => format!("{c} * 1"),
-                        (Action::DateTime, Some(c)) => format!("year({c})"),
-                        _ => String::new(),
-                    };
-                    return self.open_custom_dialog(id, None, expression);
+                    return self.open_custom_dialog(id, None, String::new());
                 }
             }
             Action::DuplicateColumn => {
