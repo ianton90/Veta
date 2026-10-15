@@ -11,8 +11,8 @@ While the major version is 0, minor versions may change behaviour.
   (paged reading). Opening a file while Veta runs adds it to the open
   window. New, blank files.
 - Grid with in-place editing, row and column insert/delete/rename/move
-  (the Rows tab inserts or deletes any number of rows at the top, bottom
-  or a row number),
+  (the Rows tab inserts, deletes, keeps or removes any number of rows at
+  the top, bottom or a row number),
   undo/redo, and Save/Save As that keep the file's writer settings.
 - Writer settings (compression, encoding, dictionary, statistics, bloom
   filters, row groups) and file metadata editors.
@@ -37,7 +37,8 @@ While the major version is 0, minor versions may change behaviour.
 - Ribbon, light and dark themes (TOML), settings.
 
 **Command line (`veta-cli`)**
-- `info`, `schema`, `head`, `stats`, cell/row/column edits, metadata and
+- `info`, `schema`, `head`, `stats`, cell/row/column edits (rows at the
+  top, bottom or by number; `keep-rows`), metadata and
   writer settings, `convert` between Parquet, CSV and JSON, and `apply` to
   run a recipe.
 

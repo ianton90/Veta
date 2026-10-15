@@ -1499,7 +1499,7 @@ impl MergeDialog {
     }
 }
 
-/// Where rows are inserted or deleted.
+/// Where rows are inserted, deleted or kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowPlace {
     Top,
@@ -1516,15 +1516,19 @@ impl std::fmt::Display for RowPlace {
         f.write_str(match self {
             Self::Top => "At the top",
             Self::Bottom => "At the bottom",
-            Self::At => "At row number…",
+            Self::At => "From row number…",
         })
     }
 }
 
-/// Insert or delete a number of rows at the top, the bottom or a row.
+pub use veta_core::rows::RowAction;
+
+/// Insert, delete (remove) or keep a number of rows at the top, the bottom
+/// or a row.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RowsDialog {
-    delete: bool,
+    action: RowAction,
+    title: &'static str,
     num_rows: usize,
     count: String,
     place: RowPlace,
@@ -1544,15 +1548,21 @@ pub enum RowsMessage {
 
 impl RowsDialog {
     /// For a document of `num_rows` rows; `selected` (rows) sets the
-    /// starting count and position.
-    pub fn new(delete: bool, num_rows: usize, selected: Option<std::ops::Range<usize>>) -> Self {
+    /// starting count and position. `title` names the command.
+    pub fn new(
+        action: RowAction,
+        title: &'static str,
+        num_rows: usize,
+        selected: Option<std::ops::Range<usize>>,
+    ) -> Self {
         let (count, place, at) = match selected {
             Some(rows) => (rows.len(), RowPlace::At, rows.start + 1),
-            None if delete => (1, RowPlace::Top, 1),
-            None => (1, RowPlace::Bottom, num_rows + 1),
+            None if action == RowAction::Insert => (1, RowPlace::Bottom, num_rows + 1),
+            None => (1, RowPlace::Top, 1),
         };
         Self {
-            delete,
+            action,
+            title,
             num_rows,
             count: count.to_string(),
             place,
@@ -1565,8 +1575,9 @@ impl RowsDialog {
         self.error = Some(error);
     }
 
-    /// The rows to insert (`at`, count) or delete (range), checked.
-    fn rows(&self) -> Result<std::ops::Range<usize>, String> {
+    /// The command for the dialog's input, checked.
+    fn command(&self) -> Result<Command, String> {
+        use veta_core::rows::{RowPlace as Place, rows_command};
         let count: usize = self
             .count
             .trim()
@@ -1574,33 +1585,21 @@ impl RowsDialog {
             .ok()
             .filter(|&n| n > 0)
             .ok_or("The number of rows must be a whole number above 0.")?;
-        let last = if self.delete {
-            self.num_rows
-        } else {
-            self.num_rows + 1
-        };
-        let start = match self.place {
-            RowPlace::Top => 0,
-            RowPlace::Bottom if self.delete => self.num_rows.saturating_sub(count),
-            RowPlace::Bottom => self.num_rows,
+        let place = match self.place {
+            RowPlace::Top => Place::Top,
+            RowPlace::Bottom => Place::Bottom,
             RowPlace::At => {
                 let at: usize = self
                     .at
                     .trim()
                     .parse()
                     .ok()
-                    .filter(|&n| n >= 1 && n <= last)
-                    .ok_or_else(|| format!("The row number must be from 1 to {last}."))?;
-                at - 1
+                    .filter(|&n| n >= 1)
+                    .ok_or("Row numbers start at 1.")?;
+                Place::At(at - 1)
             }
         };
-        if self.delete && start + count > self.num_rows {
-            return Err(format!(
-                "There are only {} rows from there.",
-                self.num_rows - start
-            ));
-        }
-        Ok(start..start + count)
+        rows_command(self.action, place, count, self.num_rows).map_err(|e| sentence(&e.to_string()))
     }
 
     /// The command to run, on Apply.
@@ -1611,14 +1610,8 @@ impl RowsDialog {
             RowsMessage::Place(place) => self.place = place,
             RowsMessage::At(at) => self.at = at,
             RowsMessage::Cancel => {}
-            RowsMessage::Apply => match self.rows() {
-                Ok(rows) if self.delete => return Some(Command::DeleteRows { rows: vec![rows] }),
-                Ok(rows) => {
-                    return Some(Command::InsertRows {
-                        at: rows.start,
-                        count: rows.len(),
-                    });
-                }
+            RowsMessage::Apply => match self.command() {
+                Ok(command) => return Some(command),
                 Err(e) => self.error = Some(e),
             },
         }
@@ -1626,13 +1619,13 @@ impl RowsDialog {
     }
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, RowsMessage> {
-        let (title, action) = if self.delete {
-            ("Delete rows", "Delete")
-        } else {
-            ("Insert rows", "Insert")
+        let action = match self.action {
+            RowAction::Insert => "Insert",
+            RowAction::Delete => "Delete",
+            RowAction::Keep => "Keep",
         };
         let mut body = column![
-            text(title).size(20),
+            text(self.title).size(20),
             row![
                 text("Rows").width(90),
                 text_input("1", &self.count)
@@ -1662,16 +1655,19 @@ impl RowsDialog {
                 .align_y(Alignment::Center),
             );
         }
-        let note = if self.delete {
-            format!(
-                "Deletes from that row down. The table has {} rows.",
-                self.num_rows
-            )
-        } else {
-            format!(
+        let note = match self.action {
+            RowAction::Insert => format!(
                 "Empty rows go before that row ({} for the end).",
                 self.num_rows + 1
-            )
+            ),
+            RowAction::Delete => format!(
+                "Deletes from that row down. The table has {} rows.",
+                self.num_rows
+            ),
+            RowAction::Keep => format!(
+                "Keeps from that row down and deletes the rest. The table has {} rows.",
+                self.num_rows
+            ),
         };
         body = body.push(text(note).color(tokens.muted_text));
         if let Some(error) = &self.error {
@@ -1680,6 +1676,20 @@ impl RowsDialog {
         body = body.push(buttons(action, RowsMessage::Cancel, RowsMessage::Apply));
         card(body.into(), tokens, 420.0)
     }
+}
+
+/// `message` as a sentence: capitalised, ending with a full stop.
+fn sentence(message: &str) -> String {
+    let mut chars = message.chars();
+    let mut out: String = chars
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
+    out.push_str(chars.as_str());
+    if !out.ends_with('.') {
+        out.push('.');
+    }
+    out
 }
 
 /// Collect columns into lists, grouped by key columns.

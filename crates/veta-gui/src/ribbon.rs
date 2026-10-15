@@ -265,16 +265,11 @@ fn groups(tab: Tab) -> Vec<Group> {
                 vec![
                     large(A::InsertRowsAt, "Insert Rows", Icon::InsertRows),
                     large(A::DeleteRowsAt, "Delete Rows", Icon::Trash),
-                ],
-            ),
-            group(
-                "Filter",
-                vec![
-                    large(A::FilterRows, "Filter", Icon::Filter),
                     large(A::KeepRows, "Keep Rows", Icon::FilterPlus),
                     large(A::RemoveRows, "Remove Rows", Icon::Eraser),
                 ],
             ),
+            group("Filter", vec![large(A::FilterRows, "Filter", Icon::Filter)]),
             group(
                 "Sort",
                 vec![
@@ -417,7 +412,7 @@ impl Context {
             A::Cut | A::Paste => self.editable && (self.has_selection || column),
             A::InsertRowsAt => self.editable,
             A::DeleteRowsAt => self.editable && self.has_rows,
-            A::KeepRows | A::RemoveRows => self.filter_active,
+            A::KeepRows | A::RemoveRows => self.filter_active || (self.editable && self.has_rows),
             A::RenameColumn
             | A::MoveColumnLeft
             | A::MoveColumnRight

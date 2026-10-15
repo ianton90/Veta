@@ -11,6 +11,7 @@ pub mod history;
 pub mod io;
 pub mod model;
 pub mod recipe;
+pub mod rows;
 pub mod source;
 pub mod stats;
 pub mod steps;

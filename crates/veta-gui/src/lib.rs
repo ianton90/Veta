@@ -2212,22 +2212,14 @@ impl App {
                     }
                 }
             }
-            Action::InsertRowsAt | Action::DeleteRowsAt => {
+            Action::InsertRowsAt => {
                 if let Some(id) = self.active {
-                    self.commit_edit();
-                    let num_rows = self.workbook.get(id).map_or(0, Document::num_rows);
-                    let selected = self.selected_rows(id);
-                    let delete = action == Action::DeleteRowsAt;
-                    let dialog = RowsDialog::new(delete, num_rows, selected);
-                    self.edit = None;
-                    self.dialog = Some(Dialog::Rows {
-                        document: id,
-                        dialog,
-                    });
-                    return Task::batch([
-                        iced::widget::operation::focus(dialogs::NAME_ID),
-                        iced::widget::operation::select_all(dialogs::NAME_ID),
-                    ]);
+                    return self.open_rows_dialog(id, dialogs::RowAction::Insert, "Insert rows");
+                }
+            }
+            Action::DeleteRowsAt => {
+                if let Some(id) = self.active {
+                    return self.open_rows_dialog(id, dialogs::RowAction::Delete, "Delete rows");
                 }
             }
             Action::FilterRows => {
@@ -2236,8 +2228,26 @@ impl App {
                 }
             }
             Action::KeepRows | Action::RemoveRows => {
+                // With a filter on, keeps or removes the rows it shows;
+                // otherwise rows by position.
                 if let Some(id) = self.active {
-                    self.apply_filter(id, action == Action::RemoveRows);
+                    let remove = action == Action::RemoveRows;
+                    let filtered = self
+                        .tabs
+                        .iter()
+                        .find(|t| t.id == id)
+                        .is_some_and(|t| t.grid.filter().is_some());
+                    if filtered {
+                        self.apply_filter(id, remove);
+                    } else if remove {
+                        return self.open_rows_dialog(
+                            id,
+                            dialogs::RowAction::Delete,
+                            "Remove rows",
+                        );
+                    } else {
+                        return self.open_rows_dialog(id, dialogs::RowAction::Keep, "Keep rows");
+                    }
                 }
             }
             Action::ReplaceValues => {
@@ -2879,6 +2889,27 @@ impl App {
                 ..filter
             }),
         );
+    }
+
+    /// Opens the dialog to insert, delete or keep a number of rows.
+    fn open_rows_dialog(
+        &mut self,
+        id: DocumentId,
+        action: dialogs::RowAction,
+        title: &'static str,
+    ) -> Task<Message> {
+        self.commit_edit();
+        let num_rows = self.workbook.get(id).map_or(0, Document::num_rows);
+        let selected = self.selected_rows(id);
+        self.edit = None;
+        self.dialog = Some(Dialog::Rows {
+            document: id,
+            dialog: RowsDialog::new(action, title, num_rows, selected),
+        });
+        Task::batch([
+            iced::widget::operation::focus(dialogs::NAME_ID),
+            iced::widget::operation::select_all(dialogs::NAME_ID),
+        ])
     }
 
     /// Keeps only the selected rows.
@@ -6552,6 +6583,35 @@ mod tests {
         rows_msg(&mut app, RowsMessage::Apply);
         assert_eq!(app.tabs[0].grid.value(1, 0), Some(None));
         assert_eq!(app.tabs[0].grid.value(2, 0), Some(Some("1")));
+
+        // Without a filter, Keep/Remove Rows work by position.
+        let _ = app.update(Message::Action(Action::RemoveRows));
+        rows_msg(&mut app, RowsMessage::Count("1".into()));
+        rows_msg(&mut app, RowsMessage::Place(RowPlace::At));
+        rows_msg(&mut app, RowsMessage::At("2".into()));
+        rows_msg(&mut app, RowsMessage::Apply);
+        assert_eq!(rows(&app), total - 3);
+        assert_eq!(app.tabs[0].grid.value(1, 0), Some(Some("1")));
+        let _ = app.update(Message::Action(Action::KeepRows));
+        rows_msg(&mut app, RowsMessage::Count("10".into()));
+        rows_msg(&mut app, RowsMessage::Place(RowPlace::At));
+        rows_msg(&mut app, RowsMessage::At("6".into()));
+        rows_msg(&mut app, RowsMessage::Apply);
+        assert_eq!(rows(&app), 10);
+        assert_eq!(first_id(&app).as_deref(), Some("5"));
+        let _ = app.update(Message::Action(Action::KeepRows));
+        rows_msg(&mut app, RowsMessage::Count("3".into()));
+        rows_msg(&mut app, RowsMessage::Place(RowPlace::Bottom));
+        rows_msg(&mut app, RowsMessage::Apply);
+        assert_eq!((rows(&app), first_id(&app).as_deref()), (3, Some("12")));
+        let _ = app.update(Message::Action(Action::KeepRows));
+        rows_msg(&mut app, RowsMessage::Count("4".into()));
+        rows_msg(&mut app, RowsMessage::Place(RowPlace::Top));
+        rows_msg(&mut app, RowsMessage::Apply);
+        assert!(
+            matches!(app.dialog, Some(Dialog::Rows { .. })),
+            "only 3 rows"
+        );
     }
 
     #[test]

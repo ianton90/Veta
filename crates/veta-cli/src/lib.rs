@@ -53,21 +53,37 @@ pub enum Command {
         #[command(flatten)]
         output: edit::Output,
     },
-    /// Insert empty rows before row AT (use the row count + 1 to append).
+    /// Insert empty rows at the top, at the bottom, or before row AT (the
+    /// row count + 1 also appends).
+    #[command(group(clap::ArgGroup::new("place").required(true).args(["top", "bottom", "at"])))]
     InsertRows {
         file: PathBuf,
         #[arg(long)]
-        at: usize,
+        top: bool,
+        #[arg(long)]
+        bottom: bool,
+        #[arg(long)]
+        at: Option<usize>,
+        /// How many rows.
         #[arg(long, default_value_t = 1)]
         count: usize,
         #[command(flatten)]
         output: edit::Output,
     },
-    /// Delete rows, e.g. --rows 5 --rows 10-20 or --rows 5,10-20.
+    /// Delete rows: the first N, the last N, or row ranges, e.g. --rows 5
+    /// --rows 10-20 or --rows 5,10-20.
+    #[command(visible_alias = "remove-rows")]
     DeleteRows {
-        file: PathBuf,
-        #[arg(long, required = true)]
-        rows: Vec<String>,
+        #[command(flatten)]
+        rows: RowsArgs,
+        #[command(flatten)]
+        output: edit::Output,
+    },
+    /// Keep only some rows: the first N, the last N, or row ranges (as for
+    /// delete-rows).
+    KeepRows {
+        #[command(flatten)]
+        rows: RowsArgs,
         #[command(flatten)]
         output: edit::Output,
     },
@@ -169,6 +185,34 @@ pub fn run(command: Command) -> ExitCode {
     }
 }
 
+/// Which rows: `--top N`, `--bottom N` or `--rows` ranges.
+#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+#[command(group(clap::ArgGroup::new("which").required(true).args(["top", "bottom", "rows"])))]
+pub struct RowsArgs {
+    file: PathBuf,
+    /// The first N rows.
+    #[arg(long, value_name = "N")]
+    top: Option<usize>,
+    /// The last N rows.
+    #[arg(long, value_name = "N")]
+    bottom: Option<usize>,
+    /// Row numbers and ranges, from 1, e.g. 5 or 10-20.
+    #[arg(long)]
+    rows: Vec<String>,
+}
+
+impl RowsArgs {
+    /// The rows meant, 0-based, in a table of `num_rows` rows.
+    fn ranges(&self, num_rows: usize) -> Result<Vec<std::ops::Range<usize>>, Error> {
+        use veta_core::rows::{RowPlace, row_range};
+        match (self.top, self.bottom) {
+            (Some(n), _) => Ok(vec![row_range(RowPlace::Top, n, num_rows)?]),
+            (_, Some(n)) => Ok(vec![row_range(RowPlace::Bottom, n, num_rows)?]),
+            _ => edit::parse_rows(&self.rows),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum Error {
     Core(veta_core::Error),
@@ -219,21 +263,48 @@ fn execute(command: Command, out: &mut impl Write) -> Result<(), Error> {
         }
         Command::InsertRows {
             file,
+            top,
+            bottom,
             at,
             count,
             output,
         } => {
-            let at = edit::row_index(at)?;
-            edit::edit(&file, &output, out, |_| {
-                Ok(vec![CoreCommand::InsertRows { at, count }])
+            use veta_core::rows::{RowAction, RowPlace, rows_command};
+            let place = match (top, bottom, at) {
+                (true, _, _) => RowPlace::Top,
+                (_, true, _) => RowPlace::Bottom,
+                (_, _, Some(at)) => RowPlace::At(edit::row_index(at)?),
+                _ => return Err(Error::Usage("use --top, --bottom or --at".into())),
+            };
+            edit::edit(&file, &output, out, |doc| {
+                Ok(vec![rows_command(
+                    RowAction::Insert,
+                    place,
+                    count,
+                    doc.num_rows(),
+                )?])
             })
         }
-        Command::DeleteRows { file, rows, output } => {
-            let rows = edit::parse_rows(&rows)?;
-            edit::edit(&file, &output, out, |_| {
-                Ok(vec![CoreCommand::DeleteRows { rows }])
+        Command::DeleteRows { rows, output } => edit::edit(&rows.file, &output, out, |doc| {
+            let rows = rows.ranges(doc.num_rows())?;
+            Ok(vec![CoreCommand::DeleteRows { rows }])
+        }),
+        Command::KeepRows { rows, output } => edit::edit(&rows.file, &output, out, |doc| {
+            let keep = rows.ranges(doc.num_rows())?;
+            if let Some(bad) = keep.iter().find(|r| r.end > doc.num_rows()) {
+                return Err(Error::Usage(format!(
+                    "row {} is past the last row ({})",
+                    bad.end,
+                    doc.num_rows()
+                )));
+            }
+            let delete = veta_core::rows::keep_only(&keep, doc.num_rows());
+            Ok(if delete.is_empty() {
+                Vec::new()
+            } else {
+                vec![CoreCommand::DeleteRows { rows: delete }]
             })
-        }
+        }),
         Command::AddColumn {
             file,
             name,
@@ -802,6 +873,50 @@ mod tests {
             rows: 2,
         });
         assert!(head.contains("first"), "{head}");
+    }
+
+    #[test]
+    fn rows_at_top_bottom_and_ranges() {
+        let dir = TempDir::new();
+        let file = dir.join("mixed.parquet");
+        fixtures::mixed_settings(&file);
+        let f = file.to_str().unwrap();
+        let rows = || {
+            Document::open(&file, OpenOptions::default())
+                .unwrap()
+                .num_rows()
+        };
+        let first_id = || {
+            let doc = Document::open(&file, OpenOptions::default()).unwrap();
+            veta_core::display::format_batch(&doc.read(0..1).unwrap()).unwrap()[0][0].clone()
+        };
+
+        run_args(&["veta", "insert-rows", f, "--top", "--count", "3"]).unwrap();
+        assert_eq!((rows(), first_id()), (1003, None));
+        run_args(&["veta", "insert-rows", f, "--bottom"]).unwrap();
+        assert_eq!(rows(), 1004);
+        run_args(&["veta", "delete-rows", f, "--top", "3"]).unwrap();
+        assert_eq!((rows(), first_id().as_deref()), (1001, Some("0")));
+        run_args(&["veta", "remove-rows", f, "--bottom", "1"]).unwrap();
+        assert_eq!(rows(), 1000);
+        run_args(&["veta", "keep-rows", f, "--rows", "11-20,31-40"]).unwrap();
+        assert_eq!((rows(), first_id().as_deref()), (20, Some("10")));
+        run_args(&["veta", "keep-rows", f, "--bottom", "5"]).unwrap();
+        assert_eq!((rows(), first_id().as_deref()), (5, Some("35")));
+        run_args(&["veta", "keep-rows", f, "--top", "2"]).unwrap();
+        assert_eq!(rows(), 2);
+
+        let usage = |args: &[&str]| Cli::try_parse_from(args).is_err();
+        assert!(usage(&["veta", "insert-rows", f]), "needs a place");
+        assert!(usage(&["veta", "insert-rows", f, "--top", "--bottom"]));
+        assert!(usage(&["veta", "keep-rows", f]));
+        assert!(
+            run_args(&["veta", "delete-rows", f, "--top", "3"]).is_err(),
+            "only 2"
+        );
+        assert!(run_args(&["veta", "keep-rows", f, "--rows", "1-5"]).is_err());
+        assert!(run_args(&["veta", "insert-rows", f, "--at", "4"]).is_err());
+        assert_eq!(rows(), 2);
     }
 
     #[test]
