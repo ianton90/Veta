@@ -300,6 +300,13 @@ pub struct GridView {
     json: Vec<Vec<Option<Option<String>>>>,
     /// Struct columns shown as their fields, by column key.
     expanded: BTreeSet<Vec<String>>,
+    /// Read rows on another thread while scrolling (paged documents).
+    background: bool,
+    /// The read the app hasn't started yet.
+    wanted: Option<RowRead>,
+    /// The latest read started, and its rows; older results are dropped.
+    reading: Option<(u64, Range<usize>)>,
+    next_read: u64,
     /// Rows whose list and map cells show their items.
     open_rows: BTreeSet<usize>,
     /// Items of the open rows in `cells`: per screen column, (index or key,
@@ -378,6 +385,27 @@ impl Items {
     }
 }
 
+/// Rows to read off the UI thread (see [`GridView::take_read`]).
+#[derive(Debug, Clone)]
+pub struct RowRead {
+    pub id: u64,
+    pipeline: Pipeline,
+    /// Steps to read after; `None` for all (a filter view).
+    level: Option<usize>,
+    range: Range<usize>,
+}
+
+impl RowRead {
+    /// Reads the rows; slow for paged documents, so run it on a thread.
+    pub fn run(&self) -> Result<RecordBatch, String> {
+        let result = match self.level {
+            Some(level) => self.pipeline.read_at(level, self.range.clone()),
+            None => self.pipeline.read(self.range.clone()),
+        };
+        result.map_err(|e| e.to_string())
+    }
+}
+
 /// The document's output with a filter applied, computed in the background.
 #[derive(Debug, Clone)]
 struct FilterView {
@@ -414,6 +442,10 @@ impl GridView {
             cells: Vec::new(),
             json: Vec::new(),
             expanded: BTreeSet::new(),
+            background: false,
+            wanted: None,
+            reading: None,
+            next_read: 0,
             open_rows: BTreeSet::new(),
             details: Default::default(),
             error: None,
@@ -830,6 +862,11 @@ impl GridView {
         }
     }
 
+    /// Reads rows in the background while scrolling (for paged documents).
+    pub fn set_background(&mut self, on: bool) {
+        self.background = on;
+    }
+
     /// Error from the last read, if it failed.
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
@@ -1160,10 +1197,67 @@ impl GridView {
         }
         let start = self.first_row.saturating_sub(self.visible_rows);
         let end = (self.first_row + 2 * self.visible_rows + 1).min(self.num_rows);
+        // Scrolling in the background mode reads off the UI thread; a read
+        // already on its way for these rows is waited for.
+        if self.background && !force {
+            if let Some((_, range)) = &self.reading
+                && needed.start >= range.start
+                && needed.end <= range.end
+            {
+                return;
+            }
+            self.next_read += 1;
+            let (pipeline, level) = match self.view() {
+                Some(view) => (view.clone(), None),
+                None => (document.reader(), Some(self.level(document))),
+            };
+            self.wanted = Some(RowRead {
+                id: self.next_read,
+                pipeline,
+                level,
+                range: start..end,
+            });
+            self.reading = Some((self.next_read, start..end));
+            return;
+        }
+        // A synchronous read replaces any read on its way.
+        self.reading = None;
+        self.wanted = None;
         let batch = match self.view() {
             Some(view) => view.read(start..end),
             None => document.read_at(self.level(document), start..end),
         };
+        self.install(start, batch);
+    }
+
+    /// The read the app should run in the background, if one is wanted.
+    pub fn take_read(&mut self) -> Option<RowRead> {
+        self.wanted.take()
+    }
+
+    /// Uses the rows read by [`RowRead`] `id`, unless a newer read replaced
+    /// it; then makes sure the rows now in view are loaded.
+    pub fn install_read(
+        &mut self,
+        id: u64,
+        result: Result<RecordBatch, String>,
+        document: &Document,
+    ) {
+        let Some((current, range)) = self.reading.clone() else {
+            return;
+        };
+        if current != id {
+            return;
+        }
+        self.reading = None;
+        let result = result.map_err(veta_core::Error::InvalidCommand);
+        self.install(range.start, result);
+        self.load(document, false);
+    }
+
+    /// Makes `batch` the loaded rows, starting at row `start`.
+    fn install(&mut self, start: usize, batch: veta_core::Result<RecordBatch>) {
+        let end = start + batch.as_ref().map_or(0, RecordBatch::num_rows);
         let formatted = batch.and_then(|batch| {
             let batch = self.display_batch(batch)?;
             let mut cells = format_batch(&batch)?;
@@ -2222,7 +2316,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 let (content, color) = match view.cell(row, column) {
                     Some(Some(value)) => (single_line(value), text_color),
                     Some(None) => (NULL_TEXT.to_owned(), muted),
-                    None => (String::new(), text_color),
+                    // Still being read.
+                    None => ("…".to_owned(), muted),
                 };
                 let numeric = view.columns[column].numeric;
                 let mut text_cell = cell;
@@ -2806,6 +2901,45 @@ mod tests {
         view.apply(GridEvent::ToggleItems { row: 3 }, &doc);
         assert_eq!(view.row_lines(3), 1);
         assert_eq!(view.max_first_row(), 0);
+    }
+
+    #[test]
+    fn background_reads_while_scrolling() {
+        let dir = TempDir::new();
+        let doc = open_large(&dir, 200_000);
+        let mut view = GridView::new(&doc, 13.0);
+        view.set_background(true);
+        resized(&mut view, &doc, 20);
+        let scroll = |view: &mut GridView, first_row| {
+            view.apply(
+                GridEvent::Scroll {
+                    first_row,
+                    scroll_x: 0.0,
+                },
+                &doc,
+            );
+        };
+
+        scroll(&mut view, 100_000);
+        assert_eq!(view.cell(100_000, 0), None, "not read yet");
+        let first = view.take_read().expect("a read");
+        assert!(view.take_read().is_none(), "taken once");
+        scroll(&mut view, 100_005);
+        assert!(view.take_read().is_none(), "the read on its way covers it");
+        scroll(&mut view, 150_000);
+        let second = view.take_read().expect("a new read");
+
+        // The older read arrives late and is dropped.
+        view.install_read(first.id, first.run(), &doc);
+        assert_eq!(view.cell(150_000, 0), None);
+        view.install_read(second.id, second.run(), &doc);
+        assert_eq!(view.cell(150_000, 0), Some(&Some("150000".to_owned())));
+        assert!(view.take_read().is_none(), "nothing more needed");
+        // A failed read shows as an error.
+        scroll(&mut view, 10);
+        let third = view.take_read().unwrap();
+        view.install_read(third.id, Err("disk gone".into()), &doc);
+        assert_eq!(view.error(), Some("Disk gone"));
     }
 
     #[test]

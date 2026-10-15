@@ -159,6 +159,12 @@ impl Document {
         self.pipeline.status()
     }
 
+    /// The document's steps over its source, cloned (cheap: data is shared)
+    /// for reading rows on another thread.
+    pub fn reader(&self) -> crate::steps::Pipeline {
+        self.pipeline.clone()
+    }
+
     /// Reads rows after the first `steps` steps (0 = the source data).
     pub fn read_at(&self, steps: usize, range: Range<usize>) -> Result<RecordBatch> {
         self.pipeline.read_at(steps, range)

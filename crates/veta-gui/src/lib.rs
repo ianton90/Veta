@@ -701,6 +701,12 @@ enum Message {
     OpenJsonEditor,
     /// Clipboard text read for pasting.
     Pasted(Option<String>),
+    /// Rows read in the background for a grid (see `GridView::take_read`).
+    RowsRead(
+        DocumentId,
+        u64,
+        Result<veta_core::arrow::record_batch::RecordBatch, String>,
+    ),
     Json(dialogs::JsonMessage),
     /// Collapse or expand a node of the value tree.
     ToggleNode(String),
@@ -867,7 +873,33 @@ impl App {
         } else {
             Task::none()
         };
-        Task::batch([task, queued, self.schedule_compute(), self.schedule_stats()])
+        Task::batch([
+            task,
+            queued,
+            self.schedule_compute(),
+            self.schedule_stats(),
+            self.schedule_reads(),
+        ])
+    }
+
+    /// Starts the row reads the grids want, each on its own thread.
+    fn schedule_reads(&mut self) -> Task<Message> {
+        let mut tasks = Vec::new();
+        for tab in &mut self.tabs {
+            let Some(read) = tab.grid.take_read() else {
+                continue;
+            };
+            let (document, id) = (tab.id, read.id);
+            let (sender, receiver) = iced::futures::channel::oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = sender.send(read.run());
+            });
+            tasks.push(Task::perform(receiver, move |result| {
+                let result = result.unwrap_or_else(|_| Err("the read stopped".into()));
+                Message::RowsRead(document, id, result)
+            }));
+        }
+        Task::batch(tasks)
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
@@ -891,6 +923,14 @@ impl App {
             }
             Message::OpenDialog => return self.perform(Action::Open),
             Message::Ribbon(message) => self.ribbon.update(message),
+            Message::RowsRead(id, read, result) => {
+                if let (Some(doc), Some(tab)) = (
+                    self.workbook.get(id),
+                    self.tabs.iter_mut().find(|t| t.id == id),
+                ) {
+                    tab.grid.install_read(read, result, doc);
+                }
+            }
             Message::FilesPicked(files) => return self.open(files),
             Message::WindowResized(size) => self.window_size = size,
             Message::Remote(files) => {
@@ -4414,6 +4454,8 @@ impl App {
         let mut grid = GridView::new(&document, self.text_size);
         // Start on the first cell, at the top left.
         grid.apply(GridEvent::Select { row: 0, column: 0 }, &document);
+        // Paged files can be slow to read: scroll without waiting.
+        grid.set_background(document.source_mode() == veta_core::source::SourceMode::Paged);
         let id = self.workbook.add(document);
         self.tabs.push(Tab { id, grid });
         self.active = Some(id);
