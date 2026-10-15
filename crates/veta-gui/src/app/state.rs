@@ -215,6 +215,13 @@ pub(crate) struct Tab {
 
 #[derive(Debug)]
 pub(crate) enum Dialog {
+    /// A dialog that adds a step, or edits one.
+    Step {
+        document: DocumentId,
+        dialog: Box<dyn StepDialog>,
+        /// Editing the step at this index instead of adding a new one.
+        replace: Option<usize>,
+    },
     Settings(Draft),
     About,
     Column {
@@ -223,67 +230,14 @@ pub(crate) enum Dialog {
         /// Editing the step at this index instead of adding a new one.
         replace: Option<usize>,
     },
-    Filter {
-        document: DocumentId,
-        dialog: FilterDialog,
-        /// Editing the step at this index instead of adding a new one.
-        replace: Option<usize>,
-    },
-    Cast {
-        document: DocumentId,
-        dialog: CastDialog,
-        /// Editing the step at this index instead of adding a new one.
-        replace: Option<usize>,
-    },
-    Replace {
-        document: DocumentId,
-        dialog: ReplaceDialog,
-        replace: Option<usize>,
-    },
-    Format {
-        document: DocumentId,
-        dialog: FormatDialog,
-        replace: Option<usize>,
-    },
-    Split {
-        document: DocumentId,
-        dialog: SplitDialog,
-        replace: Option<usize>,
-    },
-    Merge {
-        document: DocumentId,
-        dialog: MergeDialog,
-        replace: Option<usize>,
-    },
-    Combine {
-        document: DocumentId,
-        dialog: CombineDialog,
-        replace: Option<usize>,
-    },
-    Collect {
-        document: DocumentId,
-        dialog: CollectDialog,
-        replace: Option<usize>,
-    },
     Rows {
         document: DocumentId,
         dialog: RowsDialog,
-    },
-    Custom {
-        document: DocumentId,
-        dialog: CustomDialog,
-        replace: Option<usize>,
     },
     Import(ImportDialog),
     Export {
         document: DocumentId,
         dialog: ExportDialog,
-    },
-    Sort {
-        document: DocumentId,
-        dialog: SortDialog,
-        /// Editing the step at this index instead of adding a new one.
-        replace: Option<usize>,
     },
     /// "Later steps refer to rows by position" before changing a step.
     ConfirmStep {

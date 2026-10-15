@@ -67,3 +67,31 @@ impl CombineDialog {
         card(body.into(), tokens, 440.0)
     }
 }
+
+impl StepDialog for CombineDialog {
+    fn update(&mut self, message: StepMessage) -> Option<Step> {
+        let StepMessage::Combine(message) = message else {
+            return None;
+        };
+        CombineDialog::update(self, message)
+            .map(|(columns, name)| Step::CombineStruct { columns, name })
+    }
+
+    fn cancels(&self, message: &StepMessage) -> bool {
+        matches!(message, StepMessage::Combine(CombineMessage::Cancel))
+    }
+
+    fn view(&self, tokens: Tokens) -> Element<'_, StepMessage> {
+        CombineDialog::view(self, tokens).map(StepMessage::Combine)
+    }
+
+    fn set_error(&mut self, error: String) -> Option<String> {
+        CombineDialog::set_error(self, error);
+        None
+    }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

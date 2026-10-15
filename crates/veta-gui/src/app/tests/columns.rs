@@ -140,7 +140,7 @@ fn combine_columns_into_a_struct() {
     select(&mut app, 1, false);
     select(&mut app, 2, true);
     let _ = app.update(Message::Action(Action::CombineStruct));
-    let _ = app.update(Message::Combine(CombineMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Combine(CombineMessage::Apply)));
     assert!(app.dialog.is_none());
     assert_eq!(names(&app)[..3], ["id", "point", "tags"]);
 
@@ -148,17 +148,21 @@ fn combine_columns_into_a_struct() {
     select(&mut app, 0, false);
     select(&mut app, 2, true);
     let _ = app.update(Message::Action(Action::CombineStruct));
-    let _ = app.update(Message::Combine(CombineMessage::Name("owner".into())));
-    let _ = app.update(Message::Combine(CombineMessage::Apply));
-    assert!(matches!(app.dialog, Some(Dialog::Combine { .. })));
-    let _ = app.update(Message::Combine(CombineMessage::Name("rec".into())));
-    let _ = app.update(Message::Combine(CombineMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Combine(CombineMessage::Name(
+        "owner".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Combine(CombineMessage::Apply)));
+    assert!(step_dialog::<CombineDialog>(&app).is_some());
+    let _ = app.update(Message::Step(StepMessage::Combine(CombineMessage::Name(
+        "rec".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Combine(CombineMessage::Apply)));
     assert!(app.dialog.is_none());
     assert_eq!(names(&app), ["rec", "path", "scores", "owner"]);
 
     // The step reopens in its dialog.
     let _ = app.update(Message::EditStep(2));
-    assert!(matches!(app.dialog, Some(Dialog::Combine { .. })));
+    assert!(step_dialog::<CombineDialog>(&app).is_some());
 }
 
 #[test]
@@ -177,8 +181,10 @@ fn collect_columns_into_lists() {
         },
     ));
     let _ = app.update(Message::Action(Action::CollectList));
-    let _ = app.update(Message::Collect(CollectMessage::ToggleKey(1, true)));
-    let _ = app.update(Message::Collect(CollectMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Collect(
+        CollectMessage::ToggleKey(1, true),
+    )));
+    let _ = app.update(Message::Step(StepMessage::Collect(CollectMessage::Apply)));
     assert!(app.dialog.is_none());
     finish_compute(&mut app, id);
     let doc = app.workbook.get(id).unwrap();
@@ -197,7 +203,7 @@ fn collect_columns_into_lists() {
 
     // The step reopens with its group columns checked.
     let _ = app.update(Message::EditStep(0));
-    let Some(Dialog::Collect { dialog, .. }) = &app.dialog else {
+    let Some(dialog) = step_dialog::<CollectDialog>(&app) else {
         panic!("collect dialog");
     };
     assert_eq!(
@@ -280,12 +286,14 @@ fn change_type_dialog_and_edit_step() {
         },
     ));
     let _ = app.update(Message::Action(Action::DataType));
-    assert!(matches!(app.dialog, Some(Dialog::Cast { .. })));
-    let _ = app.update(Message::Cast(CastMessage::Type(dialogs::CastTarget::Int64)));
-    let _ = app.update(Message::Cast(CastMessage::OnError(
+    assert!(step_dialog::<CastDialog>(&app).is_some());
+    let _ = app.update(Message::Step(StepMessage::Cast(CastMessage::Type(
+        dialogs::CastTarget::Int64,
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Cast(CastMessage::OnError(
         veta_core::steps::OnError::ErrorColumn,
-    )));
-    let _ = app.update(Message::Cast(CastMessage::Apply));
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Cast(CastMessage::Apply)));
     assert!(app.dialog.is_none());
     // The check finds errors, so it's dropped and the errors kept.
     assert_eq!(app.workbook.get(id).unwrap().steps().len(), 2);
@@ -308,11 +316,13 @@ fn change_type_dialog_and_edit_step() {
         },
     ));
     let _ = app.update(Message::Action(Action::DataType));
-    let _ = app.update(Message::Cast(CastMessage::Type(dialogs::CastTarget::Text)));
-    let _ = app.update(Message::Cast(CastMessage::OnError(
+    let _ = app.update(Message::Step(StepMessage::Cast(CastMessage::Type(
+        dialogs::CastTarget::Text,
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Cast(CastMessage::OnError(
         veta_core::steps::OnError::ErrorColumn,
-    )));
-    let _ = app.update(Message::Cast(CastMessage::Apply));
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Cast(CastMessage::Apply)));
     finish_compute(&mut app, id);
     assert_eq!(app.workbook.get(id).unwrap().steps().len(), 3);
     assert_eq!(schema(&app).fields().len(), 5);
@@ -321,10 +331,10 @@ fn change_type_dialog_and_edit_step() {
 
     // Edit it: back to null on error, so the error column goes away.
     let _ = app.update(Message::EditStep(0));
-    let _ = app.update(Message::Cast(CastMessage::OnError(
+    let _ = app.update(Message::Step(StepMessage::Cast(CastMessage::OnError(
         veta_core::steps::OnError::Null,
-    )));
-    let _ = app.update(Message::Cast(CastMessage::Apply));
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Cast(CastMessage::Apply)));
     assert_eq!(app.workbook.get(id).unwrap().steps().len(), 1);
     assert_eq!(schema(&app).field(2).name(), "score");
 }
@@ -354,12 +364,18 @@ fn replace_fill_and_format() {
     // Replace in score: an invalid number keeps the dialog open.
     select_column(&mut app, 2);
     let _ = app.update(Message::Action(Action::ReplaceValues));
-    let _ = app.update(Message::Replace(ReplaceMessage::Find("x".into())));
-    let _ = app.update(Message::Replace(ReplaceMessage::With("1".into())));
-    let _ = app.update(Message::Replace(ReplaceMessage::Apply));
-    assert!(matches!(app.dialog, Some(Dialog::Replace { .. })));
-    let _ = app.update(Message::Replace(ReplaceMessage::FindNull(true)));
-    let _ = app.update(Message::Replace(ReplaceMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Replace(ReplaceMessage::Find(
+        "x".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Replace(ReplaceMessage::With(
+        "1".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Replace(ReplaceMessage::Apply)));
+    assert!(step_dialog::<ReplaceDialog>(&app).is_some());
+    let _ = app.update(Message::Step(StepMessage::Replace(
+        ReplaceMessage::FindNull(true),
+    )));
+    let _ = app.update(Message::Step(StepMessage::Replace(ReplaceMessage::Apply)));
     assert!(app.dialog.is_none());
     assert_eq!(cell(&app, 0, 2).as_deref(), Some("1.0"));
 
@@ -369,14 +385,18 @@ fn replace_fill_and_format() {
     finish_compute(&mut app, id);
     assert_eq!(cell(&app, 7, 1).as_deref(), Some("bo"));
     let _ = app.update(Message::Action(Action::FormatText));
-    let _ = app.update(Message::Format(FormatMessage::Op(TextOp::Upper)));
-    let _ = app.update(Message::Format(FormatMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Format(FormatMessage::Op(
+        TextOp::Upper,
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Format(FormatMessage::Apply)));
     assert_eq!(cell(&app, 7, 1).as_deref(), Some("BO"));
 
     // Edit the replace step: later steps aren't positional, no warning.
     let _ = app.update(Message::EditStep(0));
-    let _ = app.update(Message::Replace(ReplaceMessage::With("2".into())));
-    let _ = app.update(Message::Replace(ReplaceMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Replace(ReplaceMessage::With(
+        "2".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Replace(ReplaceMessage::Apply)));
     assert!(app.dialog.is_none());
     finish_compute(&mut app, id);
     assert_eq!(cell(&app, 0, 2).as_deref(), Some("2.0"));
@@ -417,15 +437,21 @@ fn split_and_merge_columns() {
         },
     ));
     let _ = app.update(Message::Action(Action::MergeColumns));
-    let _ = app.update(Message::Merge(MergeMessage::Separator("-".into())));
-    let _ = app.update(Message::Merge(MergeMessage::Name("score".into())));
-    let _ = app.update(Message::Merge(MergeMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Merge(MergeMessage::Separator(
+        "-".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Merge(MergeMessage::Name(
+        "score".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Merge(MergeMessage::Apply)));
     assert!(
-        matches!(app.dialog, Some(Dialog::Merge { .. })),
+        step_dialog::<MergeDialog>(&app).is_some(),
         "a clashing name keeps the dialog open"
     );
-    let _ = app.update(Message::Merge(MergeMessage::Name("key".into())));
-    let _ = app.update(Message::Merge(MergeMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Merge(MergeMessage::Name(
+        "key".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Merge(MergeMessage::Apply)));
     assert!(app.dialog.is_none());
     assert_eq!(names(&app), ["key", "score", "flag"]);
 
@@ -438,17 +464,21 @@ fn split_and_merge_columns() {
         },
     ));
     let _ = app.update(Message::Action(Action::SplitColumn));
-    let _ = app.update(Message::Split(SplitMessage::Delimiter("-".into())));
-    let _ = app.update(Message::Split(SplitMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Split(SplitMessage::Delimiter(
+        "-".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Split(SplitMessage::Apply)));
     assert_eq!(names(&app), ["key.1", "key.2", "score", "flag"]);
 
     // Edit the split: by position.
     let _ = app.update(Message::EditStep(1));
-    let _ = app.update(Message::Split(SplitMessage::Mode(
+    let _ = app.update(Message::Step(StepMessage::Split(SplitMessage::Mode(
         dialogs::SplitMode::Positions,
-    )));
-    let _ = app.update(Message::Split(SplitMessage::Positions("1, 2".into())));
-    let _ = app.update(Message::Split(SplitMessage::Apply));
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Split(SplitMessage::Positions(
+        "1, 2".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Split(SplitMessage::Apply)));
     assert_eq!(names(&app), ["key.1", "key.2", "key.3", "score", "flag"]);
 }
 
@@ -476,19 +506,21 @@ fn custom_duplicate_and_index_columns() {
         },
     ));
     let _ = app.update(Message::Action(Action::Standard));
-    let _ = app.update(Message::Custom(CustomMessage::Expression(
-        "[score] * \"x\"".into(),
+    let _ = app.update(Message::Step(StepMessage::Custom(
+        CustomMessage::Expression("[score] * \"x\"".into()),
     )));
-    let _ = app.update(Message::Custom(CustomMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Custom(CustomMessage::Apply)));
     assert!(
-        matches!(app.dialog, Some(Dialog::Custom { .. })),
+        step_dialog::<CustomDialog>(&app).is_some(),
         "an invalid formula keeps the dialog open"
     );
-    let _ = app.update(Message::Custom(CustomMessage::Expression(
-        "score * 2".into(),
+    let _ = app.update(Message::Step(StepMessage::Custom(
+        CustomMessage::Expression("score * 2".into()),
     )));
-    let _ = app.update(Message::Custom(CustomMessage::Name("double".into())));
-    let _ = app.update(Message::Custom(CustomMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Custom(CustomMessage::Name(
+        "double".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Custom(CustomMessage::Apply)));
     assert!(app.dialog.is_none());
     assert_eq!(names(&app), ["id", "name", "score", "double", "flag"]);
 
@@ -501,9 +533,9 @@ fn custom_duplicate_and_index_columns() {
 
     // Edit the first custom column.
     let _ = app.update(Message::EditStep(0));
-    let _ = app.update(Message::Custom(CustomMessage::Expression(
-        "text(score)".into(),
+    let _ = app.update(Message::Step(StepMessage::Custom(
+        CustomMessage::Expression("text(score)".into()),
     )));
-    let _ = app.update(Message::Custom(CustomMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Custom(CustomMessage::Apply)));
     assert_eq!(schema(&app).field(3 + 2).data_type(), &DataType::Utf8);
 }

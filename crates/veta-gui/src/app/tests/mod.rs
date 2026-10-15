@@ -1,4 +1,8 @@
 use super::*;
+use crate::dialogs::{
+    CastMessage, CollectMessage, CombineMessage, CustomMessage, FilterMessage, FormatMessage,
+    MergeMessage, ReplaceMessage, SortMessage, SplitMessage,
+};
 use veta_core::arrow::datatypes::DataType;
 use veta_testkit::{TempDir, fixtures};
 
@@ -124,4 +128,12 @@ fn menu_sections_follow_the_target() {
         titles(MenuTarget::Column(0), Some(&point)),
         ["Clipboard", "Column", "Data", "Split & Merge", "Nested"]
     );
+}
+
+/// The open step dialog, if it is a `D`.
+fn step_dialog<D: 'static>(app: &App) -> Option<&D> {
+    match &app.dialog {
+        Some(Dialog::Step { dialog, .. }) => dialog.as_any().downcast_ref(),
+        _ => None,
+    }
 }

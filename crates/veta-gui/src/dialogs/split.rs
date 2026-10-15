@@ -192,3 +192,30 @@ impl SplitDialog {
         card(body.into(), tokens, 440.0)
     }
 }
+
+impl StepDialog for SplitDialog {
+    fn update(&mut self, message: StepMessage) -> Option<Step> {
+        let StepMessage::Split(message) = message else {
+            return None;
+        };
+        SplitDialog::update(self, message).map(Step::Split)
+    }
+
+    fn cancels(&self, message: &StepMessage) -> bool {
+        matches!(message, StepMessage::Split(SplitMessage::Cancel))
+    }
+
+    fn view(&self, tokens: Tokens) -> Element<'_, StepMessage> {
+        SplitDialog::view(self, tokens).map(StepMessage::Split)
+    }
+
+    fn set_error(&mut self, error: String) -> Option<String> {
+        SplitDialog::set_error(self, error);
+        None
+    }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

@@ -229,3 +229,30 @@ impl FilterDialog {
         card(body.into(), tokens, 720.0)
     }
 }
+
+impl StepDialog for FilterDialog {
+    fn update(&mut self, message: StepMessage) -> Option<Step> {
+        let StepMessage::Filter(message) = message else {
+            return None;
+        };
+        FilterDialog::update(self, message).map(Step::Filter)
+    }
+
+    fn cancels(&self, message: &StepMessage) -> bool {
+        matches!(message, StepMessage::Filter(FilterMessage::Cancel))
+    }
+
+    fn view(&self, tokens: Tokens) -> Element<'_, StepMessage> {
+        FilterDialog::view(self, tokens).map(StepMessage::Filter)
+    }
+
+    fn set_error(&mut self, error: String) -> Option<String> {
+        FilterDialog::set_error(self, error);
+        None
+    }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

@@ -120,3 +120,30 @@ impl ReplaceDialog {
         card(body.into(), tokens, 480.0)
     }
 }
+
+impl StepDialog for ReplaceDialog {
+    fn update(&mut self, message: StepMessage) -> Option<Step> {
+        let StepMessage::Replace(message) = message else {
+            return None;
+        };
+        ReplaceDialog::update(self, message).map(Step::Replace)
+    }
+
+    fn cancels(&self, message: &StepMessage) -> bool {
+        matches!(message, StepMessage::Replace(ReplaceMessage::Cancel))
+    }
+
+    fn view(&self, tokens: Tokens) -> Element<'_, StepMessage> {
+        ReplaceDialog::view(self, tokens).map(StepMessage::Replace)
+    }
+
+    fn set_error(&mut self, error: String) -> Option<String> {
+        ReplaceDialog::set_error(self, error);
+        None
+    }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

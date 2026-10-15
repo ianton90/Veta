@@ -355,6 +355,28 @@ impl CastDialog {
     }
 }
 
+impl StepDialog for CastDialog {
+    fn update(&mut self, message: StepMessage) -> Option<Step> {
+        let StepMessage::Cast(message) = message else {
+            return None;
+        };
+        CastDialog::update(self, message).map(Step::Cast)
+    }
+
+    fn cancels(&self, message: &StepMessage) -> bool {
+        matches!(message, StepMessage::Cast(CastMessage::Cancel))
+    }
+
+    fn view(&self, tokens: Tokens) -> Element<'_, StepMessage> {
+        CastDialog::view(self, tokens).map(StepMessage::Cast)
+    }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

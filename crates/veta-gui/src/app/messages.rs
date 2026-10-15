@@ -31,16 +31,8 @@ pub(crate) enum Message {
     Menu(MenuItem),
     CloseMenu,
     ColumnDialog(ColumnMessage),
-    Filter(FilterMessage),
-    Sort(SortMessage),
-    Cast(CastMessage),
-    Replace(ReplaceMessage),
-    Format(FormatMessage),
-    Split(SplitMessage),
-    Custom(CustomMessage),
-    Merge(MergeMessage),
-    Combine(CombineMessage),
-    Collect(CollectMessage),
+    /// For the open step dialog (see [`StepDialog`]).
+    Step(StepMessage),
     Rows(RowsMessage),
     /// Progress (0–1) of the background pass with this key.
     ComputeProgress(DocumentId, Target, Vec<u64>, f32),

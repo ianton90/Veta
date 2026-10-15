@@ -81,18 +81,36 @@ fn filter_view_then_keep_or_remove() {
         },
     ));
     let _ = app.update(Message::Action(Action::FilterRows));
-    let _ = app.update(Message::Filter(FilterMessage::Op(0, FilterOp::Greater)));
-    let _ = app.update(Message::Filter(FilterMessage::Column(0, "score".into())));
-    let _ = app.update(Message::Filter(FilterMessage::Value(0, "abc".into())));
-    let _ = app.update(Message::Filter(FilterMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Filter(FilterMessage::Op(
+        0,
+        FilterOp::Greater,
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Filter(FilterMessage::Column(
+        0,
+        "score".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Filter(FilterMessage::Value(
+        0,
+        "abc".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Filter(FilterMessage::Apply)));
     assert!(
-        matches!(app.dialog, Some(Dialog::Filter { .. })),
+        step_dialog::<FilterDialog>(&app).is_some(),
         "an invalid value keeps the dialog open"
     );
-    let _ = app.update(Message::Filter(FilterMessage::Column(0, "name".into())));
-    let _ = app.update(Message::Filter(FilterMessage::Op(0, FilterOp::Equals)));
-    let _ = app.update(Message::Filter(FilterMessage::Value(0, "ANA".into())));
-    let _ = app.update(Message::Filter(FilterMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Filter(FilterMessage::Column(
+        0,
+        "name".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Filter(FilterMessage::Op(
+        0,
+        FilterOp::Equals,
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Filter(FilterMessage::Value(
+        0,
+        "ANA".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Filter(FilterMessage::Apply)));
     assert!(app.dialog.is_none());
     assert_eq!(steps(&app), 0);
     assert!(
@@ -165,8 +183,11 @@ fn filter_view_then_keep_or_remove() {
 
     // Cancel while filtering clears the filter.
     let _ = app.update(Message::Action(Action::FilterRows));
-    let _ = app.update(Message::Filter(FilterMessage::Value(0, "x".into())));
-    let _ = app.update(Message::Filter(FilterMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Filter(FilterMessage::Value(
+        0,
+        "x".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Filter(FilterMessage::Apply)));
     assert!(app.computing.is_some());
     let _ = app.update(Message::CancelCompute);
     assert!(app.tabs[0].grid.filter().is_none());
@@ -174,8 +195,11 @@ fn filter_view_then_keep_or_remove() {
 
     // Editing the filter step still works through the dialog.
     let _ = app.update(Message::EditStep(0));
-    let _ = app.update(Message::Filter(FilterMessage::Value(0, "ana".into())));
-    let _ = app.update(Message::Filter(FilterMessage::Apply));
+    let _ = app.update(Message::Step(StepMessage::Filter(FilterMessage::Value(
+        0,
+        "ana".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Filter(FilterMessage::Apply)));
     finish_compute(&mut app, id);
     assert_eq!(rows(&app), anas);
 }
@@ -344,12 +368,15 @@ fn sort_from_ribbon_and_edit_step() {
     // Custom sort: score descending with nulls first, as a new step.
     let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 2 }));
     let _ = app.update(Message::Action(Action::CustomSort));
-    let _ = app.update(Message::Sort(SortMessage::Direction(
+    let _ = app.update(Message::Step(StepMessage::Sort(SortMessage::Direction(
         0,
         dialogs::Direction::Descending,
-    )));
-    let _ = app.update(Message::Sort(SortMessage::Nulls(0, dialogs::Nulls::First)));
-    let _ = app.update(Message::Sort(SortMessage::Apply));
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Sort(SortMessage::Nulls(
+        0,
+        dialogs::Nulls::First,
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Sort(SortMessage::Apply)));
     finish_compute(&mut app, id);
     assert_eq!(app.workbook.get(id).unwrap().steps().len(), 2);
     let doc = app.workbook.get(id).unwrap();
@@ -359,15 +386,21 @@ fn sort_from_ribbon_and_edit_step() {
 
     // Edit it into a two-key sort: flag, then id ascending.
     let _ = app.update(Message::EditStep(0));
-    assert!(matches!(app.dialog, Some(Dialog::Sort { .. })));
-    let _ = app.update(Message::Sort(SortMessage::Direction(
+    assert!(step_dialog::<SortDialog>(&app).is_some());
+    let _ = app.update(Message::Step(StepMessage::Sort(SortMessage::Direction(
         0,
         dialogs::Direction::Ascending,
-    )));
-    let _ = app.update(Message::Sort(SortMessage::Add));
-    let _ = app.update(Message::Sort(SortMessage::Column(0, "flag".into())));
-    let _ = app.update(Message::Sort(SortMessage::Column(1, "id".into())));
-    let _ = app.update(Message::Sort(SortMessage::Apply));
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Sort(SortMessage::Add)));
+    let _ = app.update(Message::Step(StepMessage::Sort(SortMessage::Column(
+        0,
+        "flag".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Sort(SortMessage::Column(
+        1,
+        "id".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Sort(SortMessage::Apply)));
     assert!(app.dialog.is_none());
     finish_compute(&mut app, id);
     assert_eq!(id_at(&app, 0).as_deref(), Some("1"));

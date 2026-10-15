@@ -43,3 +43,25 @@ impl FormatDialog {
         card(body.into(), tokens, 400.0)
     }
 }
+
+impl StepDialog for FormatDialog {
+    fn update(&mut self, message: StepMessage) -> Option<Step> {
+        let StepMessage::Format(message) = message else {
+            return None;
+        };
+        FormatDialog::update(self, message).map(|(columns, op)| Step::FormatText { columns, op })
+    }
+
+    fn cancels(&self, message: &StepMessage) -> bool {
+        matches!(message, StepMessage::Format(FormatMessage::Cancel))
+    }
+
+    fn view(&self, tokens: Tokens) -> Element<'_, StepMessage> {
+        FormatDialog::view(self, tokens).map(StepMessage::Format)
+    }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

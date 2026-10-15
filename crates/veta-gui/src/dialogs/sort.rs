@@ -162,3 +162,25 @@ impl SortDialog {
         card(body.into(), tokens, 620.0)
     }
 }
+
+impl StepDialog for SortDialog {
+    fn update(&mut self, message: StepMessage) -> Option<Step> {
+        let StepMessage::Sort(message) = message else {
+            return None;
+        };
+        SortDialog::update(self, message).map(Step::Sort)
+    }
+
+    fn cancels(&self, message: &StepMessage) -> bool {
+        matches!(message, StepMessage::Sort(SortMessage::Cancel))
+    }
+
+    fn view(&self, tokens: Tokens) -> Element<'_, StepMessage> {
+        SortDialog::view(self, tokens).map(StepMessage::Sort)
+    }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

@@ -53,225 +53,6 @@ impl App {
                     }
                 }
             }
-            Message::Cast(message) => {
-                if let Some(Dialog::Cast {
-                    document,
-                    dialog,
-                    replace,
-                }) = &mut self.dialog
-                {
-                    let (id, replace) = (*document, *replace);
-                    let cancel = matches!(message, CastMessage::Cancel);
-                    match (dialog.update(message), replace) {
-                        (Some(cast), Some(index)) => {
-                            self.dialog = None;
-                            let step = Step::Cast(cast);
-                            self.change_steps(id, index, Command::ReplaceStep { index, step });
-                        }
-                        (Some(cast), None) => {
-                            // With an error column, a second step removes
-                            // it if nothing failed (checked on every row).
-                            let check = (cast.options.on_error == OnError::ErrorColumn)
-                                .then(|| cast.error_column());
-                            let command = match &check {
-                                Some(name) => Command::AppendSteps {
-                                    steps: vec![
-                                        Step::Cast(cast),
-                                        Step::RemoveEmptyColumn { name: name.clone() },
-                                    ],
-                                },
-                                None => Command::Cast(cast),
-                            };
-                            if self.execute(id, command) {
-                                self.dialog = None;
-                                if check.is_some() {
-                                    let index = self
-                                        .workbook
-                                        .get(id)
-                                        .map_or(0, |d| d.steps().len().saturating_sub(1));
-                                    self.error_check = Some((id, index));
-                                }
-                            }
-                        }
-                        (None, _) if cancel => self.dialog = None,
-                        (None, _) => {}
-                    }
-                }
-            }
-            Message::Replace(message) => {
-                if let Some(Dialog::Replace {
-                    document,
-                    dialog,
-                    replace,
-                }) = &mut self.dialog
-                {
-                    let (id, replace) = (*document, *replace);
-                    let cancel = matches!(message, ReplaceMessage::Cancel);
-                    match (dialog.update(message), replace) {
-                        (Some(r), Some(index)) => {
-                            self.dialog = None;
-                            let step = Step::Replace(r);
-                            self.change_steps(id, index, Command::ReplaceStep { index, step });
-                        }
-                        (Some(r), None) => {
-                            let result = self
-                                .workbook
-                                .get_mut(id)
-                                .map(|doc| controller::execute(doc, Command::Replace(r)));
-                            match result {
-                                Some(Ok(())) => {
-                                    self.dialog = None;
-                                    self.refresh(id);
-                                }
-                                Some(Err(e)) => dialog.set_error(e.to_string()),
-                                None => {}
-                            }
-                        }
-                        (None, _) if cancel => self.dialog = None,
-                        (None, _) => {}
-                    }
-                }
-            }
-            Message::Format(message) => {
-                if let Some(Dialog::Format {
-                    document,
-                    dialog,
-                    replace,
-                }) = &mut self.dialog
-                {
-                    let (id, replace) = (*document, *replace);
-                    let cancel = matches!(message, FormatMessage::Cancel);
-                    match (dialog.update(message), replace) {
-                        (Some((columns, op)), Some(index)) => {
-                            self.dialog = None;
-                            let step = Step::FormatText { columns, op };
-                            self.change_steps(id, index, Command::ReplaceStep { index, step });
-                        }
-                        (Some((columns, op)), None) => {
-                            self.dialog = None;
-                            self.execute(id, Command::FormatText { columns, op });
-                        }
-                        (None, _) if cancel => self.dialog = None,
-                        (None, _) => {}
-                    }
-                }
-            }
-            Message::Split(message) => {
-                if let Some(Dialog::Split {
-                    document,
-                    dialog,
-                    replace,
-                }) = &mut self.dialog
-                {
-                    let (id, replace) = (*document, *replace);
-                    let cancel = matches!(message, SplitMessage::Cancel);
-                    if let Some(split) = dialog.update(message) {
-                        let command = Command::Split(split.clone());
-                        if let Err(e) =
-                            self.add_or_replace(id, replace, Step::Split(split), command)
-                            && let Some(Dialog::Split { dialog, .. }) = &mut self.dialog
-                        {
-                            dialog.set_error(e);
-                        }
-                    } else if cancel {
-                        self.dialog = None;
-                    }
-                }
-            }
-            Message::Custom(message) => {
-                if let Some(Dialog::Custom {
-                    document,
-                    dialog,
-                    replace,
-                }) = &mut self.dialog
-                {
-                    let (id, replace) = (*document, *replace);
-                    let cancel = matches!(message, CustomMessage::Cancel);
-                    if let Some(custom) = dialog.update(message) {
-                        let command = Command::CustomColumn(custom.clone());
-                        let step = Step::CustomColumn(custom);
-                        if let Err(e) = self.add_or_replace(id, replace, step, command)
-                            && let Some(Dialog::Custom { dialog, .. }) = &mut self.dialog
-                        {
-                            dialog.set_error(e);
-                        }
-                    } else if cancel {
-                        self.dialog = None;
-                    }
-                }
-            }
-            Message::Merge(message) => {
-                if let Some(Dialog::Merge {
-                    document,
-                    dialog,
-                    replace,
-                }) = &mut self.dialog
-                {
-                    let (id, replace) = (*document, *replace);
-                    let cancel = matches!(message, MergeMessage::Cancel);
-                    if let Some(merge) = dialog.update(message) {
-                        let command = Command::Merge(merge.clone());
-                        if let Err(e) =
-                            self.add_or_replace(id, replace, Step::Merge(merge), command)
-                            && let Some(Dialog::Merge { dialog, .. }) = &mut self.dialog
-                        {
-                            dialog.set_error(e);
-                        }
-                    } else if cancel {
-                        self.dialog = None;
-                    }
-                }
-            }
-            Message::Combine(message) => {
-                if let Some(Dialog::Combine {
-                    document,
-                    dialog,
-                    replace,
-                }) = &mut self.dialog
-                {
-                    let (id, replace) = (*document, *replace);
-                    let cancel = matches!(message, CombineMessage::Cancel);
-                    if let Some((columns, name)) = dialog.update(message) {
-                        let step = Step::CombineStruct {
-                            columns: columns.clone(),
-                            name: name.clone(),
-                        };
-                        let command = Command::CombineStruct { columns, name };
-                        if let Err(e) = self.add_or_replace(id, replace, step, command)
-                            && let Some(Dialog::Combine { dialog, .. }) = &mut self.dialog
-                        {
-                            dialog.set_error(e);
-                        }
-                    } else if cancel {
-                        self.dialog = None;
-                    }
-                }
-            }
-            Message::Collect(message) => {
-                if let Some(Dialog::Collect {
-                    document,
-                    dialog,
-                    replace,
-                }) = &mut self.dialog
-                {
-                    let (id, replace) = (*document, *replace);
-                    let cancel = matches!(message, CollectMessage::Cancel);
-                    if let Some((keys, columns)) = dialog.update(message) {
-                        let step = Step::CollectList {
-                            keys: keys.clone(),
-                            columns: columns.clone(),
-                        };
-                        let command = Command::CollectList { keys, columns };
-                        if let Err(e) = self.add_or_replace(id, replace, step, command)
-                            && let Some(Dialog::Collect { dialog, .. }) = &mut self.dialog
-                        {
-                            dialog.set_error(e);
-                        }
-                    } else if cancel {
-                        self.dialog = None;
-                    }
-                }
-            }
             Message::Choose(message) => {
                 if let Some(Dialog::Choose { document, dialog }) = &mut self.dialog {
                     let id = *document;
@@ -468,9 +249,9 @@ impl App {
             },
         };
         self.edit = None;
-        self.dialog = Some(Dialog::Custom {
+        self.dialog = Some(Dialog::Step {
             document: id,
-            dialog: CustomDialog::new(schema, custom),
+            dialog: Box::new(CustomDialog::new(schema, custom)),
             replace: step.map(|(i, _)| i),
         });
         Task::batch([
@@ -537,9 +318,13 @@ impl App {
             return Task::none();
         };
         self.edit = None;
-        self.dialog = Some(Dialog::Split {
+        self.dialog = Some(Dialog::Step {
             document: id,
-            dialog: SplitDialog::new(column, sample, step.as_ref().map(|(_, s)| s)),
+            dialog: Box::new(SplitDialog::new(
+                column,
+                sample,
+                step.as_ref().map(|(_, s)| s),
+            )),
             replace: step.map(|(i, _)| i),
         });
         iced::widget::operation::focus(dialogs::NAME_ID)
@@ -562,9 +347,9 @@ impl App {
             return Task::none();
         }
         self.edit = None;
-        self.dialog = Some(Dialog::Merge {
+        self.dialog = Some(Dialog::Step {
             document: id,
-            dialog: MergeDialog::new(columns, step.as_ref().map(|(_, m)| m)),
+            dialog: Box::new(MergeDialog::new(columns, step.as_ref().map(|(_, m)| m))),
             replace: step.map(|(i, _)| i),
         });
         Task::batch([
@@ -609,9 +394,9 @@ impl App {
             })
             .unwrap_or_default();
         self.edit = None;
-        self.dialog = Some(Dialog::Collect {
+        self.dialog = Some(Dialog::Step {
             document: id,
-            dialog: CollectDialog::new(columns, others),
+            dialog: Box::new(CollectDialog::new(columns, others)),
             replace,
         });
     }
@@ -649,9 +434,9 @@ impl App {
             return Task::none();
         }
         self.edit = None;
-        self.dialog = Some(Dialog::Combine {
+        self.dialog = Some(Dialog::Step {
             document: id,
-            dialog: CombineDialog::new(columns, name),
+            dialog: Box::new(CombineDialog::new(columns, name)),
             replace,
         });
         Task::batch([
@@ -708,9 +493,13 @@ impl App {
             })
             .unwrap_or(true);
         self.edit = None;
-        self.dialog = Some(Dialog::Replace {
+        self.dialog = Some(Dialog::Step {
             document: id,
-            dialog: ReplaceDialog::new(column, text_column, step.as_ref().map(|(_, r)| r)),
+            dialog: Box::new(ReplaceDialog::new(
+                column,
+                text_column,
+                step.as_ref().map(|(_, r)| r),
+            )),
             replace: level,
         });
         iced::widget::operation::focus(dialogs::NAME_ID)
@@ -725,9 +514,9 @@ impl App {
             return;
         }
         self.edit = None;
-        self.dialog = Some(Dialog::Format {
+        self.dialog = Some(Dialog::Step {
             document: id,
-            dialog: FormatDialog::new(columns, TextOp::Trim),
+            dialog: Box::new(FormatDialog::new(columns, TextOp::Trim)),
             replace: None,
         });
     }
@@ -772,9 +561,13 @@ impl App {
             return;
         };
         self.edit = None;
-        self.dialog = Some(Dialog::Cast {
+        self.dialog = Some(Dialog::Step {
             document: id,
-            dialog: CastDialog::new(column, sample, step.as_ref().map(|(_, c)| c)),
+            dialog: Box::new(CastDialog::new(
+                column,
+                sample,
+                step.as_ref().map(|(_, c)| c),
+            )),
             replace: step.map(|(i, _)| i),
         });
     }

@@ -25,12 +25,11 @@ pub(crate) use steps::*;
 pub(crate) use view::*;
 
 use crate::dialogs::{
-    CastDialog, CastMessage, ChooseColumns, ChooseMessage, CollectDialog, CollectMessage,
-    ColumnDialog, ColumnMessage, CombineDialog, CombineMessage, CustomDialog, CustomMessage,
-    ExportDialog, ExportMessage, FilterDialog, FilterMessage, FormatDialog, FormatMessage,
-    ImportDialog, ImportMessage, MergeDialog, MergeMessage, MetadataDialog, MetadataMessage,
-    ReplaceDialog, ReplaceMessage, RowsDialog, RowsMessage, SortDialog, SortMessage, SplitDialog,
-    SplitMessage, WriterDialog, WriterMessage,
+    CastDialog, ChooseColumns, ChooseMessage, CollectDialog, ColumnDialog, ColumnMessage,
+    CombineDialog, CustomDialog, ExportDialog, ExportMessage, FilterDialog, FormatDialog,
+    ImportDialog, ImportMessage, MergeDialog, MetadataDialog, MetadataMessage, ReplaceDialog,
+    RowsDialog, RowsMessage, SortDialog, SplitDialog, StepDialog, StepMessage, WriterDialog,
+    WriterMessage,
 };
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav, Selection};
 use crate::platform::files::FileKind;
@@ -369,16 +368,9 @@ impl App {
         }
         match message {
             m @ Message::Pasted(..) => return self.clipboard_message(m),
-            m @ (Message::ColumnDialog(..)
-            | Message::Cast(..)
-            | Message::Replace(..)
-            | Message::Format(..)
-            | Message::Split(..)
-            | Message::Custom(..)
-            | Message::Merge(..)
-            | Message::Combine(..)
-            | Message::Collect(..)
-            | Message::Choose(..)) => return self.columns_message(m),
+            m @ (Message::ColumnDialog(..) | Message::Choose(..)) => {
+                return self.columns_message(m);
+            }
             m @ (Message::EditInput(..)
             | Message::CommitEdit
             | Message::EditLeaf(..)
@@ -415,7 +407,7 @@ impl App {
             | Message::RecipeChoice(..)
             | Message::Writer(..)
             | Message::Metadata(..)) => return self.documents_message(m),
-            m @ (Message::Filter(..) | Message::Sort(..) | Message::ClearFilter) => {
+            m @ Message::ClearFilter => {
                 return self.filter_message(m);
             }
             m @ (Message::Menu(..) | Message::CloseMenu) => return self.menus_message(m),
@@ -423,7 +415,8 @@ impl App {
             m @ (Message::StatsProgress(..) | Message::StatsDone(..)) => {
                 return self.stats_message(m);
             }
-            m @ (Message::ComputeProgress(..)
+            m @ (Message::Step(..)
+            | Message::ComputeProgress(..)
             | Message::ComputeDone(..)
             | Message::CancelCompute
             | Message::PreviewStep(..)

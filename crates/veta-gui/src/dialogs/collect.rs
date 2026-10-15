@@ -83,3 +83,31 @@ impl CollectDialog {
         card(body.into(), tokens, 440.0)
     }
 }
+
+impl StepDialog for CollectDialog {
+    fn update(&mut self, message: StepMessage) -> Option<Step> {
+        let StepMessage::Collect(message) = message else {
+            return None;
+        };
+        CollectDialog::update(self, message)
+            .map(|(keys, columns)| Step::CollectList { keys, columns })
+    }
+
+    fn cancels(&self, message: &StepMessage) -> bool {
+        matches!(message, StepMessage::Collect(CollectMessage::Cancel))
+    }
+
+    fn view(&self, tokens: Tokens) -> Element<'_, StepMessage> {
+        CollectDialog::view(self, tokens).map(StepMessage::Collect)
+    }
+
+    fn set_error(&mut self, error: String) -> Option<String> {
+        CollectDialog::set_error(self, error);
+        None
+    }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

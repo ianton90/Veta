@@ -131,3 +131,30 @@ impl CustomDialog {
         card(body.into(), tokens, 620.0)
     }
 }
+
+impl StepDialog for CustomDialog {
+    fn update(&mut self, message: StepMessage) -> Option<Step> {
+        let StepMessage::Custom(message) = message else {
+            return None;
+        };
+        CustomDialog::update(self, message).map(Step::CustomColumn)
+    }
+
+    fn cancels(&self, message: &StepMessage) -> bool {
+        matches!(message, StepMessage::Custom(CustomMessage::Cancel))
+    }
+
+    fn view(&self, tokens: Tokens) -> Element<'_, StepMessage> {
+        CustomDialog::view(self, tokens).map(StepMessage::Custom)
+    }
+
+    fn set_error(&mut self, error: String) -> Option<String> {
+        CustomDialog::set_error(self, error);
+        None
+    }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

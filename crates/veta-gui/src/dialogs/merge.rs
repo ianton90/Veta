@@ -82,3 +82,30 @@ impl MergeDialog {
         card(body.into(), tokens, 440.0)
     }
 }
+
+impl StepDialog for MergeDialog {
+    fn update(&mut self, message: StepMessage) -> Option<Step> {
+        let StepMessage::Merge(message) = message else {
+            return None;
+        };
+        MergeDialog::update(self, message).map(Step::Merge)
+    }
+
+    fn cancels(&self, message: &StepMessage) -> bool {
+        matches!(message, StepMessage::Merge(MergeMessage::Cancel))
+    }
+
+    fn view(&self, tokens: Tokens) -> Element<'_, StepMessage> {
+        MergeDialog::view(self, tokens).map(StepMessage::Merge)
+    }
+
+    fn set_error(&mut self, error: String) -> Option<String> {
+        MergeDialog::set_error(self, error);
+        None
+    }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

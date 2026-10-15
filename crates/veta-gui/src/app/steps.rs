@@ -25,6 +25,28 @@ impl App {
     /// Messages about applied steps and their computation.
     pub(crate) fn steps_message(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Step(message) => {
+                if let Some(Dialog::Step {
+                    document,
+                    dialog,
+                    replace,
+                }) = &mut self.dialog
+                {
+                    let (id, replace) = (*document, *replace);
+                    let cancel = dialog.cancels(&message);
+                    if let Some(step) = dialog.update(message) {
+                        if let Err(e) = self.add_or_replace(id, replace, step) {
+                            let unshown = match &mut self.dialog {
+                                Some(Dialog::Step { dialog, .. }) => dialog.set_error(e),
+                                _ => Some(e),
+                            };
+                            self.errors.extend(unshown);
+                        }
+                    } else if cancel {
+                        self.dialog = None;
+                    }
+                }
+            }
             Message::ComputeProgress(id, target, key, progress) => {
                 if let Some(c) = &mut self.computing
                     && c.document == id
@@ -167,9 +189,9 @@ impl App {
             }
             Step::FormatText { columns, op } => {
                 self.edit = None;
-                self.dialog = Some(Dialog::Format {
+                self.dialog = Some(Dialog::Step {
                     document: id,
-                    dialog: FormatDialog::new(columns.clone(), *op),
+                    dialog: Box::new(FormatDialog::new(columns.clone(), *op)),
                     replace: Some(index),
                 });
                 return Task::none();
@@ -183,14 +205,14 @@ impl App {
                 let nested = schema.as_deref().map(nested_columns).unwrap_or_default();
                 self.edit = None;
                 self.dialog = Some(match &step {
-                    Step::Filter(filter) => Dialog::Filter {
+                    Step::Filter(filter) => Dialog::Step {
                         document: id,
-                        dialog: FilterDialog::edit(columns, filter).with_nested(nested),
+                        dialog: Box::new(FilterDialog::edit(columns, filter).with_nested(nested)),
                         replace: Some(index),
                     },
-                    Step::Sort(sort) => Dialog::Sort {
+                    Step::Sort(sort) => Dialog::Step {
                         document: id,
-                        dialog: SortDialog::new(columns, sort),
+                        dialog: Box::new(SortDialog::new(columns, sort)),
                         replace: Some(index),
                     },
                     _ => return Task::none(),
@@ -223,25 +245,44 @@ impl App {
         }
     }
 
-    /// Closes the dialog and adds `command`'s step, or replaces step
-    /// `replace` with `step`. An error adding it is returned to show in the
-    /// dialog, which then stays open.
+    /// Closes the step dialog and adds `step`, or replaces step `replace`
+    /// with it. A new filter becomes the temporary filter view instead. An
+    /// error adding the step is returned, and the dialog stays open.
     pub(crate) fn add_or_replace(
         &mut self,
         id: DocumentId,
         replace: Option<usize>,
         step: Step,
-        command: Command,
     ) -> Result<(), String> {
         if let Some(index) = replace {
             self.dialog = None;
             self.change_steps(id, index, Command::ReplaceStep { index, step });
             return Ok(());
         }
+        let command = match step {
+            Step::Filter(filter) => {
+                self.set_view_filter(id, filter)?;
+                self.dialog = None;
+                return Ok(());
+            }
+            // With an error column, a second step removes it if nothing
+            // failed (checked on every row).
+            Step::Cast(cast) if cast.options.on_error == OnError::ErrorColumn => {
+                let name = cast.error_column();
+                Command::AppendSteps {
+                    steps: vec![Step::Cast(cast), Step::RemoveEmptyColumn { name }],
+                }
+            }
+            step => step_command(step),
+        };
+        let check = matches!(command, Command::AppendSteps { .. });
         let Some(doc) = self.workbook.get_mut(id) else {
             return Ok(());
         };
         controller::execute(doc, command).map_err(|e| e.to_string())?;
+        if check {
+            self.error_check = Some((id, doc.steps().len().saturating_sub(1)));
+        }
         self.dialog = None;
         self.refresh(id);
         Ok(())
@@ -355,5 +396,22 @@ impl App {
             }
         });
         Task::run(receiver, |message| message)
+    }
+}
+
+/// The command adding `step`, for the steps the step dialogs make.
+fn step_command(step: Step) -> Command {
+    match step {
+        Step::Filter(filter) => Command::Filter(filter),
+        Step::Sort(sort) => Command::Sort(sort),
+        Step::Cast(cast) => Command::Cast(cast),
+        Step::Replace(replace) => Command::Replace(replace),
+        Step::FormatText { columns, op } => Command::FormatText { columns, op },
+        Step::Split(split) => Command::Split(split),
+        Step::Merge(merge) => Command::Merge(merge),
+        Step::CombineStruct { columns, name } => Command::CombineStruct { columns, name },
+        Step::CollectList { keys, columns } => Command::CollectList { keys, columns },
+        Step::CustomColumn(custom) => Command::CustomColumn(custom),
+        step => unreachable!("no step dialog makes {}", step.describe()),
     }
 }

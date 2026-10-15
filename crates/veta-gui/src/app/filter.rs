@@ -6,55 +6,6 @@ impl App {
     /// Filter and sort messages.
     pub(crate) fn filter_message(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Filter(message) => {
-                if let Some(Dialog::Filter {
-                    document,
-                    dialog,
-                    replace,
-                }) = &mut self.dialog
-                {
-                    let id = *document;
-                    let replace = *replace;
-                    let cancel = matches!(message, FilterMessage::Cancel);
-                    match (dialog.update(message), replace) {
-                        (Some(filter), Some(index)) => {
-                            self.dialog = None;
-                            let step = Step::Filter(filter);
-                            self.change_steps(id, index, Command::ReplaceStep { index, step });
-                        }
-                        (Some(filter), None) => match self.set_view_filter(id, filter) {
-                            Ok(()) => self.dialog = None,
-                            Err(e) => {
-                                if let Some(Dialog::Filter { dialog, .. }) = &mut self.dialog {
-                                    dialog.set_error(e);
-                                }
-                            }
-                        },
-                        (None, _) if cancel => self.dialog = None,
-                        (None, _) => {}
-                    }
-                }
-            }
-            Message::Sort(message) => {
-                if let Some(Dialog::Sort {
-                    document,
-                    dialog,
-                    replace,
-                }) = &mut self.dialog
-                {
-                    let (id, replace) = (*document, *replace);
-                    let cancel = matches!(message, SortMessage::Cancel);
-                    if let Some(sort) = dialog.update(message) {
-                        let command = Command::Sort(sort.clone());
-                        if let Err(e) = self.add_or_replace(id, replace, Step::Sort(sort), command)
-                        {
-                            self.errors.push(e);
-                        }
-                    } else if cancel {
-                        self.dialog = None;
-                    }
-                }
-            }
             Message::ClearFilter => {
                 if let Some(id) = self.active {
                     self.clear_filter(id);
@@ -97,9 +48,9 @@ impl App {
                         }],
                     };
                     self.edit = None;
-                    self.dialog = Some(Dialog::Sort {
+                    self.dialog = Some(Dialog::Step {
                         document: id,
-                        dialog: SortDialog::new(columns, &sort),
+                        dialog: Box::new(SortDialog::new(columns, &sort)),
                         replace: None,
                     });
                 }
@@ -140,9 +91,9 @@ impl App {
         }
         .with_nested(nested);
         self.edit = None;
-        self.dialog = Some(Dialog::Filter {
+        self.dialog = Some(Dialog::Step {
             document: id,
-            dialog,
+            dialog: Box::new(dialog),
             replace: None,
         });
         iced::widget::operation::focus(dialogs::FILTER_VALUE_ID)
@@ -150,7 +101,7 @@ impl App {
 
     /// Filters the rows shown (not a step). The filter is computed in the
     /// background; the table is read-only until it is cleared or applied.
-    fn set_view_filter(&mut self, id: DocumentId, filter: Filter) -> Result<(), String> {
+    pub(crate) fn set_view_filter(&mut self, id: DocumentId, filter: Filter) -> Result<(), String> {
         let Some(doc) = self.workbook.get(id) else {
             return Ok(());
         };

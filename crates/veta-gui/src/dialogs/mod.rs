@@ -20,7 +20,7 @@ use veta_core::steps::{
     Cast, CastOptions, CastPreview, Condition, FORMAT_CODES, Filter, FilterOp, OnError, Replace,
     Sort, SortKey, TextOp,
 };
-use veta_core::steps::{CustomColumn, Merge, Split, SplitBy, count_parts, expression_help};
+use veta_core::steps::{CustomColumn, Merge, Split, SplitBy, Step, count_parts, expression_help};
 use veta_core::values::is_text;
 use veta_core::{
     ColumnSettings, Command, Compression, Encoding, FormatVersion, StatisticsLevel, WriterSettings,
@@ -67,6 +67,40 @@ pub use rows::*;
 pub use sort::*;
 pub use split::*;
 pub use writer::*;
+
+/// A dialog that adds a step, or edits an existing one. The app keeps it as
+/// `Dialog::Step` and sends it [`StepMessage`]s; whatever the dialog, the
+/// step it returns is added (or replaces the edited one) the same way.
+pub trait StepDialog: std::fmt::Debug {
+    /// Handles `message`; returns the step once the user submits.
+    fn update(&mut self, message: StepMessage) -> Option<Step>;
+    /// Whether `message` is this dialog's Cancel button.
+    fn cancels(&self, message: &StepMessage) -> bool;
+    fn view(&self, tokens: Tokens) -> Element<'_, StepMessage>;
+    /// Shows an error from adding the step; the dialog stays open. Dialogs
+    /// without an error line hand it back, for the error bar.
+    fn set_error(&mut self, error: String) -> Option<String> {
+        Some(error)
+    }
+    /// The dialog itself, for tests that look inside it.
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// Messages of the step dialogs, by dialog.
+#[derive(Debug, Clone)]
+pub enum StepMessage {
+    Filter(FilterMessage),
+    Sort(SortMessage),
+    Cast(CastMessage),
+    Replace(ReplaceMessage),
+    Format(FormatMessage),
+    Split(SplitMessage),
+    Merge(MergeMessage),
+    Combine(CombineMessage),
+    Collect(CollectMessage),
+    Custom(CustomMessage),
+}
 
 pub(crate) fn card<'a, Message: 'a>(
     content: Element<'a, Message>,
