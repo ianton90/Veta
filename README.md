@@ -1,7 +1,7 @@
 # Veta
 A Parquet file viewer and editor written in Rust, with a desktop GUI (iced) and a CLI.
 
-Status: early development (0.1.0). See [CHANGELOG.md](CHANGELOG.md),
+Status: early development (0.2.0). See [CHANGELOG.md](CHANGELOG.md),
 [docs/SCOPE.md](docs/SCOPE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Two programs: `veta` is the desktop app (`veta [FILE]...`), `veta-cli` the

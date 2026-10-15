@@ -4,14 +4,14 @@
 
 - The version is `MAJOR.MINOR.PATCH` ([SemVer](https://semver.org)), set
   once in the root `Cargo.toml` (`[workspace.package] version`). It appears
-  in tags (`v0.1.0`), archive names, About and `--version`.
+  in tags (`v0.2.0`), archive names, About and `--version`.
   - PATCH: fixes only. MINOR: new features. MAJOR: breaking changes (file
     formats such as recipes, CLI options). While MAJOR is 0, MINOR may also
     break things.
   - Pre-releases: `0.2.0-beta.1`.
 - Every build also has a **build number**: `$VETA_BUILD_NUMBER` if set,
   otherwise the commit count of the checkout. It and the short commit hash
-  are shown next to the version, e.g. `0.1.0 (build 51, 341f5c6)`, and will
+  are shown next to the version, e.g. `0.2.0 (build 51, 341f5c6)`, and will
   go into the Windows file version's fourth field and the macOS build
   number once installers exist (#51).
 

@@ -4,7 +4,9 @@ Versions follow [Semantic Versioning](https://semver.org): `MAJOR.MINOR.PATCH`.
 Each build also carries a build number (shown in About and `--version`).
 While the major version is 0, minor versions may change behaviour.
 
-## 0.1.0 — first release
+## 0.2.0 — first release
+
+0.1.0 was never released; its work ships in 0.2.0.
 
 **Desktop app (`veta`)**
 - Open several Parquet files as tabs, including files larger than memory
