@@ -1,11 +1,12 @@
-//! Nested value commands: struct fields and list items inside a cell. Each
+//! Nested value commands: struct fields, list items and map entries inside
+//! a cell. Each
 //! becomes an edit of the whole cell.
 
 use super::*;
 use arrow::datatypes::DataType;
 
 use crate::display::{PathPart, field_type, value_json};
-use crate::values::{ListEdit, edit_list, set_nested};
+use crate::values::{ListEdit, MapEdit, edit_list, edit_map, set_nested};
 
 /// Plans one of this area's commands (see `super::plan`).
 pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
@@ -64,6 +65,60 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
                 edit_list(json, &pointer(&list), &ListEdit::Remove(index))
             })
         }
+        Command::SetMapValue {
+            row,
+            column,
+            map,
+            index,
+            value,
+        } => {
+            let value_type = value_type(doc, &column, &map)?;
+            let edit = MapEdit::SetValue {
+                index,
+                text: value.as_deref(),
+                value_type: &value_type,
+            };
+            edit_cell(doc, row, column, |json| {
+                edit_map(json, &pointer(&map), &edit)
+            })
+        }
+        Command::SetMapKey {
+            row,
+            column,
+            map,
+            index,
+            key,
+        } => {
+            value_type(doc, &column, &map)?;
+            let edit = MapEdit::SetKey { index, key: &key };
+            edit_cell(doc, row, column, |json| {
+                edit_map(json, &pointer(&map), &edit)
+            })
+        }
+        Command::InsertMapEntry {
+            row,
+            column,
+            map,
+            index,
+            key,
+        } => {
+            value_type(doc, &column, &map)?;
+            let edit = MapEdit::Insert { index, key: &key };
+            edit_cell(doc, row, column, |json| {
+                edit_map(json, &pointer(&map), &edit)
+            })
+        }
+        Command::RemoveMapEntry {
+            row,
+            column,
+            map,
+            index,
+        } => {
+            value_type(doc, &column, &map)?;
+            edit_cell(doc, row, column, |json| {
+                edit_map(json, &pointer(&map), &MapEdit::Remove(index))
+            })
+        }
         _ => unreachable!("not a nested value command"),
     }
 }
@@ -89,6 +144,30 @@ fn item_type(doc: &Document, column: &str, list: &[String]) -> Result<DataType> 
                 .collect::<Vec<_>>()
                 .join(".")
         ))),
+    }
+}
+
+/// The value type of the map at `map` in `column`, which must have text
+/// keys.
+fn value_type(doc: &Document, column: &str, map: &[String]) -> Result<DataType> {
+    let data_type = column_type(doc, column)?;
+    let name = || {
+        std::iter::once(column)
+            .chain(map.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(".")
+    };
+    match field_type(&data_type, map) {
+        Some(DataType::Map(entries, _)) => match entries.data_type() {
+            DataType::Struct(kv) if kv.len() == 2 && crate::values::is_text(kv[0].data_type()) => {
+                Ok(kv[1].data_type().clone())
+            }
+            _ => Err(invalid(format!(
+                "only maps with text keys can be edited by entry ({} has other keys)",
+                name()
+            ))),
+        },
+        _ => Err(invalid(format!("{} is not a map", name()))),
     }
 }
 

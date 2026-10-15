@@ -23,6 +23,8 @@ pub(super) struct Column {
     pub(super) items: bool,
     /// Lists whose items can be edited, added and removed in place.
     pub(super) list: bool,
+    /// Maps with text keys: entries edit, add and remove in place.
+    pub(super) map: bool,
     /// Structs: cells open into their fields, edited in place.
     pub(super) is_struct: bool,
     /// The expanded struct whose first field this is (collapse button).
@@ -66,6 +68,7 @@ pub(super) fn display_columns(schema: &Schema, expanded: &BTreeSet<Vec<String>>)
             expandable: matches!(data_type, DataType::Struct(c) if !c.is_empty()),
             items: has_items(data_type),
             list: matches!(data_type, DataType::List(_) | DataType::LargeList(_)),
+            map: map_types(data_type).is_some(),
             is_struct: matches!(data_type, DataType::Struct(c) if !c.is_empty()),
             data_type: data_type.clone(),
             type_name: type_name(data_type),
@@ -396,6 +399,28 @@ impl<Message> Grid<'_, Message> {
         rect.intersection(&regions.body)
     }
 
+    /// Where the editor goes: the selected cell, or for an item the part
+    /// after its label (index, key or field name), unless the editor covers
+    /// the label.
+    pub(super) fn editor_rect(&self, regions: &Regions) -> Option<Rectangle> {
+        let rect = self.selected_cell_rect(regions)?;
+        let (row, column) = self.view.selected?;
+        let label = match self.view.item {
+            Some(item) if !self.editor_covers_label => {
+                &self.view.items(row, column)?.items.get(item)?.label
+            }
+            _ => return Some(rect),
+        };
+        // As the label is drawn (see `draw`).
+        let shift =
+            ((label.chars().count() + 1) as f32 * regions.m.char_width).min(rect.width / 2.0);
+        Some(Rectangle {
+            x: rect.x + shift,
+            width: rect.width - shift,
+            ..rect
+        })
+    }
+
     /// Row under a y coordinate in the body.
     pub(super) fn row_at(&self, regions: &Regions, y: f32) -> Option<usize> {
         if y < regions.body.y || y >= regions.body.y + regions.body.height {
@@ -516,5 +541,19 @@ impl<Message> Grid<'_, Message> {
             .find(|&(_, x, w)| position.x >= x && position.x < x + w)
             .map(|(i, _, _)| i)?;
         (row < self.view.num_rows).then_some((row, column))
+    }
+}
+
+/// The key and value types of a map with text keys (the maps whose entries
+/// edit in place).
+pub(super) fn map_types(data_type: &DataType) -> Option<(&DataType, &DataType)> {
+    let DataType::Map(entries, _) = data_type else {
+        return None;
+    };
+    match entries.data_type() {
+        DataType::Struct(kv) if kv.len() == 2 && veta_core::values::is_text(kv[0].data_type()) => {
+            Some((kv[0].data_type(), kv[1].data_type()))
+        }
+        _ => None,
     }
 }

@@ -354,3 +354,72 @@ fn nested_field_and_list_item_commands() {
         assert_eq!(cell(&doc, 0, "point").as_deref(), Some("{x: 1, y: 2}"));
     }
 }
+
+#[test]
+fn map_entry_commands() {
+    let dir = TempDir::new();
+    let path = dir.join("n.parquet");
+    fixtures::nested(&path);
+    let mut doc = Document::open(&path, OpenOptions::default()).unwrap();
+    let scores = |doc: &Document, row| cell(doc, row, "scores");
+    let before = scores(&doc, 0).unwrap();
+    let set = |row, index, value: Option<&str>| Command::SetMapValue {
+        row,
+        column: "scores".into(),
+        map: Vec::new(),
+        index,
+        value: value.map(Into::into),
+    };
+    let rename = |row, index, key: &str| Command::SetMapKey {
+        row,
+        column: "scores".into(),
+        map: Vec::new(),
+        index,
+        key: key.into(),
+    };
+    let insert = |row, index, key: &str| Command::InsertMapEntry {
+        row,
+        column: "scores".into(),
+        map: Vec::new(),
+        index,
+        key: key.into(),
+    };
+    let remove = |row, index| Command::RemoveMapEntry {
+        row,
+        column: "scores".into(),
+        map: Vec::new(),
+        index,
+    };
+    execute(&mut doc, set(0, 1, Some("8"))).unwrap();
+    execute(&mut doc, rename(0, 0, "maths")).unwrap();
+    assert_eq!(scores(&doc, 0).as_deref(), Some("{maths: 9, art: 8}"));
+    execute(&mut doc, insert(0, 2, "pe")).unwrap();
+    execute(&mut doc, set(0, 2, Some("5"))).unwrap();
+    assert_eq!(
+        scores(&doc, 0).as_deref(),
+        Some("{maths: 9, art: 8, pe: 5}")
+    );
+    execute(&mut doc, remove(0, 0)).unwrap();
+    assert_eq!(scores(&doc, 0).as_deref(), Some("{art: 8, pe: 5}"));
+    // A null map counts as empty; a null value stays null.
+    execute(&mut doc, insert(2, 0, "math")).unwrap();
+    assert_eq!(scores(&doc, 2).as_deref(), Some("{math: null}"));
+    for bad in [
+        rename(0, 0, "pe"),
+        insert(0, 0, "art"),
+        set(0, 0, Some("x")),
+        set(0, 9, Some("1")),
+        remove(1, 0),
+        Command::InsertMapEntry {
+            row: 0,
+            column: "tags".into(),
+            map: Vec::new(),
+            index: 0,
+            key: "k".into(),
+        },
+    ] {
+        assert!(execute(&mut doc, bad).is_err());
+    }
+    while undo(&mut doc) {}
+    assert_eq!(scores(&doc, 0).unwrap(), before);
+}

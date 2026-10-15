@@ -10,7 +10,10 @@ pub(super) enum ItemsKind {
     None,
     /// An editable list (see [`Column::list`]).
     List,
+    /// A map with text keys: entries editable (see [`Column::map`]).
     Map,
+    /// Other maps and fixed-size lists: shown only.
+    ReadOnly,
     /// Struct fields, editable.
     Struct,
 }
@@ -32,33 +35,41 @@ impl Items {
 
     /// Whether the slot for a new item is shown.
     pub(super) fn has_slot(&self, appending: bool) -> bool {
-        self.kind == ItemsKind::List && self.more == 0 && (self.items.is_empty() || appending)
+        matches!(self.kind, ItemsKind::List | ItemsKind::Map)
+            && self.more == 0
+            && (self.items.is_empty() || appending)
     }
 
     /// Items that can be selected: the items and the slot, if shown.
     fn selectable(&self, appending: bool) -> usize {
         match self.kind {
-            ItemsKind::List => self.items.len() + usize::from(self.has_slot(appending)),
+            ItemsKind::List | ItemsKind::Map => {
+                self.items.len() + usize::from(self.has_slot(appending))
+            }
             ItemsKind::Struct => self.items.len(),
-            ItemsKind::None | ItemsKind::Map => 0,
+            ItemsKind::None | ItemsKind::ReadOnly => 0,
         }
     }
 }
 
 impl GridView {
-    /// The selected list item: its index, the number of items and the item
-    /// type. The list is at [`Self::selected_field`] in the cell. The index
-    /// equals the number of items for the slot of a new item.
+    /// The selected list item, struct field or map entry: its index, the
+    /// number of items and the item (or value) type. The list is at
+    /// [`Self::selected_field`] in the cell. The index equals the number of
+    /// items for the slot of a new item.
     pub fn selected_item(&self) -> Option<SelectedItem> {
         let (row, column) = self.selected?;
         let index = self.item?;
-        let len = self.items(row, column)?.items.len();
-        match &self.columns.get(column)?.data_type {
+        let items = self.items(row, column)?;
+        let len = items.items.len();
+        let data_type = &self.columns.get(column)?.data_type;
+        match data_type {
             DataType::List(f) | DataType::LargeList(f) => Some(SelectedItem {
                 index,
                 len,
                 data_type: f.data_type().clone(),
                 field: None,
+                key: None,
             }),
             DataType::Struct(fields) => {
                 let field = fields.get(index)?;
@@ -67,9 +78,19 @@ impl GridView {
                     len,
                     data_type: field.data_type().clone(),
                     field: Some(field.name().clone()),
+                    key: None,
                 })
             }
-            _ => None,
+            _ => {
+                let (_, value) = map_types(data_type)?;
+                Some(SelectedItem {
+                    index,
+                    len,
+                    data_type: value.clone(),
+                    field: None,
+                    key: Some(items.items.get(index).map(|i| i.label.clone())),
+                })
+            }
         }
     }
 
@@ -79,6 +100,8 @@ impl GridView {
         let column = self.columns.get(self.selected?.1)?;
         if column.list {
             Some(OpenKind::List)
+        } else if column.map {
+            Some(OpenKind::Map)
         } else if column.is_struct {
             Some(OpenKind::Struct)
         } else {
@@ -154,10 +177,10 @@ impl GridView {
 
     /// Whether a loaded list or map cell has items to open.
     pub(super) fn has_items(&self, row: usize, column: usize) -> bool {
-        // Editable lists open even when empty, to add items.
+        // Editable lists and maps open even when empty, to add items.
         self.columns
             .get(column)
-            .is_some_and(|c| (c.list || c.is_struct) && self.value(row, column).is_some())
+            .is_some_and(|c| (c.list || c.map || c.is_struct) && self.value(row, column).is_some())
             || self.columns.get(column).is_some_and(|c| c.items)
                 && matches!(self.value(row, column), Some(Some(v)) if v != "[]" && v != "{}")
     }

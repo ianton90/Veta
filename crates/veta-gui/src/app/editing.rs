@@ -1,5 +1,5 @@
-//! Editing cells and nested values (struct fields, list items, the Value
-//! tab and the JSON editor), and undo / redo.
+//! Editing cells and nested values (struct fields, list items, map
+//! entries), and undo / redo.
 
 use super::*;
 
@@ -26,12 +26,21 @@ impl App {
                 // A value entered in the last item of a list, or in the slot
                 // for a new one, goes on to a new item at the end; an empty
                 // new item ends.
+                // Map entries go key, value, next key; an empty new key ends.
                 let item = self.edit.as_ref().and_then(|e| e.item.clone());
                 let empty = self.edit.as_ref().is_some_and(|e| e.text.is_empty());
+                let key = self.edit.as_ref().is_some_and(|e| e.key);
                 if self.commit_edit()
                     && let Some(id) = self.active
                 {
                     match item {
+                        Some(item) if key && item.index == item.len && !empty => {
+                            self.select_item(id, Some(item.index));
+                            return self.start_edit(id, None);
+                        }
+                        Some(item) if key && item.index < item.len => {
+                            self.select_item(id, Some(item.index));
+                        }
                         Some(item) if item.field.is_some() => {
                             self.grid_event(id, GridEvent::Navigate(Nav::Down));
                         }
@@ -198,6 +207,7 @@ impl App {
             len: item.len,
             data_type: item.data_type,
             field: item.field,
+            key: item.key,
         })
     }
 
@@ -222,6 +232,23 @@ impl App {
                 column,
                 path,
                 value: text.map(str::to_owned),
+            }
+        } else if item.key.is_some() {
+            match *change {
+                ListEdit::Set { index, text, .. } => Command::SetMapValue {
+                    row,
+                    column,
+                    map: list,
+                    index,
+                    value: text.map(str::to_owned),
+                },
+                ListEdit::Remove(index) => Command::RemoveMapEntry {
+                    row,
+                    column,
+                    map: list,
+                    index,
+                },
+                ListEdit::Insert(_) => return Err("map entries need a key".into()),
             }
         } else {
             match *change {
@@ -249,6 +276,63 @@ impl App {
         self.nested_command(id, command)
     }
 
+    /// Renames the key of map entry `item`, or adds an entry with that key
+    /// when `item` is the new-entry slot.
+    fn change_map_key(&mut self, id: DocumentId, item: &ListItem, key: &str) -> Result<(), String> {
+        let (row, column, map, index) =
+            (item.row, item.column.clone(), item.list.clone(), item.index);
+        let key = key.to_owned();
+        let command = if index < item.len {
+            Command::SetMapKey {
+                row,
+                column,
+                map,
+                index,
+                key,
+            }
+        } else {
+            Command::InsertMapEntry {
+                row,
+                column,
+                map,
+                index,
+                key,
+            }
+        };
+        self.nested_command(id, command)
+    }
+
+    /// Starts editing the key of the selected map entry.
+    pub(crate) fn start_key_edit(&mut self, id: DocumentId) -> Task<Message> {
+        let Some(item) = self.selected_list_item(id) else {
+            return Task::none();
+        };
+        let Some(key) = item.key.clone() else {
+            return Task::none();
+        };
+        self.edit = Some(Edit {
+            document: id,
+            row: item.row,
+            column: item.column.clone(),
+            field: None,
+            text: key.unwrap_or_default(),
+            item: Some(item),
+            key: true,
+            error: None,
+        });
+        Task::batch([
+            iced::widget::operation::focus(EDITOR_ID),
+            iced::widget::operation::move_cursor_to_end(EDITOR_ID),
+        ])
+    }
+
+    /// Selects the new-entry slot of the selected map cell and starts
+    /// editing the new key.
+    pub(crate) fn add_map_entry(&mut self, id: DocumentId) -> Task<Message> {
+        self.select_item(id, Some(usize::MAX));
+        self.start_key_edit(id)
+    }
+
     /// Inserts a null item above or below the selected item, or removes it,
     /// and selects the new item (or the one now in its place).
     pub(crate) fn insert_or_remove_item(
@@ -256,10 +340,14 @@ impl App {
         id: DocumentId,
         item: &ListItem,
         change: ItemChange,
-    ) {
+    ) -> Task<Message> {
         use veta_core::values::ListEdit;
         if item.field.is_some() {
-            return;
+            return Task::none();
+        }
+        // A map entry needs a key first: inserting adds one at the end.
+        if item.key.is_some() && change != ItemChange::Remove {
+            return self.add_map_entry(id);
         }
         let (change, select) = match change {
             ItemChange::InsertAbove => {
@@ -277,7 +365,7 @@ impl App {
                     item.index.min(len.saturating_sub(1)),
                 )
             }
-            ItemChange::Remove => return,
+            ItemChange::Remove => return Task::none(),
         };
         match self.change_list(id, item, &change) {
             Ok(()) => {
@@ -286,6 +374,7 @@ impl App {
             }
             Err(e) => self.errors.push(e),
         }
+        Task::none()
     }
 
     /// The struct field shown in the selected cell, if it is one.
@@ -328,13 +417,25 @@ impl App {
             && tab.grid.selected_item().is_none()
         {
             let item = match kind {
-                crate::grid::OpenKind::List if initial.is_some() => usize::MAX,
+                crate::grid::OpenKind::List | crate::grid::OpenKind::Map if initial.is_some() => {
+                    usize::MAX
+                }
                 _ => 0,
             };
             self.select_item(id, Some(item));
         }
-        let text = initial.unwrap_or_else(|| self.cell_text(id).unwrap_or_default());
         let item = self.selected_list_item(id);
+        // The new-entry slot of a map starts with its key.
+        if let Some(item) = &item
+            && item.key == Some(None)
+        {
+            let task = self.start_key_edit(id);
+            if let (Some(edit), Some(text)) = (&mut self.edit, initial) {
+                edit.text = text;
+            }
+            return task;
+        }
+        let text = initial.unwrap_or_else(|| self.cell_text(id).unwrap_or_default());
         let field = if item.is_some() {
             None
         } else {
@@ -346,6 +447,7 @@ impl App {
             column,
             field,
             item,
+            key: false,
             text,
             error: None,
         });
@@ -382,10 +484,19 @@ impl App {
         let Some(mut edit) = self.edit.take() else {
             return false;
         };
-        if self.cell_text(edit.document).as_deref() == Some(edit.text.as_str()) {
+        let unchanged = match &edit.item {
+            Some(item) if edit.key => {
+                item.key.as_ref().map(|k| k.as_deref().unwrap_or_default())
+                    == Some(edit.text.as_str())
+            }
+            _ => self.cell_text(edit.document).as_deref() == Some(edit.text.as_str()),
+        };
+        if unchanged {
             return true;
         }
-        let result = if let Some(item) = &edit.item {
+        let result = if let Some(item) = edit.item.as_ref().filter(|_| edit.key) {
+            self.change_map_key(edit.document, item, &edit.text)
+        } else if let Some(item) = &edit.item {
             let text = (!edit.text.is_empty()).then_some(edit.text.as_str());
             let change = veta_core::values::ListEdit::Set {
                 index: item.index,

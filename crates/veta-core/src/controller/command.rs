@@ -89,6 +89,42 @@ pub enum Command {
         list: Vec<String>,
         index: usize,
     },
+    /// Sets the value of entry `index` of a map in a cell from text, parsed
+    /// as the value type. `map` names the struct fields from the column down
+    /// to the map (empty: the cell is the map). Only maps with text keys can
+    /// be edited by entry.
+    SetMapValue {
+        row: usize,
+        column: String,
+        map: Vec<String>,
+        index: usize,
+        value: Option<String>,
+    },
+    /// Renames the key of entry `index` of a map in a cell; keys must stay
+    /// unique. `map` as for [`Command::SetMapValue`].
+    SetMapKey {
+        row: usize,
+        column: String,
+        map: Vec<String>,
+        index: usize,
+        key: String,
+    },
+    /// Inserts an entry with a new key and a null value at `index` (up to the
+    /// number of entries) in a map in a cell. A null map counts as empty.
+    InsertMapEntry {
+        row: usize,
+        column: String,
+        map: Vec<String>,
+        index: usize,
+        key: String,
+    },
+    /// Removes entry `index` of a map in a cell.
+    RemoveMapEntry {
+        row: usize,
+        column: String,
+        map: Vec<String>,
+        index: usize,
+    },
     /// Inserts `count` empty rows before row `at` (`at` = row count appends).
     InsertRows {
         at: usize,

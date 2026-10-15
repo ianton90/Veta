@@ -49,6 +49,10 @@ pub(crate) enum MenuItem {
     AddField,
     RemoveField,
     DeleteItem,
+    /// Edit the key of a map entry.
+    EditKey,
+    /// Add an entry at the end of a map.
+    AddEntry,
     /// Expand a struct column and the structs inside it.
     ExpandAll,
     ExplodeList,
@@ -85,6 +89,8 @@ impl App {
                     MenuItem::EditCell => return self.start_edit(id, None),
                     MenuItem::AddField => return self.open_add_field(id),
                     MenuItem::RemoveField => self.remove_field(id),
+                    MenuItem::EditKey => return self.start_key_edit(id),
+                    MenuItem::AddEntry => return self.add_map_entry(id),
                     MenuItem::InsertItem | MenuItem::InsertItemBelow | MenuItem::DeleteItem => {
                         if let Some(list_item) = self.selected_list_item(id) {
                             let change = match item {
@@ -92,7 +98,7 @@ impl App {
                                 MenuItem::InsertItemBelow => ItemChange::InsertBelow,
                                 _ => ItemChange::Remove,
                             };
-                            self.insert_or_remove_item(id, &list_item, change);
+                            return self.insert_or_remove_item(id, &list_item, change);
                         }
                     }
                     MenuItem::ClearCell => {

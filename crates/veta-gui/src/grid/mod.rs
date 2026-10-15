@@ -151,8 +151,8 @@ pub enum GridEvent {
     ToggleItems {
         row: usize,
     },
-    /// An item of an open list cell was clicked (`item` may be the list's
-    /// length: the slot for a new item).
+    /// An item of an open list or map cell was clicked (`item` may be the
+    /// number of items: the slot for a new one).
     SelectItem {
         row: usize,
         column: usize,
@@ -180,6 +180,8 @@ pub enum MenuTarget {
     Cell,
     /// An item of an open list cell.
     Item,
+    /// An entry of an open map cell.
+    Entry,
     /// A field of an open struct cell.
     Field,
     /// The empty area around the cells (e.g. a table with no rows).
@@ -264,12 +266,15 @@ pub struct SelectedItem {
     pub data_type: DataType,
     /// The field name, for a struct field.
     pub field: Option<String>,
+    /// For a map entry, its key (`None` inside for the new-entry slot).
+    pub key: Option<Option<String>>,
 }
 
 /// Cells whose items edit in place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenKind {
     List,
+    Map,
     Struct,
 }
 

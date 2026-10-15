@@ -9,12 +9,22 @@ pub struct Grid<'a, Message> {
     pub(super) on_event: Box<dyn Fn(GridEvent) -> Message + 'a>,
     /// Editor drawn over the selected cell while it is being edited.
     pub(super) editor: Option<Element<'a, Message>>,
+    /// The editor covers the selected item's label (a map key being edited)
+    /// instead of starting after it.
+    pub(super) editor_covers_label: bool,
 }
 
 impl<'a, Message> Grid<'a, Message> {
     /// Shows `editor` over the selected cell.
     pub fn editor(mut self, editor: Option<Element<'a, Message>>) -> Self {
         self.editor = editor;
+        self
+    }
+
+    /// Lays the editor over the selected item's label too (to edit a map
+    /// key).
+    pub fn editor_covers_label(mut self, covers: bool) -> Self {
+        self.editor_covers_label = covers;
         self
     }
 }
@@ -37,6 +47,7 @@ pub fn grid<'a, Message>(
         tokens,
         on_event: Box::new(on_event),
         editor: None,
+        editor_covers_label: false,
     }
 }
 
@@ -117,7 +128,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         // Lay the editor out over the selected cell (local coordinates); off
         // screen when the cell is scrolled out of view.
         let regions = Regions::new(Rectangle::new(Point::ORIGIN, size), self.view);
-        let rect = self.selected_cell_rect(&regions).unwrap_or(Rectangle::new(
+        let rect = self.editor_rect(&regions).unwrap_or(Rectangle::new(
             Point::new(-10_000.0, -10_000.0),
             Size::new(1.0, 1.0),
         ));
@@ -373,6 +384,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     shell.publish((self.on_event)(GridEvent::SelectItem { row, column, item }));
                     if view.columns[column].is_struct {
                         Some(MenuTarget::Field)
+                    } else if view.columns[column].map {
+                        Some(MenuTarget::Entry)
                     } else {
                         Some(MenuTarget::Item)
                     }

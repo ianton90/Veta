@@ -44,6 +44,7 @@ impl App {
                         .map(|(r, c)| (r, doc.schema().fields().get(c).map(|f| f.name().clone())));
                     selected == Some((e.row, Some(e.column.clone())))
                 });
+                let covers_label = editor.is_some_and(|e| e.key);
                 let editor = editor.map(|e| {
                     iced::widget::text_input("", &e.text)
                         .id(EDITOR_ID)
@@ -53,8 +54,9 @@ impl App {
                         .padding([1, 5])
                         .into()
                 });
-                let grid =
-                    grid::grid(&tab.grid, ui.tokens, move |e| Message::Grid(id, e)).editor(editor);
+                let grid = grid::grid(&tab.grid, ui.tokens, move |e| Message::Grid(id, e))
+                    .editor(editor)
+                    .editor_covers_label(covers_label);
                 let grid: Element<'_, Message> =
                     match self.computing.as_ref().filter(|c| c.document == id) {
                         // Not opaque: the table can still be scrolled and

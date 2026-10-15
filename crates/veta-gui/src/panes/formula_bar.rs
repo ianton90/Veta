@@ -52,9 +52,13 @@ pub fn formula_bar<'a>(
                         name = format!("{name}.{part}");
                     }
                     if let Some(item) = tab.grid.selected_item() {
-                        name = match item.field {
-                            Some(field) => format!("{name}.{field}"),
-                            None => format!("{name}[{}]", item.index),
+                        let key = edit.is_some_and(|e| e.key);
+                        name = match (item.field, item.key) {
+                            (Some(field), _) => format!("{name}.{field}"),
+                            (None, Some(None)) => format!("{name} new key"),
+                            (None, Some(Some(k))) if key => format!("{name} key {k:?}"),
+                            (None, Some(Some(k))) => format!("{name}[{k:?}]"),
+                            (None, None) => format!("{name}[{}]", item.index),
                         };
                     }
                     format!("{name} · ")

@@ -283,6 +283,117 @@ fn list_items_edit_in_place() {
 }
 
 #[test]
+fn map_entries_edit_in_place() {
+    let dir = TempDir::new();
+    let path = dir.join("n.parquet");
+    fixtures::nested(&path);
+    let mut app = app_with(&[&path]);
+    let id = app.tabs[0].id;
+    let grid = |app: &mut App, event| {
+        let _ = app.update(Message::Grid(id, event));
+    };
+    let enter = |app: &mut App, text: &str| {
+        let _ = app.update(Message::EditInput(text.into()));
+        let _ = app.update(Message::CommitEdit);
+    };
+    let scores = |app: &App, row: usize| {
+        let doc = app.workbook.get(id).unwrap();
+        veta_core::display::format_batch(&doc.read(row..row + 1).unwrap()).unwrap()[0][4].clone()
+    };
+    let editing = |app: &App| {
+        app.edit
+            .as_ref()
+            .map(|e| (e.item.as_ref().unwrap().index, e.key))
+    };
+    let menu = |app: &mut App, item| {
+        app.menu = Some(ContextMenu {
+            document: id,
+            target: MenuTarget::Entry,
+            position: iced::Point::ORIGIN,
+        });
+        let _ = app.update(Message::Menu(item));
+    };
+
+    // An empty map: Enter edits the new key, then its value, then the next
+    // key; an empty key ends.
+    grid(&mut app, GridEvent::Select { row: 1, column: 4 });
+    grid(&mut app, GridEvent::StartEdit { initial: None });
+    assert_eq!(editing(&app), Some((0, true)));
+    enter(&mut app, "math");
+    assert_eq!(editing(&app), Some((0, false)), "then its value");
+    assert_eq!(scores(&app, 1).as_deref(), Some("{math: null}"));
+    enter(&mut app, "4");
+    assert_eq!(editing(&app), Some((1, true)), "then the next key");
+    enter(&mut app, "art");
+    enter(&mut app, "5");
+    enter(&mut app, "");
+    assert!(app.edit.is_none());
+    assert_eq!(scores(&app, 1).as_deref(), Some("{math: 4, art: 5}"));
+
+    // Edit a value, rename a key; a taken key is refused.
+    grid(
+        &mut app,
+        GridEvent::SelectItem {
+            row: 0,
+            column: 4,
+            item: 0,
+        },
+    );
+    grid(&mut app, GridEvent::StartEdit { initial: None });
+    assert_eq!(app.edit.as_ref().unwrap().text, "9");
+    enter(&mut app, "10");
+    assert!(app.edit.is_none(), "moves down to the next entry");
+    assert_eq!(scores(&app, 0).as_deref(), Some("{math: 10, art: 7}"));
+    grid(&mut app, GridEvent::Navigate(Nav::Up));
+    menu(&mut app, MenuItem::EditKey);
+    assert_eq!(app.edit.as_ref().unwrap().text, "math");
+    enter(&mut app, "art");
+    assert!(app.edit.as_ref().unwrap().error.is_some());
+    enter(&mut app, "maths");
+    assert!(app.edit.is_none());
+    assert_eq!(scores(&app, 0).as_deref(), Some("{maths: 10, art: 7}"));
+
+    // Add an entry from the menu, set a value to null, delete an entry.
+    menu(&mut app, MenuItem::AddEntry);
+    assert_eq!(editing(&app), Some((2, true)));
+    enter(&mut app, "pe");
+    enter(&mut app, "3");
+    let _ = app.update(Message::Escape);
+    assert_eq!(
+        scores(&app, 0).as_deref(),
+        Some("{maths: 10, art: 7, pe: 3}")
+    );
+    grid(
+        &mut app,
+        GridEvent::SelectItem {
+            row: 0,
+            column: 4,
+            item: 1,
+        },
+    );
+    grid(&mut app, GridEvent::ClearCell);
+    assert_eq!(
+        scores(&app, 0).as_deref(),
+        Some("{maths: 10, art: null, pe: 3}")
+    );
+    grid(&mut app, GridEvent::DeleteRows);
+    assert_eq!(scores(&app, 0).as_deref(), Some("{maths: 10, pe: 3}"));
+
+    // Typing on a null map cell starts a new key.
+    grid(&mut app, GridEvent::Select { row: 2, column: 4 });
+    grid(
+        &mut app,
+        GridEvent::StartEdit {
+            initial: Some("k".into()),
+        },
+    );
+    assert_eq!(editing(&app), Some((0, true)));
+    let _ = app.update(Message::CommitEdit);
+    enter(&mut app, "1");
+    assert_eq!(scores(&app, 2).as_deref(), Some("{k: 1}"));
+}
+
+#[test]
 fn edit_nested_values_and_expand_explode() {
     let dir = TempDir::new();
     let path = dir.join("n.parquet");
@@ -295,7 +406,7 @@ fn edit_nested_values_and_expand_explode() {
         veta_core::display::format_batch(&doc.read(row..row + 1).unwrap()).unwrap()[0][i].clone()
     };
 
-    // Lists edit item by item; other nested cells as JSON.
+    // Lists edit item by item (maps too, see `map_entries_edit_in_place`).
     let _ = app.update(Message::Grid(id, GridEvent::Select { row: 1, column: 2 }));
     let _ = app.update(Message::Grid(id, GridEvent::StartEdit { initial: None }));
     for text in ["x", "y", ""] {
@@ -303,12 +414,6 @@ fn edit_nested_values_and_expand_explode() {
         let _ = app.update(Message::CommitEdit);
     }
     assert_eq!(cell(&app, 1, "tags").as_deref(), Some("[x, y]"));
-    let _ = app.update(Message::Grid(id, GridEvent::Select { row: 1, column: 4 }));
-    let _ = app.update(Message::Grid(id, GridEvent::StartEdit { initial: None }));
-    assert_eq!(app.edit.as_ref().unwrap().text, "{}");
-    let _ = app.update(Message::EditInput(r#"{"a": 1}"#.into()));
-    let _ = app.update(Message::CommitEdit);
-    assert_eq!(cell(&app, 1, "scores").as_deref(), Some("{a: 1}"));
 
     // Column menu: expand the struct, explode the list.
     let _ = app.update(Message::Grid(

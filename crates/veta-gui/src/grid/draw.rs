@@ -179,10 +179,10 @@ impl<Message> Grid<'_, Message> {
                         height: m.row_height,
                     };
                     if let Some(clip) = line_cell.intersection(&regions.body) {
-                        let text = if items.items.is_empty() {
-                            "empty".to_owned()
-                        } else {
-                            items.items.len().to_string()
+                        let text = match (items.items.is_empty(), items.kind) {
+                            (true, _) => "empty".to_owned(),
+                            (false, ItemsKind::Map) => "new entry".to_owned(),
+                            (false, _) => items.items.len().to_string(),
                         };
                         draw_text(
                             renderer,

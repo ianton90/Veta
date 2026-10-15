@@ -269,7 +269,8 @@ impl GridView {
                         let kind = match array.data_type() {
                             DataType::List(_) | DataType::LargeList(_) => ItemsKind::List,
                             DataType::Struct(_) => ItemsKind::Struct,
-                            t if has_items(t) => ItemsKind::Map,
+                            t if map_types(t).is_some() => ItemsKind::Map,
+                            t if has_items(t) => ItemsKind::ReadOnly,
                             _ => ItemsKind::None,
                         };
                         if kind == ItemsKind::Struct {

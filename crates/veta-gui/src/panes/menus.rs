@@ -44,6 +44,24 @@ pub fn menu_sections(
         ));
         return sections;
     }
+    if target == MenuTarget::Entry {
+        sections.push((
+            "Map entry",
+            vec![
+                entry(Icon::Rename, "Edit value", "Enter", MenuItem::EditCell),
+                entry(Icon::Rename, "Edit key", "", MenuItem::EditKey),
+                entry(Icon::Plus, "Add entry", "Ctrl++", MenuItem::AddEntry),
+                entry(Icon::Trash, "Delete entry", "Ctrl+-", MenuItem::DeleteItem),
+                entry(
+                    Icon::Eraser,
+                    "Set value to null",
+                    "Delete",
+                    MenuItem::ClearCell,
+                ),
+            ],
+        ));
+        return sections;
+    }
     if target == MenuTarget::Item {
         sections.push((
             "List item",

@@ -150,6 +150,86 @@ pub fn edit_list(
     Ok(root.to_string())
 }
 
+/// A change to one entry of a map inside a cell (see [`edit_map`]). Entries
+/// are addressed by position; keys are text and must stay unique.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MapEdit<'a> {
+    /// Sets the value of entry `index` (read as `value_type`; empty or
+    /// `None` is null).
+    SetValue {
+        index: usize,
+        text: Option<&'a str>,
+        value_type: &'a DataType,
+    },
+    /// Renames the key of entry `index`.
+    SetKey { index: usize, key: &'a str },
+    /// Inserts an entry with a null value at `index` (up to the number of
+    /// entries).
+    Insert { index: usize, key: &'a str },
+    /// Removes entry `index`.
+    Remove(usize),
+}
+
+/// The JSON of a cell with the map at `map` changed by `edit`. A null map
+/// (or struct on the way to it) counts as empty.
+pub fn edit_map(
+    cell_json: &str,
+    map: &[crate::display::PathPart],
+    edit: &MapEdit,
+) -> Result<String> {
+    let mut root: serde_json::Value = serde_json::from_str(cell_json)
+        .map_err(|e| Error::InvalidCommand(format!("the cell is not valid JSON: {e}")))?;
+    let target = value_at_or_insert(&mut root, map)?;
+    if target.is_null() {
+        *target = serde_json::Value::Object(Default::default());
+    }
+    let serde_json::Value::Object(object) = target else {
+        return Err(Error::InvalidCommand("that value is not a map".into()));
+    };
+    let mut entries: Vec<(String, serde_json::Value)> =
+        std::mem::take(object).into_iter().collect();
+    let gone = || Error::InvalidCommand("that entry no longer exists".into());
+    let taken =
+        |entries: &[(String, serde_json::Value)], key: &str, except: Option<usize>| match entries
+            .iter()
+            .enumerate()
+            .any(|(i, (k, _))| k == key && Some(i) != except)
+        {
+            true => Err(Error::InvalidCommand(format!("{key:?} is already a key"))),
+            false => Ok(()),
+        };
+    match *edit {
+        MapEdit::SetValue {
+            index,
+            text,
+            value_type,
+        } => {
+            let value = parse_value(text, value_type)?;
+            let value = match crate::display::value_json(value.as_ref(), 0)? {
+                Some(json) => {
+                    serde_json::from_str(&json).map_err(|e| Error::InvalidCommand(e.to_string()))?
+                }
+                None => serde_json::Value::Null,
+            };
+            entries.get_mut(index).ok_or_else(gone)?.1 = value;
+        }
+        MapEdit::SetKey { index, key } => {
+            taken(&entries, key, Some(index))?;
+            entries.get_mut(index).ok_or_else(gone)?.0 = key.to_owned();
+        }
+        MapEdit::Insert { index, key } if index <= entries.len() => {
+            taken(&entries, key, None)?;
+            entries.insert(index, (key.to_owned(), serde_json::Value::Null));
+        }
+        MapEdit::Remove(index) if index < entries.len() => {
+            entries.remove(index);
+        }
+        MapEdit::Insert { .. } | MapEdit::Remove(_) => return Err(gone()),
+    }
+    *object = entries.into_iter().collect();
+    Ok(root.to_string())
+}
+
 /// Like [`value_at`], but struct fields that are missing or under a null
 /// parent are created.
 fn value_at_or_insert<'a>(
@@ -308,6 +388,49 @@ mod tests {
             edit_list("null", &tags, &ListEdit::Insert(0)).unwrap(),
             r#"{"tags":[null]}"#
         );
+        // Map entries: set a value, rename, insert, remove; keys stay unique.
+        let scores = r#"{"math":9,"art":7}"#;
+        let map = |edit: MapEdit| edit_map(scores, &[], &edit);
+        let set = MapEdit::SetValue {
+            index: 1,
+            text: Some("8"),
+            value_type: &int,
+        };
+        assert_eq!(map(set).unwrap(), r#"{"math":9,"art":8}"#);
+        let rename = MapEdit::SetKey {
+            index: 0,
+            key: "maths",
+        };
+        assert_eq!(map(rename).unwrap(), r#"{"maths":9,"art":7}"#);
+        let same = MapEdit::SetKey {
+            index: 0,
+            key: "math",
+        };
+        assert_eq!(map(same).unwrap(), scores);
+        assert!(
+            map(MapEdit::SetKey {
+                index: 0,
+                key: "art"
+            })
+            .is_err()
+        );
+        let insert = MapEdit::Insert {
+            index: 1,
+            key: "pe",
+        };
+        assert_eq!(map(insert).unwrap(), r#"{"math":9,"pe":null,"art":7}"#);
+        assert!(
+            map(MapEdit::Insert {
+                index: 0,
+                key: "art"
+            })
+            .is_err()
+        );
+        assert!(map(MapEdit::Insert { index: 3, key: "x" }).is_err());
+        assert_eq!(map(MapEdit::Remove(0)).unwrap(), r#"{"art":7}"#);
+        assert!(map(MapEdit::Remove(2)).is_err());
+        let first = MapEdit::Insert { index: 0, key: "a" };
+        assert_eq!(edit_map("null", &[], &first).unwrap(), r#"{"a":null}"#);
         // A field under a null struct is created.
         let created = set_nested("null", &home_y, Some("7"), &DataType::Int64).unwrap();
         assert_eq!(created, r#"{"home":{"y":7}}"#);

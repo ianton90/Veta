@@ -142,6 +142,9 @@ pub(crate) struct Edit {
     pub(crate) field: Option<StructField>,
     /// The list item edited, when an item of an open list cell is.
     pub(crate) item: Option<ListItem>,
+    /// The map entry's key is edited (`item` is the entry, or the slot for
+    /// a new one), not its value.
+    pub(crate) key: bool,
     pub(crate) text: String,
     /// Why the last attempt to apply it failed.
     pub(crate) error: Option<String>,
@@ -168,6 +171,9 @@ pub(crate) struct ListItem {
     pub(crate) data_type: veta_core::arrow::datatypes::DataType,
     /// The field's name, for a struct field.
     pub(crate) field: Option<String>,
+    /// For a map entry, its key (`None` inside for the new-entry slot);
+    /// `data_type` is then the value type.
+    pub(crate) key: Option<Option<String>>,
 }
 
 /// Inserting or removing a list item (see `App::insert_or_remove_item`).

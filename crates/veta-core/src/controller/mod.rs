@@ -79,7 +79,11 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
         command @ (C::SetField { .. }
         | C::SetListItem { .. }
         | C::InsertListItem { .. }
-        | C::RemoveListItem { .. }) => nested::plan(doc, command),
+        | C::RemoveListItem { .. }
+        | C::SetMapValue { .. }
+        | C::SetMapKey { .. }
+        | C::InsertMapEntry { .. }
+        | C::RemoveMapEntry { .. }) => nested::plan(doc, command),
         command @ (C::InsertRows { .. } | C::DeleteRows { .. }) => rows::plan(command),
         command @ (C::AddColumn { .. }
         | C::RemoveColumns { .. }

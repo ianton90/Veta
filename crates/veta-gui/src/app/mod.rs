@@ -455,7 +455,7 @@ impl App {
                     } else {
                         ItemChange::Remove
                     };
-                    self.insert_or_remove_item(id, &item, change);
+                    return self.insert_or_remove_item(id, &item, change);
                 }
                 GridEvent::InsertRows => self.insert_rows(id, false),
                 GridEvent::MoveColumn { from, to } => self.move_column(id, from, to),
