@@ -39,8 +39,9 @@ pub enum Action {
     FilterRows,
     KeepRows,
     RemoveRows,
-    InsertRows,
-    DeleteRows,
+    /// Insert or delete a number of rows at the top, bottom or a position.
+    InsertRowsAt,
+    DeleteRowsAt,
     SortAscending,
     SortDescending,
     CustomSort,
@@ -81,8 +82,6 @@ impl Action {
             Action::Save => Some("Ctrl+S"),
             Action::SaveAs => Some("Ctrl+Shift+S"),
             Action::Undo => Some("Ctrl+Z"),
-            Action::InsertRows => Some("Ctrl++"),
-            Action::DeleteRows => Some("Ctrl+-"),
             Action::Redo => Some("Ctrl+Y"),
             Action::Copy => Some("Ctrl+C"),
             Action::Cut => Some("Ctrl+X"),
@@ -264,8 +263,8 @@ fn groups(tab: Tab) -> Vec<Group> {
             group(
                 "Rows",
                 vec![
-                    large(A::InsertRows, "Insert Rows", Icon::InsertRows),
-                    large(A::DeleteRows, "Delete Rows", Icon::Trash),
+                    large(A::InsertRowsAt, "Insert Rows", Icon::InsertRows),
+                    large(A::DeleteRowsAt, "Delete Rows", Icon::Trash),
                 ],
             ),
             group(
@@ -390,6 +389,8 @@ pub struct Context {
     pub has_selection: bool,
     /// A cell is selected (not whole rows or columns).
     pub has_cell: bool,
+    /// The document has rows.
+    pub has_rows: bool,
     /// The document can be changed (no filter view, step preview or
     /// computation in the way).
     pub editable: bool,
@@ -414,9 +415,8 @@ impl Context {
             A::Redo => self.can_redo,
             A::Copy => self.has_selection || column,
             A::Cut | A::Paste => self.editable && (self.has_selection || column),
-            A::DeleteRows => self.editable && self.has_selection,
-            // Without a selection, appends a row.
-            A::InsertRows => self.editable,
+            A::InsertRowsAt => self.editable,
+            A::DeleteRowsAt => self.editable && self.has_rows,
             A::KeepRows | A::RemoveRows => self.filter_active,
             A::RenameColumn
             | A::MoveColumnLeft

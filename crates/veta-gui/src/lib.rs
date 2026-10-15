@@ -42,8 +42,8 @@ use crate::dialogs::{
     ColumnDialog, ColumnMessage, CombineDialog, CombineMessage, CustomDialog, CustomMessage,
     ExportDialog, ExportMessage, FilterDialog, FilterMessage, FormatDialog, FormatMessage,
     ImportDialog, ImportMessage, MergeDialog, MergeMessage, MetadataDialog, MetadataMessage,
-    ReplaceDialog, ReplaceMessage, SortDialog, SortMessage, SplitDialog, SplitMessage,
-    WriterDialog, WriterMessage,
+    ReplaceDialog, ReplaceMessage, RowsDialog, RowsMessage, SortDialog, SortMessage, SplitDialog,
+    SplitMessage, WriterDialog, WriterMessage,
 };
 use crate::files::FileKind;
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav, Selection};
@@ -572,6 +572,10 @@ enum Dialog {
         dialog: CollectDialog,
         replace: Option<usize>,
     },
+    Rows {
+        document: DocumentId,
+        dialog: RowsDialog,
+    },
     Custom {
         document: DocumentId,
         dialog: CustomDialog,
@@ -653,6 +657,7 @@ enum Message {
     Merge(MergeMessage),
     Combine(CombineMessage),
     Collect(CollectMessage),
+    Rows(RowsMessage),
     /// Progress (0–1) of the background pass with this key.
     ComputeProgress(DocumentId, Target, Vec<u64>, f32),
     /// The background pass with this key finished.
@@ -1444,6 +1449,43 @@ impl App {
                     }
                 }
             }
+            Message::Rows(message) => {
+                if let Some(Dialog::Rows { document, dialog }) = &mut self.dialog {
+                    let id = *document;
+                    let cancel = matches!(message, RowsMessage::Cancel);
+                    if let Some(command) = dialog.update(message) {
+                        let inserted = match &command {
+                            Command::InsertRows { at, count } => Some(*at..at + count),
+                            _ => None,
+                        };
+                        match self
+                            .workbook
+                            .get_mut(id)
+                            .map(|d| controller::execute(d, command))
+                        {
+                            Some(Ok(())) => {
+                                self.dialog = None;
+                                self.refresh(id);
+                                if let (Some(rows), Some(doc), Some(tab)) = (
+                                    inserted,
+                                    self.workbook.get(id),
+                                    self.tabs.iter_mut().find(|t| t.id == id),
+                                ) {
+                                    tab.grid.select_rows(rows, doc);
+                                }
+                            }
+                            Some(Err(e)) => {
+                                if let Some(Dialog::Rows { dialog, .. }) = &mut self.dialog {
+                                    dialog.set_error(e.to_string());
+                                }
+                            }
+                            None => self.dialog = None,
+                        }
+                    } else if cancel {
+                        self.dialog = None;
+                    }
+                }
+            }
             Message::Collect(message) => {
                 if let Some(Dialog::Collect {
                     document,
@@ -2013,8 +2055,8 @@ impl App {
     fn perform(&mut self, action: Action) -> Task<Message> {
         let changes_data = matches!(
             action,
-            Action::InsertRows
-                | Action::DeleteRows
+            Action::InsertRowsAt
+                | Action::DeleteRowsAt
                 | Action::AddColumn
                 | Action::RenameColumn
                 | Action::RemoveColumns
@@ -2170,14 +2212,22 @@ impl App {
                     }
                 }
             }
-            Action::InsertRows => {
+            Action::InsertRowsAt | Action::DeleteRowsAt => {
                 if let Some(id) = self.active {
-                    self.insert_rows(id, false);
-                }
-            }
-            Action::DeleteRows => {
-                if let Some(id) = self.active {
-                    self.delete_rows(id);
+                    self.commit_edit();
+                    let num_rows = self.workbook.get(id).map_or(0, Document::num_rows);
+                    let selected = self.selected_rows(id);
+                    let delete = action == Action::DeleteRowsAt;
+                    let dialog = RowsDialog::new(delete, num_rows, selected);
+                    self.edit = None;
+                    self.dialog = Some(Dialog::Rows {
+                        document: id,
+                        dialog,
+                    });
+                    return Task::batch([
+                        iced::widget::operation::focus(dialogs::NAME_ID),
+                        iced::widget::operation::select_all(dialogs::NAME_ID),
+                    ]);
                 }
             }
             Action::FilterRows => {
@@ -4319,6 +4369,9 @@ impl App {
                 .active_document()
                 .is_some_and(|(tab, _)| matches!(tab.grid.selection(), Selection::Cell(..))),
             editable: self.active.is_some_and(|id| self.editable(id)),
+            has_rows: self
+                .active_document()
+                .is_some_and(|(_, doc)| doc.num_rows() > 0),
             column: match column {
                 None => ribbon::ColumnKind::None,
                 Some(veta_core::arrow::datatypes::DataType::Struct(fields)) => {
@@ -4477,6 +4530,7 @@ impl App {
             Dialog::Merge { dialog, .. } => dialog.view(ui.tokens).map(Message::Merge),
             Dialog::Combine { dialog, .. } => dialog.view(ui.tokens).map(Message::Combine),
             Dialog::Collect { dialog, .. } => dialog.view(ui.tokens).map(Message::Collect),
+            Dialog::Rows { dialog, .. } => dialog.view(ui.tokens).map(Message::Rows),
             Dialog::ConfirmStep { .. } => settings::confirm_step(ui.tokens),
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
             Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
@@ -4725,7 +4779,7 @@ mod tests {
         );
         assert_eq!(app.tabs[0].grid.value(5, 0), Some(None));
 
-        let _ = app.update(Message::Action(Action::DeleteRows));
+        let _ = app.update(Message::Grid(id, GridEvent::DeleteRows));
         assert_eq!(rows(&app), 1000);
         // Like Excel, the same row positions stay selected after a delete.
         let _ = app.update(Message::Grid(id, GridEvent::DeleteRows));
@@ -4865,7 +4919,7 @@ mod tests {
                 extend: false,
             },
         ));
-        let _ = app.update(Message::Action(Action::DeleteRows));
+        let _ = app.update(Message::Grid(id, GridEvent::DeleteRows));
         assert!(app.workbook.get(id).unwrap().is_modified());
 
         // What the worker thread does, run inline.
@@ -4911,7 +4965,7 @@ mod tests {
                 extend: false,
             },
         ));
-        let _ = app.update(Message::Action(Action::DeleteRows));
+        let _ = app.update(Message::Grid(ida, GridEvent::DeleteRows));
         assert!(app.title().starts_with('●'));
 
         let _ = app.update(Message::Action(Action::Close));
@@ -4940,7 +4994,7 @@ mod tests {
                 extend: false,
             },
         ));
-        let _ = app.update(Message::Action(Action::DeleteRows));
+        let _ = app.update(Message::Grid(id, GridEvent::DeleteRows));
 
         let _ = app.update(Message::CloseTab(id));
         let _ = app.update(Message::CloseAnswer(CloseAnswer::Save));
@@ -4977,7 +5031,7 @@ mod tests {
                 },
             ));
             let _ = app.update(Message::SelectTab(id));
-            let _ = app.update(Message::Action(Action::DeleteRows));
+            let _ = app.update(Message::Grid(id, GridEvent::DeleteRows));
         }
         let _ = app.update(Message::CloseRequested);
         assert!(
@@ -5018,14 +5072,14 @@ mod tests {
                 extend: false,
             },
         ));
-        let _ = app.update(Message::Action(Action::DeleteRows));
+        let _ = app.update(Message::Grid(id, GridEvent::DeleteRows));
         assert_eq!(doc(&app), 2);
 
         // Preview the source: read-only.
         let _ = app.update(Message::PreviewStep(id, 0));
         assert_eq!(app.tabs[0].grid.preview(), Some(0));
         assert_eq!(app.tabs[0].grid.value(0, 0), Some(Some("0")));
-        let _ = app.update(Message::Action(Action::DeleteRows));
+        let _ = app.update(Message::Grid(id, GridEvent::DeleteRows));
         assert_eq!(doc(&app), 2, "changes are disabled while previewing");
         assert_eq!(app.errors.len(), 1);
         let _ = app.update(Message::PreviewStep(id, usize::MAX));
@@ -5120,7 +5174,7 @@ mod tests {
 
         // Read-only while filtered.
         let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 0 }));
-        let _ = app.update(Message::Action(Action::DeleteRows));
+        let _ = app.update(Message::Grid(id, GridEvent::DeleteRows));
         assert_eq!(steps(&app), 0);
         assert!(!app.errors.is_empty());
         app.errors.clear();
@@ -5221,7 +5275,7 @@ mod tests {
             Message::Grid(ida, GridEvent::DeleteRows),
             Message::Grid(ida, GridEvent::InsertRows),
             Message::Grid(ida, GridEvent::MoveColumn { from: 0, to: 1 }),
-            Message::Action(Action::DeleteRows),
+            Message::Action(Action::DeleteRowsAt),
             Message::Action(Action::RemoveColumns),
             Message::Action(Action::SortAscending),
             Message::Action(Action::Undo),
@@ -5326,7 +5380,7 @@ mod tests {
 
         // After an edit the statistics are recomputed (once the step is).
         let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 2 }));
-        let _ = app.update(Message::Action(Action::DeleteRows));
+        let _ = app.update(Message::Grid(id, GridEvent::DeleteRows));
         let _ = app.update(Message::Grid(
             id,
             GridEvent::SelectColumns {
@@ -6425,6 +6479,82 @@ mod tests {
     }
 
     #[test]
+    fn rows_dialog_inserts_and_deletes_many() {
+        use crate::dialogs::RowPlace;
+        let dir = TempDir::new();
+        let path = dir.join("m.parquet");
+        fixtures::mixed_settings(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let total = fixtures::MIXED_SETTINGS_ROWS;
+        let rows = |app: &App| app.workbook.get(id).unwrap().num_rows();
+        let first_id = |app: &App| app.tabs[0].grid.value(0, 0).flatten().map(str::to_owned);
+        let rows_msg = |app: &mut App, message| {
+            let _ = app.update(Message::Rows(message));
+        };
+
+        // 3 rows at the top.
+        let _ = app.update(Message::Grid(id, GridEvent::Navigate(Nav::Top)));
+        let _ = app.update(Message::Action(Action::InsertRowsAt));
+        rows_msg(&mut app, RowsMessage::Count("3".into()));
+        rows_msg(&mut app, RowsMessage::Place(RowPlace::Top));
+        rows_msg(&mut app, RowsMessage::Apply);
+        assert!(app.dialog.is_none());
+        assert_eq!(rows(&app), total + 3);
+        assert_eq!(first_id(&app), None, "new rows are empty");
+        assert_eq!(app.selected_rows(id), Some(0..3));
+
+        // Delete them again: 3 rows from row 1.
+        let _ = app.update(Message::Action(Action::DeleteRowsAt));
+        rows_msg(&mut app, RowsMessage::Place(RowPlace::At));
+        rows_msg(&mut app, RowsMessage::At("1".into()));
+        rows_msg(&mut app, RowsMessage::Apply);
+        assert_eq!(rows(&app), total);
+        assert_eq!(first_id(&app).as_deref(), Some("0"));
+
+        // 2 at the bottom, then delete 5 from the bottom.
+        let _ = app.update(Message::Action(Action::InsertRowsAt));
+        rows_msg(&mut app, RowsMessage::Count("2".into()));
+        rows_msg(&mut app, RowsMessage::Place(RowPlace::Bottom));
+        rows_msg(&mut app, RowsMessage::Apply);
+        assert_eq!(rows(&app), total + 2);
+        let _ = app.update(Message::Action(Action::DeleteRowsAt));
+        rows_msg(&mut app, RowsMessage::Count("5".into()));
+        rows_msg(&mut app, RowsMessage::Place(RowPlace::Bottom));
+        rows_msg(&mut app, RowsMessage::Apply);
+        assert_eq!(rows(&app), total - 3);
+
+        // Bad input keeps the dialog open.
+        let _ = app.update(Message::Action(Action::DeleteRowsAt));
+        for (count, at) in [
+            ("0", "1"),
+            ("x", "1"),
+            ("2", "0"),
+            ("2", &(total - 3).to_string()),
+        ] {
+            rows_msg(&mut app, RowsMessage::Count(count.into()));
+            rows_msg(&mut app, RowsMessage::Place(RowPlace::At));
+            rows_msg(&mut app, RowsMessage::At(at.into()));
+            rows_msg(&mut app, RowsMessage::Apply);
+            assert!(
+                matches!(app.dialog, Some(Dialog::Rows { .. })),
+                "{count} at {at}"
+            );
+        }
+        rows_msg(&mut app, RowsMessage::Cancel);
+        assert!(app.dialog.is_none());
+        assert_eq!(rows(&app), total - 3);
+
+        // Insert at a row number: before that row.
+        let _ = app.update(Message::Action(Action::InsertRowsAt));
+        rows_msg(&mut app, RowsMessage::Place(RowPlace::At));
+        rows_msg(&mut app, RowsMessage::At("2".into()));
+        rows_msg(&mut app, RowsMessage::Apply);
+        assert_eq!(app.tabs[0].grid.value(1, 0), Some(None));
+        assert_eq!(app.tabs[0].grid.value(2, 0), Some(Some("1")));
+    }
+
+    #[test]
     fn rows_before_columns_in_a_new_file() {
         let mut app = app();
         let _ = app.update(Message::Action(Action::New));
@@ -6435,8 +6565,8 @@ mod tests {
             position: iced::Point::ORIGIN,
         });
         let _ = app.update(Message::Menu(MenuItem::AddRow));
-        let _ = app.update(Message::Action(Action::InsertRows));
-        let _ = app.update(Message::Action(Action::DeleteRows));
+        let _ = app.update(Message::Grid(id, GridEvent::InsertRows));
+        let _ = app.update(Message::Grid(id, GridEvent::DeleteRows));
         let _ = app.view();
         assert_eq!(app.workbook.get(id).unwrap().num_rows(), 1);
     }

@@ -467,13 +467,15 @@ impl GridView {
 
     /// The selected cell as (row, document column).
     pub fn selected(&self) -> Option<(usize, usize)> {
-        self.selected.map(|(r, c)| (r, self.columns[c].source))
+        // A file with rows but no columns can have a row but no cell.
+        let (r, c) = self.selected?;
+        Some((r, self.columns.get(c)?.source))
     }
 
     /// Field names from the selected cell's document column down to it
     /// (empty unless it is a field of an expanded struct), and its type.
     pub fn selected_field(&self) -> Option<(&[String], &DataType)> {
-        let column = &self.columns[self.selected?.1];
+        let column = self.columns.get(self.selected?.1)?;
         Some((column.path(), &column.data_type))
     }
 
@@ -497,7 +499,7 @@ impl GridView {
         let (row, column) = self.selected?;
         let index = self.item?;
         let len = self.items(row, column)?.items.len();
-        match &self.columns[column].data_type {
+        match &self.columns.get(column)?.data_type {
             DataType::List(f) | DataType::LargeList(f) => Some(SelectedItem {
                 index,
                 len,
@@ -568,7 +570,10 @@ impl GridView {
     /// Document columns shown by screen columns `range` (inclusive pair).
     fn source_range(&self, (a, b): (usize, usize)) -> Range<usize> {
         let (a, b) = (a.min(b), a.max(b));
-        self.columns[a].source..self.columns[b].source + 1
+        match (self.columns.get(a), self.columns.get(b)) {
+            (Some(a), Some(b)) => a.source..b.source + 1,
+            _ => 0..0,
+        }
     }
 
     /// Selected screen columns, inclusive span.
@@ -669,7 +674,10 @@ impl GridView {
         match (self.rows, self.cols, self.selected) {
             (Some(rows), _, _) => Selection::Rows(span(rows)),
             (None, Some(cols), _) => Selection::Columns(self.source_range(cols)),
-            (None, None, Some((r, c))) => Selection::Cell(r, self.columns[c].source),
+            (None, None, Some((r, c))) => match self.columns.get(c) {
+                Some(column) => Selection::Cell(r, column.source),
+                None => Selection::Rows(r..r + 1),
+            },
             (None, None, None) => Selection::None,
         }
     }

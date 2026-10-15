@@ -10,7 +10,9 @@ While the major version is 0, minor versions may change behaviour.
 - Open several Parquet files as tabs, including files larger than memory
   (paged reading). Opening a file while Veta runs adds it to the open
   window. New, blank files.
-- Grid with in-place editing, row and column insert/delete/rename/move,
+- Grid with in-place editing, row and column insert/delete/rename/move
+  (the Rows tab inserts or deletes any number of rows at the top, bottom
+  or a row number),
   undo/redo, and Save/Save As that keep the file's writer settings.
 - Writer settings (compression, encoding, dictionary, statistics, bloom
   filters, row groups) and file metadata editors.
