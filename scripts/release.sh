@@ -5,7 +5,8 @@
 #
 # With no targets, builds for this machine. Per target:
 #   Linux:   veta-<version>-<target>.tar.gz and Veta-<version>-<arch>.AppImage
-#            (needs appimagetool: $APPIMAGETOOL, PATH or ~/.cache/veta-tools)
+#            (needs appimagetool: $APPIMAGETOOL, PATH or ~/.cache/veta-tools;
+#            $APPIMAGE_RUNTIME may name its runtime file)
 #   Windows: veta-<version>-<target>.zip and veta-<version>-windows-<arch>.exe,
 #            the installer (needs makensis)
 #   macOS:   veta-<version>-<target>.tar.gz and Veta-<version>-<arch>.dmg
@@ -74,7 +75,11 @@ appimage() { # <bin dir> <arch>
     cp packaging/icons/veta-256.png "$appdir/usr/share/icons/hicolor/256x256/apps/veta.png"
     [[ -f packaging/linux/veta-mime.xml ]] && cp packaging/linux/veta-mime.xml "$appdir/usr/share/mime/packages/veta.xml"
     out="$root/dist/Veta-$version-$2.AppImage"
-    ARCH=$2 "$tool" --appimage-extract-and-run --no-appstream "$appdir" "$out" >/dev/null
+    # A runtime fetched beforehand ($APPIMAGE_RUNTIME) saves appimagetool
+    # downloading it.
+    local runtime=()
+    [[ -n "${APPIMAGE_RUNTIME:-}" ]] && runtime=(--runtime-file "$APPIMAGE_RUNTIME")
+    ARCH=$2 "$tool" --appimage-extract-and-run --no-appstream "${runtime[@]}" "$appdir" "$out" >/dev/null
     rm -rf "$(dirname "$appdir")"
 }
 

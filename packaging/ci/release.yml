@@ -31,6 +31,9 @@ jobs:
           curl -sSfL -o "$HOME/.cache/veta-tools/appimagetool" \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x "$HOME/.cache/veta-tools/appimagetool"
+          curl -sSfL -o "$HOME/.cache/veta-tools/runtime-x86_64" \
+            https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64
+          echo "APPIMAGE_RUNTIME=$HOME/.cache/veta-tools/runtime-x86_64" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # the build number is the commit count
