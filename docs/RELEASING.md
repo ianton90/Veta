@@ -22,7 +22,13 @@
 2. Bump the version in `Cargo.toml` (and `Cargo.lock` via `cargo build`).
    Move the notes under a new heading in `CHANGELOG.md`.
 3. Commit (`Release 0.2.0`) and push to `dv`.
-4. Build the packages on each OS (or cross-compile):
+4. Push the tag `vX.Y.Z`. GitHub Actions (`.github/workflows/release.yml`;
+   kept in `packaging/ci/release.yml` until it is copied there, since
+   pushing workflow files needs a token with the `workflow` scope)
+   builds every package on Linux, Windows and macOS and creates a **draft**
+   release with them, `SHA256SUMS` and the changelog section. It can also
+   be run by hand (Actions → Release → Run workflow); the packages are then
+   the run's artifacts. To build locally instead:
 
    ```sh
    scripts/release.sh                               # this machine
@@ -45,8 +51,8 @@
    x86_64-pc-windows-gnu`) and `nsis`; the AppImage needs `appimagetool`
    (`$APPIMAGETOOL`, on `PATH`, or `~/.cache/veta-tools/appimagetool`); the
    `.dmg` needs macOS. A missing tool skips that package with a warning.
-5. Try the archives on each OS, then merge `dv` into `pr`, tag `vX.Y.Z` and
-   publish a GitHub release with the archives and the changelog section.
+5. Try the packages on each OS, then publish the draft release and merge
+   `dv` into `pr`.
 
 ## Packages
 
@@ -62,9 +68,9 @@
   `veta-cli` to it runs the command line. `Veta.AppImage --integrate` adds
   the menu entry, icon and the `application/vnd.apache.parquet` type to
   `~/.local/share` and makes Veta the default for it;
-  `--remove-integration` undoes it. Built against this machine's
-  glibc, so it needs a distribution at least as new as the build machine
-  (built on Ubuntu 24.04: glibc 2.39).
+  `--remove-integration` undoes it. The release workflow builds it on
+  Debian 11 (glibc 2.31), so it runs on Ubuntu 20.04, Debian 11 and newer;
+  a local build needs a distribution at least as new as the build machine.
 - **macOS** (`packaging/macos/make-app.sh`): unsigned, ad-hoc signed
   `Veta.app` in a `.dmg`; on first launch use right-click → Open.
   `veta-cli` is inside the bundle (`Veta.app/Contents/MacOS/veta-cli`).

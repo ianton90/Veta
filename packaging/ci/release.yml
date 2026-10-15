@@ -1,0 +1,111 @@
+# Copy to .github/workflows/release.yml to enable it.
+#
+# Builds release packages on every OS. Runs for version tags (v0.2.0) and
+# by hand (Actions → Release → Run workflow). On a tag it creates a draft
+# GitHub release with the packages; review and publish it by hand.
+# Checks (fmt, clippy, tests) still run locally before pushing (CLAUDE.md).
+# See docs/RELEASING.md.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    # Debian 11 (glibc 2.31) with Rust: the AppImage and binaries then run
+    # on Ubuntu 20.04, Debian 11 and newer.
+    container: rust:1-bullseye
+    steps:
+      - name: Tools
+        run: |
+          mkdir -p "$HOME/.cache/veta-tools"
+          curl -sSfL -o "$HOME/.cache/veta-tools/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$HOME/.cache/veta-tools/appimagetool"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the build number is the commit count
+      - name: Build
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          scripts/release.sh x86_64-unknown-linux-gnu
+          rm dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tools
+        run: |
+          choco install nsis -y --no-progress
+          echo "C:\\Program Files (x86)\\NSIS" >> "$GITHUB_PATH"
+      - name: Build
+        run: |
+          scripts/release.sh x86_64-pc-windows-msvc
+          rm dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          scripts/release.sh aarch64-apple-darwin x86_64-apple-darwin
+          rm dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+
+  release:
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: all
+          path: dist/*
+      - name: Draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # The changelog section for this version.
+          awk -v v="$version" '/^## /{p = index($0, "## " v) == 1; next} p' CHANGELOG.md > notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --draft --title "Veta $version" --notes-file notes.md

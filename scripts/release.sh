@@ -33,6 +33,19 @@ fi
 
 warn() { echo "release: warning: $*" >&2; }
 
+# A path for native Windows tools when running in Git Bash.
+native_path() {
+    if command -v cygpath >/dev/null; then cygpath -w "$1"; else echo "$1"; fi
+}
+
+zip_dir() { # <zip> <dir>, from dist/
+    if command -v zip >/dev/null; then
+        zip -qr "$1" "$2"
+    else
+        7z a -tzip -bd -bso0 "$1" "$2"
+    fi
+}
+
 find_appimagetool() {
     if [[ -n "${APPIMAGETOOL:-}" ]]; then
         echo "$APPIMAGETOOL"
@@ -74,7 +87,8 @@ installer() { # <bin dir> <arch>
     src=$(mktemp -d)
     cp "$1/veta.exe" "$1/veta-cli.exe" README.md LICENSE CHANGELOG.md "$src/"
     (cd packaging/windows && makensis -V2 -DVERSION="$version" -DBUILD="$build" \
-        -DSRC="$src" -DOUT="$root/dist/veta-$version-windows-$2.exe" veta.nsi)
+        -DSRC="$(native_path "$src")" \
+        -DOUT="$(native_path "$root/dist/veta-$version-windows-$2.exe")" veta.nsi)
     rm -rf "$src"
 }
 
@@ -94,7 +108,7 @@ for target in "${targets[@]}"; do
     cp README.md LICENSE CHANGELOG.md "$stage/"
     if [[ $target == *windows* ]]; then
         rm -f "dist/$name.zip"
-        (cd dist && zip -qr "$name.zip" "$name")
+        (cd dist && zip_dir "$name.zip" "$name")
         installer "$bin" "${arch/x86_64/x64}"
     else
         tar -C dist -czf "dist/$name.tar.gz" "$name"
