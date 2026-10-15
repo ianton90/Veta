@@ -1,3 +1,5 @@
+//! App tests: applied steps, filters, sorting and background passes.
+
 use super::*;
 
 #[test]

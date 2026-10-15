@@ -1,3 +1,5 @@
+//! App tests: copy, cut and paste.
+
 use super::*;
 
 #[test]

@@ -1,3 +1,5 @@
+//! Row range helpers for steps that insert or delete rows.
+
 use std::ops::Range;
 
 /// Maps an output row range of a delete step to the previous step's row

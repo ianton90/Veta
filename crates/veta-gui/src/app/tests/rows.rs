@@ -1,3 +1,5 @@
+//! App tests: inserting, removing and keeping rows.
+
 use super::*;
 
 #[test]

@@ -1,3 +1,6 @@
+//! App tests, by area, driven through `App::update` as the window would.
+//! Shared helpers and general tests (theme, settings, menus) are here.
+
 use super::*;
 use crate::dialogs::{
     CastMessage, CollectMessage, CombineMessage, CustomMessage, FilterMessage, FormatMessage,

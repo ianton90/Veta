@@ -1,3 +1,5 @@
+//! App tests: opening, saving, closing, import and export.
+
 use super::*;
 
 #[test]

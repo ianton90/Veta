@@ -1,3 +1,5 @@
+//! [`CellEdits`]: the values an edit-cells step sets.
+
 use std::collections::BTreeMap;
 
 use arrow::array::{Array, ArrayRef};

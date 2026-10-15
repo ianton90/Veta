@@ -1,3 +1,5 @@
+//! Tests for the steps and the pipeline.
+
 use super::rows::kept_ranges;
 use super::*;
 use crate::source::DataSource;

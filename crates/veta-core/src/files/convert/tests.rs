@@ -1,3 +1,5 @@
+//! Tests for CSV and JSON import and export.
+
 use super::*;
 use crate::display::format_batch;
 use veta_testkit::TempDir;

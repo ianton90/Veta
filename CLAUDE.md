@@ -7,6 +7,12 @@
 - Keep dependencies minimal. New crates need an entry in `docs/DECISIONS.md` and the owner's approval.
 - `veta-core` must not depend on `iced` or `clap`. All data changes go through controller `Command`s.
 
+## Code conventions
+
+- Group files in folders by purpose, at most two levels below `src/`; see the file map in `docs/ARCHITECTURE.md`. Start every file with a `//!` comment.
+- Unit tests: inline `#[cfg(test)] mod tests` when short; a sibling `tests.rs` (or `tests/` folder) when over about 150 lines. Integration tests go in the crate's `tests/`.
+- GUI: one file per dialog in `dialogs/`; dialogs that add or edit a step implement `StepDialog`. App code goes in the file of its area (`app/rows.rs`, …), ordered message handlers, ribbon actions, helpers.
+
 ## How we work
 
 - The owner reviews code but has little time: take the lead, keep answers short, and explain only when asked.

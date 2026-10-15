@@ -1,3 +1,5 @@
+//! Tests for the subcommands, run in-process.
+
 #![allow(clippy::single_range_in_vec_init)] // Row ranges.
 
 use super::parse_rows;

@@ -1,3 +1,5 @@
+//! App tests: struct fields, list items, the Value tab and the JSON editor.
+
 use super::*;
 
 #[test]

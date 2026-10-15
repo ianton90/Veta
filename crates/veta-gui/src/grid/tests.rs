@@ -1,3 +1,5 @@
+//! Tests for the grid view state: windows, scrolling and navigation.
+
 use super::*;
 use veta_core::OpenOptions;
 use veta_testkit::{TempDir, fixtures};

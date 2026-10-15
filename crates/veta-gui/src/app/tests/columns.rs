@@ -1,3 +1,5 @@
+//! App tests: column commands and their dialogs.
+
 use super::*;
 
 #[test]

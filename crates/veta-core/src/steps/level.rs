@@ -1,3 +1,5 @@
+//! The shape of the data after each step.
+
 use std::sync::Arc;
 
 use arrow::datatypes::{Field, Schema, SchemaRef};

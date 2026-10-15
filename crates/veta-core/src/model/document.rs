@@ -1,3 +1,5 @@
+//! [`Document`]: one open file, its steps and its settings.
+
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

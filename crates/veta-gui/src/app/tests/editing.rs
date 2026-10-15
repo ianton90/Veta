@@ -1,3 +1,5 @@
+//! App tests: editing cells and undo.
+
 use super::*;
 
 #[test]

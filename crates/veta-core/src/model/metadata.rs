@@ -1,3 +1,5 @@
+//! File metadata, writer settings and the physical layout of a file.
+
 /// File-level metadata stored in the Parquet footer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileMetadata {

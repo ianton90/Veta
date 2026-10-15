@@ -1,3 +1,5 @@
+//! [`Workbook`]: the open documents, in tab order.
+
 use std::fmt;
 
 use super::Document;

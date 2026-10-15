@@ -1,3 +1,5 @@
+//! Tests for the controller: each command, undo and redo.
+
 use super::*;
 use crate::OpenOptions;
 use crate::display::format_batch;

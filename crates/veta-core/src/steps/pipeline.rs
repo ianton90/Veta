@@ -1,3 +1,5 @@
+//! [`Pipeline`]: a source plus its steps, evaluated lazily.
+
 use std::ops::Range;
 use std::sync::Arc;
 
