@@ -164,6 +164,10 @@ fn new_nested_columns_save() {
     for (name, data_type) in [
         ("point", point),
         ("tags", DataType::new_list(DataType::Int64, true)),
+        (
+            "scores",
+            crate::display::map_type(DataType::Utf8, DataType::Int64),
+        ),
     ] {
         execute(
             &mut doc,
@@ -177,6 +181,28 @@ fn new_nested_columns_save() {
     }
     execute(&mut doc, set_cell(1, "point", Some(r#"{"x": 1.5}"#))).unwrap();
     execute(&mut doc, set_cell(2, "tags", Some("[1, 2]"))).unwrap();
+    execute(
+        &mut doc,
+        Command::InsertMapEntry {
+            row: 1,
+            column: "scores".into(),
+            map: Vec::new(),
+            index: 0,
+            key: "math".into(),
+        },
+    )
+    .unwrap();
+    execute(
+        &mut doc,
+        Command::SetMapValue {
+            row: 1,
+            column: "scores".into(),
+            map: Vec::new(),
+            index: 0,
+            value: Some("9".into()),
+        },
+    )
+    .unwrap();
     let out = dir.join("nested-new.parquet");
     doc.save(Some(out.clone())).unwrap();
     let saved = Document::open(&out, OpenOptions::default()).unwrap();
@@ -185,7 +211,9 @@ fn new_nested_columns_save() {
         Some("{x: 1.5, y: null}")
     );
     assert_eq!(cell(&saved, 2, "tags").as_deref(), Some("[1, 2]"));
+    assert_eq!(cell(&saved, 1, "scores").as_deref(), Some("{math: 9}"));
     assert_eq!(cell(&saved, 0, "point"), None);
+    assert_eq!(cell(&saved, 0, "scores"), None);
 }
 
 #[test]

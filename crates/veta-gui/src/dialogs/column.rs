@@ -57,19 +57,21 @@ impl std::fmt::Display for TypeChoice {
     }
 }
 
-/// Column types offered when adding a column: a plain type, a list or a
-/// struct.
+/// Column types offered when adding a column: a plain type, a list, a
+/// struct or a map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeOption {
     Plain(TypeChoice),
     List,
     Struct,
+    /// Text keys (other keys can't be edited yet, #120).
+    Map,
 }
 
 impl TypeOption {
     fn all() -> Vec<TypeOption> {
         let mut all: Vec<TypeOption> = TypeChoice::ALL.into_iter().map(Self::Plain).collect();
-        all.extend([Self::List, Self::Struct]);
+        all.extend([Self::List, Self::Struct, Self::Map]);
         all
     }
 }
@@ -80,6 +82,7 @@ impl std::fmt::Display for TypeOption {
             Self::Plain(choice) => choice.fmt(f),
             Self::List => f.write_str("List of values"),
             Self::Struct => f.write_str("Struct (named fields)"),
+            Self::Map => f.write_str("Map (text keys → values)"),
         }
     }
 }
@@ -90,7 +93,7 @@ pub struct ColumnDialog {
     pub mode: ColumnMode,
     name: String,
     choice: TypeOption,
-    /// Type of a list's items.
+    /// Type of a list's items, or of a map's values.
     item: TypeChoice,
     /// Names and types of a struct's fields.
     fields: Vec<(String, TypeChoice)>,
@@ -160,6 +163,14 @@ impl ColumnDialog {
                 self.choice = TypeOption::Struct;
                 self.fields = fields;
             }
+        } else if let DataType::Map(entries, _) = data_type
+            && let DataType::Struct(kv) = entries.data_type()
+            && kv.len() == 2
+            && kv[0].data_type() == &DataType::Utf8
+            && let Some(value) = TypeChoice::from_type(kv[1].data_type())
+        {
+            self.choice = TypeOption::Map;
+            self.item = value;
         }
         self
     }
@@ -185,6 +196,7 @@ impl ColumnDialog {
         Ok(match self.choice {
             TypeOption::Plain(choice) => choice.data_type(),
             TypeOption::List => DataType::new_list(self.item.data_type(), true),
+            TypeOption::Map => veta_core::display::map_type(DataType::Utf8, self.item.data_type()),
             TypeOption::Struct => {
                 let mut fields = Vec::new();
                 for (name, choice) in &self.fields {
@@ -308,10 +320,14 @@ impl ColumnDialog {
             );
             match self.choice {
                 TypeOption::Plain(_) => {}
-                TypeOption::List => {
+                TypeOption::List | TypeOption::Map => {
+                    let label = match self.choice {
+                        TypeOption::List => "Items",
+                        _ => "Values",
+                    };
                     body = body.push(
                         row![
-                            text("Items").width(70),
+                            text(label).width(70),
                             pick_list(TypeChoice::ALL, Some(self.item), ColumnMessage::Item)
                                 .width(Length::Fill),
                         ]
@@ -350,6 +366,9 @@ impl ColumnDialog {
             }
             let note = match self.mode {
                 ColumnMode::AddField { .. } => "The new field starts empty (null) in every row.",
+                _ if self.choice == TypeOption::Map => {
+                    "The new column starts empty (null). Add entries to each row in the grid."
+                }
                 _ => "The new column starts empty (null).",
             };
             body = body.push(text(note).color(tokens.muted_text));
@@ -382,6 +401,24 @@ mod tests {
                 data_type: DataType::Float64,
                 at: 2
             })
+        );
+        let mut map = ColumnDialog::add(0);
+        map.update(ColumnMessage::Name("scores".into()));
+        map.update(ColumnMessage::Type(TypeOption::Map));
+        map.update(ColumnMessage::Item(TypeChoice::Integer));
+        let scores = veta_core::display::map_type(DataType::Utf8, DataType::Int64);
+        assert_eq!(
+            map.update(ColumnMessage::Submit),
+            Some(Command::AddColumn {
+                name: "scores".into(),
+                data_type: scores.clone(),
+                at: 0
+            })
+        );
+        let again = ColumnDialog::add(0).with_type(&scores);
+        assert_eq!(
+            (again.choice, again.item),
+            (TypeOption::Map, TypeChoice::Integer)
         );
         let mut rename = ColumnDialog::rename("a".into());
         rename.update(ColumnMessage::Name("b".into()));

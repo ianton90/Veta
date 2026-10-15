@@ -30,7 +30,7 @@ While the major version is 0, minor versions may change behaviour.
 - Nested types: structs, lists and maps, edited in the grid or as JSON in
   the formula bar; expand a struct into columns or explode a list into rows;
   combine columns into a struct or collect them into lists by group; new
-  list and struct columns.
+  list, struct and map columns.
   Struct columns open in the grid (header arrow) into editable field
   columns; list and map cells show a summary that opens into one line per
   item. List items edit in place, with items added at the end or inserted

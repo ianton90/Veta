@@ -348,8 +348,22 @@ pub fn type_name(data_type: &DataType) -> String {
     }
 }
 
-/// Parses a type name as written by [`type_name`] for flat types, e.g.
-/// `int64`, `string`, `timestamp[ms, UTC]`, `decimal(10, 2)`. Also accepts
+/// A map type with `key` keys and `value` values (nullable), named as
+/// Arrow names them.
+pub fn map_type(key: DataType, value: DataType) -> DataType {
+    let entries = DataType::Struct(
+        vec![
+            Field::new("keys", key, false),
+            Field::new("values", value, true),
+        ]
+        .into(),
+    );
+    DataType::Map(Arc::new(Field::new("entries", entries, false)), false)
+}
+
+/// Parses a type name as written by [`type_name`], e.g. `int64`, `string`,
+/// `timestamp[ms, UTC]`, `decimal(10, 2)`, `list<int64>`,
+/// `map<string, int64>`. Also accepts
 /// a few aliases (`int`, `float`, `double`, `text`, `boolean`).
 pub fn parse_type_name(name: &str) -> Option<DataType> {
     let raw = name.trim();
@@ -412,6 +426,12 @@ pub fn parse_type_name(name: &str) -> Option<DataType> {
     if let Some(inner) = args("list", '<', '>') {
         let item = parse_type_name(inner)?;
         return Some(DataType::List(Arc::new(Field::new("item", item, true))));
+    }
+    if let Some(inner) = args("map", '<', '>') {
+        let [key, value] = split_top_level(inner)[..] else {
+            return None;
+        };
+        return Some(map_type(parse_type_name(key)?, parse_type_name(value)?));
     }
     if let Some(inner) = args("struct", '<', '>') {
         let fields = split_top_level(inner)
@@ -624,6 +644,10 @@ mod tests {
         }
         assert_eq!(parse_type_name(" Double "), Some(DataType::Float64));
         assert_eq!(parse_type_name("timestamp[xs]"), None);
+        let scores = map_type(DataType::Utf8, DataType::Int64);
+        assert_eq!(parse_type_name("map<string, int64>"), Some(scores.clone()));
+        assert_eq!(parse_type_name(&type_name(&scores)), Some(scores));
+        assert_eq!(parse_type_name("map<string>"), None);
         assert_eq!(
             parse_type_name("list<int32>"),
             Some(DataType::List(Arc::new(Field::new(
