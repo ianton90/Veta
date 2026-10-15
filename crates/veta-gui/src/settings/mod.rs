@@ -1,14 +1,17 @@
-//! Settings and About dialogs.
+//! Settings and About dialogs, the persisted config and themes.
+
+pub mod config;
+pub mod theme;
 
 use std::path::Path;
 
-use iced::widget::{button, checkbox, column, container, pick_list, row, text, text_input};
-use iced::{Alignment, Border, Element, Length, Theme};
+use iced::widget::{button, checkbox, column, pick_list, row, text, text_input};
+use iced::{Alignment, Element, Length};
 use veta_core::{Compression, FormatVersion, StatisticsLevel, WriterSettings};
 
-use crate::config::{Config, ModePreference, NewFiles};
-use crate::dialogs::{Level, level_picker};
-use crate::theme::{Mode, Tokens, VetaTheme};
+use crate::dialogs::{Level, card, level_picker};
+use crate::settings::config::{Config, ModePreference, NewFiles};
+use crate::settings::theme::{Mode, Tokens, VetaTheme};
 
 /// Settings being edited; applied to [`Config`] on save.
 #[derive(Debug, Clone, PartialEq)]
@@ -325,110 +328,8 @@ pub fn about<'a, Message: Clone + 'a>(close: Message, tokens: Tokens) -> Element
     card(body.into(), tokens, 380.0)
 }
 
-/// Asked before changing a step when later steps refer to rows by position.
-pub fn confirm_step<'a>(tokens: Tokens) -> Element<'a, crate::Message> {
-    use crate::Message;
-    let body = column![
-        text("Change this step?").size(20),
-        text(
-            "Later steps edit, insert or delete rows by their position. After this \
-             change they may apply to different rows."
-        )
-        .color(tokens.muted_text),
-        row![
-            iced::widget::Space::new().width(Length::Fill),
-            button(text("Cancel"))
-                .style(button::secondary)
-                .on_press(Message::ConfirmStep(false)),
-            button(text("Change it")).on_press(Message::ConfirmStep(true)),
-        ]
-        .spacing(8),
-    ]
-    .spacing(14);
-    card(body.into(), tokens, 460.0)
-}
-
-/// Asked when loading a recipe into a document that has `steps` steps.
-pub fn confirm_recipe<'a>(steps: usize, tokens: Tokens) -> Element<'a, crate::Message> {
-    use crate::Message;
-    let have = if steps == 1 {
-        "This file already has 1 applied step.".to_owned()
-    } else {
-        format!("This file already has {steps} applied steps.")
-    };
-    let body = column![
-        text("Load recipe").size(20),
-        text(format!(
-            "{have} Replace them with the recipe's, which then applies to the original \
-             data, or add the recipe's steps after them?"
-        ))
-        .color(tokens.muted_text),
-        row![
-            iced::widget::Space::new().width(Length::Fill),
-            button(text("Cancel"))
-                .style(button::secondary)
-                .on_press(Message::RecipeChoice(None)),
-            button(text("Add after"))
-                .style(button::secondary)
-                .on_press(Message::RecipeChoice(Some(false))),
-            button(text("Replace")).on_press(Message::RecipeChoice(Some(true))),
-        ]
-        .spacing(8),
-    ]
-    .spacing(14);
-    card(body.into(), tokens, 480.0)
-}
-
-/// "Save changes to X?" when closing a modified document.
-pub fn confirm_close<'a>(name: String, tokens: Tokens) -> Element<'a, crate::Message> {
-    use crate::{CloseAnswer, Message};
-    let body = column![
-        text(format!("Save changes to {name}?")).size(20),
-        text("Your changes will be lost if you don't save them.").color(tokens.muted_text),
-        row![
-            button(text("Don't save"))
-                .style(button::danger)
-                .on_press(Message::CloseAnswer(CloseAnswer::Discard)),
-            iced::widget::Space::new().width(Length::Fill),
-            button(text("Cancel"))
-                .style(button::secondary)
-                .on_press(Message::CloseAnswer(CloseAnswer::Cancel)),
-            button(text("Save")).on_press(Message::CloseAnswer(CloseAnswer::Save)),
-        ]
-        .spacing(8),
-    ]
-    .spacing(14);
-    card(body.into(), tokens, 440.0)
-}
-
 fn section<'a, Message: 'a>(title: &'a str) -> Element<'a, Message> {
     text(title).size(15).font(crate::bold()).into()
-}
-
-pub(crate) fn card<'a, Message: 'a>(
-    content: Element<'a, Message>,
-    tokens: Tokens,
-    width: f32,
-) -> Element<'a, Message> {
-    container(content)
-        .padding(24)
-        .width(width)
-        .style(move |_theme: &Theme| {
-            container::Style::default()
-                .background(tokens.background)
-                .color(tokens.text)
-                .border(Border {
-                    color: tokens.border,
-                    width: 1.0,
-                    radius: 8.0.into(),
-                })
-                .shadow(iced::Shadow {
-                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.25),
-                    offset: iced::Vector::new(0.0, 6.0),
-                    blur_radius: 24.0,
-                })
-        })
-        .into()
 }
 
 #[cfg(test)]

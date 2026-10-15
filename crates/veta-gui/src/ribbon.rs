@@ -9,9 +9,9 @@
 use iced::widget::{Space, button, column, container, row, rule, text, tooltip};
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 
-use crate::config::ModePreference;
-use crate::icon::{Icon, icon};
-use crate::theme::Tokens;
+use crate::platform::icon::{Icon, icon};
+use crate::settings::config::ModePreference;
+use crate::settings::theme::Tokens;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {

@@ -11,8 +11,8 @@ use iced::{Color, Theme};
 use serde::Deserialize;
 
 const BUILT_IN: [&str; 2] = [
-    include_str!("../assets/themes/veta-light.toml"),
-    include_str!("../assets/themes/veta-dark.toml"),
+    include_str!("../../assets/themes/veta-light.toml"),
+    include_str!("../../assets/themes/veta-dark.toml"),
 ];
 
 pub const DEFAULT_LIGHT: &str = "Veta Light";

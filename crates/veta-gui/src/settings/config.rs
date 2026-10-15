@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use veta_core::WriterSettings;
 use veta_core::io::DEFAULT_MEMORY_BUDGET;
 
-use crate::theme::{self, Mode};
+use crate::settings::theme::{self, Mode};
 
 /// Maximum entries kept in [`Config::recent_files`].
 pub const MAX_RECENT: usize = 10;

@@ -7,7 +7,7 @@
 use iced::widget::{Text, text};
 use iced::{Font, Pixels};
 
-pub const FONT_BYTES: &[u8] = include_bytes!("../assets/lucide-subset.ttf");
+pub const FONT_BYTES: &[u8] = include_bytes!("../../assets/lucide-subset.ttf");
 pub const FONT: Font = Font::with_name("lucide");
 
 // Some icons are bundled for commands that are not wired up yet.

@@ -59,7 +59,7 @@ pub fn default_dir() -> Option<PathBuf> {
     {
         return Some(run.join("veta"));
     }
-    crate::config::config_dir()
+    crate::settings::config::config_dir()
 }
 
 /// Hands `files` to a running instance listening in `dir`, or becomes the

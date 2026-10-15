@@ -4,16 +4,15 @@
 //! (tabs, grid scroll positions, panes, settings). Messages that change data
 //! will be turned into core commands; see `docs/ARCHITECTURE.md`.
 
-mod config;
 mod dialogs;
-mod files;
 mod grid;
-mod icon;
-mod instance;
 mod panes;
+mod platform;
 mod ribbon;
 mod settings;
-mod theme;
+
+use platform::{files, icon, instance};
+use settings::{config, theme};
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -34,9 +33,6 @@ use veta_core::steps::{
 };
 use veta_core::{Command, Document, DocumentId, OpenOptions, Workbook, controller};
 
-use crate::config::Config;
-#[cfg(test)]
-use crate::config::ModePreference;
 use crate::dialogs::{
     CastDialog, CastMessage, ChooseColumns, ChooseMessage, CollectDialog, CollectMessage,
     ColumnDialog, ColumnMessage, CombineDialog, CombineMessage, CustomDialog, CustomMessage,
@@ -45,11 +41,14 @@ use crate::dialogs::{
     ReplaceDialog, ReplaceMessage, RowsDialog, RowsMessage, SortDialog, SortMessage, SplitDialog,
     SplitMessage, WriterDialog, WriterMessage,
 };
-use crate::files::FileKind;
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav, Selection};
+use crate::platform::files::FileKind;
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
+use crate::settings::config::Config;
+#[cfg(test)]
+use crate::settings::config::ModePreference;
+use crate::settings::theme::{Mode, Tokens, VetaTheme};
 use crate::settings::{Draft, Outcome, SettingsMessage};
-use crate::theme::{Mode, Tokens, VetaTheme};
 
 /// Id of the formula bar's text input.
 const FORMULA_ID: iced::widget::Id = iced::widget::Id::new("formula");
@@ -4744,10 +4743,10 @@ impl App {
             Dialog::Combine { dialog, .. } => dialog.view(ui.tokens).map(Message::Combine),
             Dialog::Collect { dialog, .. } => dialog.view(ui.tokens).map(Message::Collect),
             Dialog::Rows { dialog, .. } => dialog.view(ui.tokens).map(Message::Rows),
-            Dialog::ConfirmStep { .. } => settings::confirm_step(ui.tokens),
+            Dialog::ConfirmStep { .. } => dialogs::confirm_step(ui.tokens),
             Dialog::ConfirmRecipe { document, .. } => {
                 let steps = self.workbook.get(*document).map_or(0, |d| d.steps().len());
-                settings::confirm_recipe(steps, ui.tokens)
+                dialogs::confirm_recipe(steps, ui.tokens)
             }
             Dialog::Choose { dialog, .. } => dialog.view(ui.tokens).map(Message::Choose),
             Dialog::Writer { dialog, .. } => dialog.view(ui.tokens).map(Message::Writer),
@@ -4759,7 +4758,7 @@ impl App {
                     .get(*document)
                     .map(Document::title)
                     .unwrap_or_default();
-                settings::confirm_close(name, ui.tokens)
+                dialogs::confirm_close(name, ui.tokens)
             }
         };
         stack![

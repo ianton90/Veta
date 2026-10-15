@@ -27,8 +27,8 @@ use veta_core::arrow::datatypes::{DataType, Field, Schema};
 use veta_core::arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use veta_core::steps::{ComputeJob, Computed, Filter, Pipeline, Status};
 
-use crate::icon::{self, Icon};
-use crate::theme::Tokens;
+use crate::platform::icon::{self, Icon};
+use crate::settings::theme::Tokens;
 use veta_core::display::{format_batch, has_items, is_numeric, type_name};
 
 const SCROLLBAR: f32 = 12.0;
