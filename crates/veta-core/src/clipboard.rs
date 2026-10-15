@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use arrow::array::Array;
 
-use crate::display::{format_batch, json_column};
+use crate::display::{field_array, json_column};
 use crate::error::{Error, Result};
 use crate::model::Document;
 
@@ -20,7 +20,20 @@ pub fn copy_text(
     columns: Range<usize>,
     header: bool,
 ) -> Result<String> {
-    let cells = rows.len().saturating_mul(columns.len());
+    let targets: Vec<(usize, Vec<String>)> = columns.map(|c| (c, Vec::new())).collect();
+    copy_fields(doc, rows, &targets, header)
+}
+
+/// Like [`copy_text`], for columns or fields of struct columns: each target
+/// is a column index and the field names down to the field (empty for the
+/// column). Field headers are `column.field`.
+pub fn copy_fields(
+    doc: &Document,
+    rows: Range<usize>,
+    targets: &[(usize, Vec<String>)],
+    header: bool,
+) -> Result<String> {
+    let cells = rows.len().saturating_mul(targets.len());
     if cells > MAX_COPY_CELLS {
         return Err(Error::InvalidCommand(format!(
             "that's {cells} cells; at most {MAX_COPY_CELLS} can be copied at once"
@@ -30,34 +43,48 @@ pub fn copy_text(
     let mut lines: Vec<Vec<Option<String>>> = Vec::new();
     if header {
         lines.push(
-            columns
-                .clone()
-                .map(|c| Some(schema.field(c).name().clone()))
+            targets
+                .iter()
+                .map(|(c, path)| {
+                    let mut name = schema.field(*c).name().clone();
+                    for part in path {
+                        name = format!("{name}.{part}");
+                    }
+                    Some(name)
+                })
                 .collect(),
         );
     }
     if !rows.is_empty() {
         let batch = doc.read(rows)?;
-        let text = format_batch(&batch)?;
-        let mut json = Vec::new();
-        for c in columns.clone() {
-            json.push(
-                batch
-                    .column(c)
-                    .data_type()
-                    .is_nested()
-                    .then(|| json_column(batch.column(c).as_ref()))
-                    .transpose()?,
-            );
+        let missing = || Error::InvalidCommand("that field no longer exists".into());
+        let arrays = targets
+            .iter()
+            .map(|(c, path)| field_array(batch.column(*c), path).ok_or_else(missing))
+            .collect::<Result<Vec<_>>>()?;
+        let options = arrow::util::display::FormatOptions::default().with_null("null");
+        let mut columns = Vec::new();
+        for array in &arrays {
+            let json = array
+                .data_type()
+                .is_nested()
+                .then(|| json_column(array.as_ref()))
+                .transpose()?;
+            columns.push(json);
         }
-        for (r, row) in text.into_iter().enumerate() {
+        let formatters = arrays
+            .iter()
+            .map(|a| arrow::util::display::ArrayFormatter::try_new(a.as_ref(), &options))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for r in 0..batch.num_rows() {
             lines.push(
-                columns
-                    .clone()
-                    .zip(&json)
-                    .map(|(c, json)| match json {
+                arrays
+                    .iter()
+                    .zip(&columns)
+                    .zip(&formatters)
+                    .map(|((array, json), formatter)| match json {
                         Some(json) => json.is_valid(r).then(|| json.value(r).to_owned()),
-                        None => row[c].clone(),
+                        None => array.is_valid(r).then(|| formatter.value(r).to_string()),
                     })
                     .collect(),
             );

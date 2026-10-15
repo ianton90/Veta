@@ -216,6 +216,109 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
             };
             Ok((label, Change::Batch(changes)))
         }
+        Command::PasteFields {
+            row,
+            targets,
+            values,
+        } => {
+            use crate::display::{PathPart, field_type, value_json};
+            let schema = doc.schema();
+            let width = values.iter().map(Vec::len).max().unwrap_or(0);
+            if width == 0 {
+                return Err(invalid("there is nothing to paste".into()));
+            }
+            if width > targets.len() {
+                return Err(invalid(format!(
+                    "the pasted values are {width} columns wide; only {} fit there",
+                    targets.len()
+                )));
+            }
+            let mut changes = Vec::new();
+            let end = row + values.len();
+            let existing_rows = row..end.min(doc.num_rows());
+            if end > doc.num_rows() {
+                changes.push(Change::PushStep(Step::InsertRows {
+                    at: doc.num_rows(),
+                    count: end - doc.num_rows(),
+                }));
+            }
+            let current = if existing_rows.is_empty() {
+                None
+            } else {
+                Some(doc.read(existing_rows)?)
+            };
+            let existing = match (changes.is_empty(), doc.steps().last()) {
+                (true, Some(Step::EditCells(edits))) => Some(edits),
+                _ => None,
+            };
+            let mut new_step = existing.is_none();
+            let mut count = 0;
+            for (i, line) in values.iter().enumerate() {
+                let r = row + i;
+                // Fields of one struct cell are set one after the other.
+                let mut cells: Vec<(usize, String)> = Vec::new();
+                for (j, value) in line.iter().enumerate() {
+                    let (c, path) = &targets[j];
+                    let field = schema
+                        .fields()
+                        .get(*c)
+                        .ok_or_else(|| invalid(format!("there is no column {}", c + 1)))?;
+                    let name = field.name();
+                    let leaf = field_type(field.data_type(), path).ok_or_else(|| {
+                        invalid(format!("{name} has no field {}", path.join(".")))
+                    })?;
+                    if path.is_empty() {
+                        let after = parse_value(value.as_deref(), leaf)
+                            .map_err(|e| invalid(format!("row {}, {name}: {e}", r + 1)))?;
+                        if after.is_null(0) && !field.is_nullable() {
+                            return Err(invalid(format!("{name} cannot be empty (row {})", r + 1)));
+                        }
+                        cells.retain(|(cc, _)| cc != c);
+                        changes.push(Change::EditCell {
+                            before: existing.and_then(|e| e.get(name, r).cloned()),
+                            column: name.clone(),
+                            row: r,
+                            after,
+                            new_step,
+                        });
+                        new_step = false;
+                        count += 1;
+                        continue;
+                    }
+                    let json = match cells.iter().position(|(cc, _)| cc == c) {
+                        Some(k) => cells.remove(k).1,
+                        None => current
+                            .as_ref()
+                            .filter(|b| i < b.num_rows())
+                            .and_then(|b| value_json(b.column(*c).as_ref(), i).ok().flatten())
+                            .unwrap_or_else(|| "null".into()),
+                    };
+                    let pointer: Vec<_> = path.iter().cloned().map(PathPart::Field).collect();
+                    let json = crate::values::set_nested(&json, &pointer, value.as_deref(), leaf)
+                        .map_err(|e| invalid(format!("row {}, {name}: {e}", r + 1)))?;
+                    cells.push((*c, json));
+                    count += 1;
+                }
+                for (c, json) in cells {
+                    let field = schema.field(c);
+                    let after = parse_value(Some(&json), field.data_type())?;
+                    changes.push(Change::EditCell {
+                        before: existing.and_then(|e| e.get(field.name(), r).cloned()),
+                        column: field.name().clone(),
+                        row: r,
+                        after,
+                        new_step,
+                    });
+                    new_step = false;
+                }
+            }
+            let label = if count == 1 {
+                "Paste 1 cell".to_owned()
+            } else {
+                format!("Paste {count} cells")
+            };
+            Ok((label, Change::Batch(changes)))
+        }
         Command::InsertRows { at, count } => Ok((
             format!("Insert {}", rows(count)),
             Change::PushStep(Step::InsertRows { at, count }),
@@ -1398,6 +1501,56 @@ mod tests {
         );
         assert_eq!(cell(&saved, 2, "tags").as_deref(), Some("[1, 2]"));
         assert_eq!(cell(&saved, 0, "point"), None);
+    }
+
+    #[test]
+    fn copy_and_paste_struct_fields() {
+        let dir = TempDir::new();
+        let path = dir.join("n.parquet");
+        fixtures::nested(&path);
+        let mut doc = Document::open(&path, OpenOptions::default()).unwrap();
+        let field = |c: usize, path: &[&str]| (c, path.iter().map(|p| p.to_string()).collect());
+        let text = crate::clipboard::copy_fields(
+            &doc,
+            0..3,
+            &[field(1, &["y"]), field(5, &["home"])],
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            text, "point.y\towner.home\n2\t\"{\"\"x\"\":5,\"\"y\"\":6}\"\n\t\n\t\n",
+            "JSON quoted as TSV"
+        );
+        // Two fields of one struct in one line, and a whole column.
+        let values = vec![
+            vec![Some("7".into()), Some("8".into()), Some("9".into())],
+            vec![Some("1".into()), None, Some("10".into())],
+        ];
+        execute(
+            &mut doc,
+            Command::PasteFields {
+                row: 2,
+                targets: vec![field(1, &["x"]), field(1, &["y"]), field(0, &[])],
+                values,
+            },
+        )
+        .unwrap();
+        assert_eq!(cell(&doc, 2, "point").as_deref(), Some("{x: 7, y: 8}"));
+        assert_eq!(cell(&doc, 2, "id").as_deref(), Some("9"));
+        assert_eq!(cell(&doc, 3, "point").as_deref(), Some("{x: 1, y: null}"));
+        assert_eq!(doc.history().undo_label(), Some("Paste 6 cells"));
+        let empty_id = Command::PasteFields {
+            row: 0,
+            targets: vec![field(0, &[])],
+            values: vec![vec![None]],
+        };
+        assert!(execute(&mut doc, empty_id).is_err(), "id is required");
+        let bad = Command::PasteFields {
+            row: 0,
+            targets: vec![field(1, &["x"])],
+            values: vec![vec![Some("a".into())]],
+        };
+        assert!(execute(&mut doc, bad).is_err());
     }
 
     #[test]

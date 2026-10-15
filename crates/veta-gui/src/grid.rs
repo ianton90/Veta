@@ -22,8 +22,7 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 use veta_core::Document;
-use veta_core::arrow::array::{Array, ArrayRef, StructArray, make_array};
-use veta_core::arrow::buffer::NullBuffer;
+use veta_core::arrow::array::Array;
 use veta_core::arrow::datatypes::{DataType, Field, Schema};
 use veta_core::arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use veta_core::steps::{ComputeJob, Computed, Filter, Pipeline, Status};
@@ -272,19 +271,6 @@ fn display_columns(schema: &Schema, expanded: &BTreeSet<Vec<String>>) -> Vec<Col
     out
 }
 
-/// The field at `path` of a struct `array`; null wherever a parent is.
-fn field_array(array: &ArrayRef, path: &[String]) -> Option<ArrayRef> {
-    let mut current = array.clone();
-    for name in path {
-        let parent = current.as_any().downcast_ref::<StructArray>()?;
-        let child = parent.column_by_name(name)?;
-        let nulls = NullBuffer::union(parent.nulls(), child.nulls());
-        let data = child.to_data().into_builder().nulls(nulls).build().ok()?;
-        current = make_array(data);
-    }
-    Some(current)
-}
-
 /// Per-tab grid state.
 #[derive(Debug, Clone)]
 pub struct GridView {
@@ -323,6 +309,10 @@ pub struct GridView {
     /// A temporary filter over the document's output (not a step).
     filter: Option<FilterView>,
 }
+
+/// A document column and the field names down to a field of it (empty
+/// for the column itself).
+pub type Target = (usize, Vec<String>);
 
 /// The selected item of an open list or struct cell (see
 /// [`GridView::selected_item`]).
@@ -550,6 +540,31 @@ impl GridView {
         self.rows = None;
         self.cols = None;
         self.reveal(row, column);
+    }
+
+    /// The selected screen columns (or the selected cell's) as document
+    /// columns with the field names down to them, and whether any is a
+    /// field of an expanded struct.
+    pub fn selected_targets(&self) -> Option<(Vec<Target>, bool)> {
+        let range = self.selected_display_columns()?;
+        Some(self.targets(range))
+    }
+
+    /// Targets from the first selected screen column to the last one shown,
+    /// for pasting.
+    pub fn paste_targets(&self) -> Option<(Vec<Target>, bool)> {
+        let start = self.selected_display_columns()?.start;
+        Some(self.targets(start..self.columns.len()))
+    }
+
+    fn targets(&self, range: Range<usize>) -> (Vec<Target>, bool) {
+        let columns = self.columns.get(range).unwrap_or_default();
+        let targets: Vec<_> = columns
+            .iter()
+            .map(|c| (c.source, c.path().to_vec()))
+            .collect();
+        let fields = targets.iter().any(|(_, path)| !path.is_empty());
+        (targets, fields)
     }
 
     /// Screen columns showing document columns `sources`.
@@ -1223,7 +1238,7 @@ impl GridView {
             let Some(array) = batch
                 .columns()
                 .get(column.source)
-                .and_then(|a| field_array(a, column.path()))
+                .and_then(|a| veta_core::display::field_array(a, column.path()))
             else {
                 // Out of step with the document; the next refresh fixes it.
                 return Ok(batch);

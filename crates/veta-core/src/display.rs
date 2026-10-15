@@ -245,6 +245,40 @@ pub fn struct_fields(array: &dyn Array, row: usize) -> Option<Vec<ListItem>> {
     )
 }
 
+/// The field at `path` (field names) of a struct `array`, null wherever a
+/// parent struct is; `array` itself for an empty path. `None` if a step of
+/// the path isn't a struct field.
+pub fn field_array(
+    array: &arrow::array::ArrayRef,
+    path: &[String],
+) -> Option<arrow::array::ArrayRef> {
+    use arrow::array::{AsArray, make_array};
+    let mut current = array.clone();
+    for name in path {
+        if !matches!(current.data_type(), DataType::Struct(_)) {
+            return None;
+        }
+        let parent = current.as_struct();
+        let child = parent.column_by_name(name)?;
+        let nulls = arrow::buffer::NullBuffer::union(parent.nulls(), child.nulls());
+        let data = child.to_data().into_builder().nulls(nulls).build().ok()?;
+        current = make_array(data);
+    }
+    Some(current)
+}
+
+/// The type of the field at `path` inside `data_type`.
+pub fn field_type<'a>(data_type: &'a DataType, path: &[String]) -> Option<&'a DataType> {
+    let mut current = data_type;
+    for name in path {
+        let DataType::Struct(fields) = current else {
+            return None;
+        };
+        current = fields.iter().find(|f| f.name() == name)?.data_type();
+    }
+    Some(current)
+}
+
 /// Number of items in a list or map value (0 for other types and nulls).
 pub fn item_count(array: &dyn Array, row: usize) -> usize {
     items_of(array, row).map_or(0, |(range, _, _)| range.len())

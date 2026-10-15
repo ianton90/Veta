@@ -45,6 +45,14 @@ pub enum Command {
         column: usize,
         values: Vec<Vec<Option<String>>>,
     },
+    /// Like [`Command::PasteCells`], into columns or fields of struct
+    /// columns: value `j` of each line goes to `targets[j]`, a column index
+    /// and the field names down to the field (empty for the column).
+    PasteFields {
+        row: usize,
+        targets: Vec<(usize, Vec<String>)>,
+        values: Vec<Vec<Option<String>>>,
+    },
     /// Inserts `count` empty rows before row `at` (`at` = row count appends).
     InsertRows {
         at: usize,

@@ -3057,6 +3057,15 @@ impl App {
             return Task::none();
         };
         let selection = tab.grid.selection();
+        // Fields of expanded struct columns copy just those fields.
+        let fields = tab
+            .grid
+            .selected_targets()
+            .filter(|(_, fields)| *fields && !matches!(selection, Selection::Rows(_)))
+            .map(|(targets, _)| targets);
+        if let Some(targets) = fields {
+            return self.copy_fields(id, &selection, &targets, cut);
+        }
         let text = match &selection {
             Selection::None => return Task::none(),
             Selection::Cell(r, c) => {
@@ -3097,6 +3106,73 @@ impl App {
         iced::clipboard::write(text)
     }
 
+    /// Copies fields of expanded struct columns (a cell or whole columns);
+    /// with `cut`, then sets the field to null or removes the fields.
+    fn copy_fields(
+        &mut self,
+        id: DocumentId,
+        selection: &Selection,
+        targets: &[(usize, Vec<String>)],
+        cut: bool,
+    ) -> Task<Message> {
+        let Some(doc) = self.workbook.get(id) else {
+            return Task::none();
+        };
+        let (rows, header) = match selection {
+            Selection::Cell(r, _) => (*r..r + 1, false),
+            _ => (0..doc.num_rows(), true),
+        };
+        let text = match veta_core::clipboard::copy_fields(doc, rows, targets, header) {
+            Ok(text) => text,
+            Err(e) => {
+                self.errors.push(format!("Could not copy: {e}"));
+                return Task::none();
+            }
+        };
+        if cut {
+            let names: Vec<String> = targets
+                .iter()
+                .map(|(c, _)| doc.schema().field(*c).name().clone())
+                .collect();
+            match selection {
+                Selection::Cell(row, _) => {
+                    if let (Some(field), Some(name)) =
+                        (self.selected_struct_field(id), names.first())
+                    {
+                        match self.set_field(id, *row, name, &field, None) {
+                            Ok(()) => self.refresh(id),
+                            Err(e) => self.errors.push(e),
+                        }
+                    }
+                }
+                _ => {
+                    let commands: Vec<Command> = targets
+                        .iter()
+                        .zip(names)
+                        .filter_map(|((_, path), column)| match path.as_slice() {
+                            [name] => Some(Command::RemoveField {
+                                column,
+                                name: name.clone(),
+                            }),
+                            _ => None,
+                        })
+                        .collect();
+                    if commands.len() < targets.len() {
+                        self.errors
+                            .push("Only fields of top-level struct columns can be cut.".into());
+                    } else {
+                        for command in commands {
+                            if !self.execute(id, command) {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        iced::clipboard::write(text)
+    }
+
     /// Pastes tab-separated `text` at the selected cell (or the start of
     /// the selected rows or columns) as one change.
     fn paste(&mut self, id: DocumentId, text: &str) {
@@ -3106,6 +3182,41 @@ impl App {
             return;
         };
         let mut values = veta_core::clipboard::parse_tsv(text);
+        // Into fields of expanded struct columns.
+        if let Some((targets, true)) = tab.grid.paste_targets() {
+            let row = match tab.grid.selection() {
+                Selection::Cell(r, _) => r,
+                Selection::Columns(_) => {
+                    let header: Vec<Option<String>> = targets
+                        .iter()
+                        .take(values.first().map_or(0, Vec::len))
+                        .map(|(c, path)| {
+                            let mut name = doc.schema().field(*c).name().clone();
+                            for part in path {
+                                name = format!("{name}.{part}");
+                            }
+                            Some(name)
+                        })
+                        .collect();
+                    if values.first() == Some(&header) {
+                        values.remove(0);
+                    }
+                    0
+                }
+                _ => return,
+            };
+            if !values.is_empty() {
+                self.execute(
+                    id,
+                    Command::PasteFields {
+                        row,
+                        targets,
+                        values,
+                    },
+                );
+            }
+            return;
+        }
         let (row, column) = match tab.grid.selection() {
             Selection::None => {
                 self.errors.push("Select where to paste first.".into());
@@ -5893,6 +6004,51 @@ mod tests {
         );
         menu(&mut app, MenuTarget::Field, MenuItem::RemoveField);
         assert_eq!(cell(&app, 0, "point").as_deref(), Some("{x: 10, z: null}"));
+    }
+
+    #[test]
+    fn paste_and_cut_struct_fields() {
+        let dir = TempDir::new();
+        let path = dir.join("n.parquet");
+        fixtures::nested(&path);
+        let mut app = app_with(&[&path]);
+        let id = app.tabs[0].id;
+        let point = |app: &App, row: usize| {
+            let doc = app.workbook.get(id).unwrap();
+            veta_core::display::format_batch(&doc.read(row..row + 1).unwrap()).unwrap()[0][1]
+                .clone()
+        };
+        let _ = app.update(Message::Grid(id, GridEvent::Expand { column: 1 }));
+
+        // Into one field cell; then whole field columns, header skipped.
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 2 }));
+        app.paste(id, "5");
+        assert_eq!(point(&app, 0).as_deref(), Some("{x: 1, y: 5}"));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 1,
+                extend: false,
+            },
+        ));
+        app.paste(id, "point.x\tpoint.y\n10\t20\n30\t40");
+        assert_eq!(point(&app, 0).as_deref(), Some("{x: 10, y: 20}"));
+        assert_eq!(point(&app, 1).as_deref(), Some("{x: 30, y: 40}"));
+
+        // Cut a field cell sets it to null; cutting a field column removes
+        // the field.
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 1 }));
+        let _ = app.copy_selection(id, true);
+        assert_eq!(point(&app, 0).as_deref(), Some("{x: null, y: 20}"));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::SelectColumns {
+                column: 1,
+                extend: false,
+            },
+        ));
+        let _ = app.copy_selection(id, true);
+        assert_eq!(point(&app, 1).as_deref(), Some("{y: 40}"));
     }
 
     #[test]
