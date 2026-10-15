@@ -281,7 +281,8 @@ impl App {
     }
 
     /// Replaces a nested cell with `change` applied to its JSON (`null` for
-    /// a null cell).
+    /// a null cell). For Value tab edits, which reach any value (map keys,
+    /// items at any depth); grid edits use the nested value commands.
     fn change_nested_cell(
         &mut self,
         id: DocumentId,
@@ -309,6 +310,13 @@ impl App {
             },
         )
         .map_err(|e| e.to_string())
+    }
+
+    /// Runs a nested value command (a struct field or list item) on a
+    /// document, without refreshing its grid.
+    fn nested_command(&mut self, id: DocumentId, command: Command) -> Result<(), String> {
+        let doc = self.workbook.get_mut(id).ok_or("closed")?;
+        controller::execute(doc, command).map_err(|e| e.to_string())
     }
 
     /// Expands the selected struct column, or explodes the selected list
@@ -434,33 +442,45 @@ impl App {
         item: &ListItem,
         change: &veta_core::values::ListEdit,
     ) -> Result<(), String> {
-        let index = self
-            .workbook
-            .get(id)
-            .and_then(|d| d.schema().index_of(&item.column).ok())
-            .ok_or("the column no longer exists")?;
-        let mut pointer: Vec<_> = item
-            .list
-            .iter()
-            .cloned()
-            .map(veta_core::display::PathPart::Field)
-            .collect();
+        use veta_core::values::ListEdit;
+        let (row, column, list) = (item.row, item.column.clone(), item.list.clone());
         // A struct field: only its value can be set.
-        if let Some(field) = &item.field {
-            let veta_core::values::ListEdit::Set {
-                text, item_type, ..
-            } = change
-            else {
+        let command = if let Some(field) = &item.field {
+            let ListEdit::Set { text, .. } = change else {
                 return Err("struct fields can't be inserted or removed here".into());
             };
-            pointer.push(veta_core::display::PathPart::Field(field.clone()));
-            return self.change_nested_cell(id, item.row, index, |json| {
-                veta_core::values::set_nested(json, &pointer, *text, item_type)
-            });
-        }
-        self.change_nested_cell(id, item.row, index, |json| {
-            veta_core::values::edit_list(json, &pointer, change)
-        })
+            let mut path = list;
+            path.push(field.clone());
+            Command::SetField {
+                row,
+                column,
+                path,
+                value: text.map(str::to_owned),
+            }
+        } else {
+            match *change {
+                ListEdit::Set { index, text, .. } => Command::SetListItem {
+                    row,
+                    column,
+                    list,
+                    index,
+                    value: text.map(str::to_owned),
+                },
+                ListEdit::Insert(index) => Command::InsertListItem {
+                    row,
+                    column,
+                    list,
+                    index,
+                },
+                ListEdit::Remove(index) => Command::RemoveListItem {
+                    row,
+                    column,
+                    list,
+                    index,
+                },
+            }
+        };
+        self.nested_command(id, command)
     }
 
     /// Inserts a null item above or below the selected item, or removes it,
@@ -521,20 +541,13 @@ impl App {
         field: &StructField,
         text: Option<&str>,
     ) -> Result<(), String> {
-        let index = self
-            .workbook
-            .get(id)
-            .and_then(|d| d.schema().index_of(column).ok())
-            .ok_or("the column no longer exists")?;
-        let pointer: Vec<_> = field
-            .path
-            .iter()
-            .cloned()
-            .map(veta_core::display::PathPart::Field)
-            .collect();
-        self.change_nested_cell(id, row, index, |json| {
-            veta_core::values::set_nested(json, &pointer, text, &field.data_type)
-        })
+        let command = Command::SetField {
+            row,
+            column: column.to_owned(),
+            path: field.path.clone(),
+            value: text.map(str::to_owned),
+        };
+        self.nested_command(id, command)
     }
 
     /// Starts editing the selected cell in the formula bar.

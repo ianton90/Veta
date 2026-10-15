@@ -1263,3 +1263,97 @@ fn paste_cells_is_one_change_and_adds_rows() {
         .is_err()
     );
 }
+
+#[test]
+fn nested_field_and_list_item_commands() {
+    let dir = TempDir::new();
+    let path = dir.join("n.parquet");
+    fixtures::nested(&path);
+    for options in [OpenOptions::default(), OpenOptions::paged()] {
+        let mut doc = Document::open(&path, options).unwrap();
+        let names = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let set_field = |row, column: &str, path: &[&str], value: Option<&str>| Command::SetField {
+            row,
+            column: column.into(),
+            path: names(path),
+            value: value.map(Into::into),
+        };
+        execute(&mut doc, set_field(0, "point", &["x"], Some("5"))).unwrap();
+        assert_eq!(cell(&doc, 0, "point").as_deref(), Some("{x: 5, y: 2}"));
+        execute(&mut doc, set_field(0, "point", &["y"], None)).unwrap();
+        assert_eq!(cell(&doc, 0, "point").as_deref(), Some("{x: 5, y: null}"));
+        assert_eq!(doc.steps().len(), 1, "edits join one step");
+        execute(&mut doc, set_field(0, "owner", &["home", "x"], Some("9"))).unwrap();
+        assert!(cell(&doc, 0, "owner").unwrap().contains("x: 9"));
+        for bad in [
+            set_field(0, "point", &["x"], Some("abc")),
+            set_field(0, "point", &["z"], Some("1")),
+            set_field(9, "point", &["x"], Some("1")),
+            set_field(0, "nope", &["x"], Some("1")),
+        ] {
+            assert!(execute(&mut doc, bad).is_err());
+        }
+
+        let list = |command: fn(usize, String, Vec<String>, usize) -> Command, row, index| {
+            command(row, "tags".into(), Vec::new(), index)
+        };
+        let insert: fn(usize, String, Vec<String>, usize) -> Command =
+            |row, column, list, index| Command::InsertListItem {
+                row,
+                column,
+                list,
+                index,
+            };
+        let remove: fn(usize, String, Vec<String>, usize) -> Command =
+            |row, column, list, index| Command::RemoveListItem {
+                row,
+                column,
+                list,
+                index,
+            };
+        let set_item = |row, index, value: &str| Command::SetListItem {
+            row,
+            column: "tags".into(),
+            list: Vec::new(),
+            index,
+            value: Some(value.into()),
+        };
+        let before = cell(&doc, 0, "tags").unwrap();
+        execute(&mut doc, set_item(0, 1, "z")).unwrap();
+        execute(&mut doc, set_item(0, 2, "w")).unwrap();
+        assert_eq!(cell(&doc, 0, "tags").as_deref(), Some("[a, z, w]"));
+        execute(&mut doc, list(insert, 0, 0)).unwrap();
+        assert_eq!(cell(&doc, 0, "tags").as_deref(), Some("[null, a, z, w]"));
+        execute(&mut doc, list(remove, 0, 3)).unwrap();
+        execute(&mut doc, list(remove, 0, 0)).unwrap();
+        assert_eq!(cell(&doc, 0, "tags").as_deref(), Some("[a, z]"));
+        assert!(execute(&mut doc, list(remove, 0, 5)).is_err());
+        // A null list counts as empty.
+        execute(&mut doc, list(insert, 2, 0)).unwrap();
+        assert_eq!(cell(&doc, 2, "tags").as_deref(), Some("[null]"));
+        let not_a_list = Command::InsertListItem {
+            row: 0,
+            column: "point".into(),
+            list: Vec::new(),
+            index: 0,
+        };
+        assert!(execute(&mut doc, not_a_list).is_err());
+        // A list of structs: set a field of an item through the cell's JSON.
+        execute(
+            &mut doc,
+            Command::SetListItem {
+                row: 0,
+                column: "path".into(),
+                list: Vec::new(),
+                index: 0,
+                value: Some(r#"{"x": 1, "y": 1}"#.into()),
+            },
+        )
+        .unwrap();
+        assert!(cell(&doc, 0, "path").unwrap().starts_with("[{x: 1, y: 1}"));
+
+        while undo(&mut doc) {}
+        assert_eq!(cell(&doc, 0, "tags").unwrap(), before);
+        assert_eq!(cell(&doc, 0, "point").as_deref(), Some("{x: 1, y: 2}"));
+    }
+}

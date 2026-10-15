@@ -53,6 +53,42 @@ pub enum Command {
         targets: Vec<(usize, Vec<String>)>,
         values: Vec<Vec<Option<String>>>,
     },
+    /// Sets a field of a struct cell from text, parsed as the field's type.
+    /// `path` names the fields from the column down (through structs only).
+    /// `None`, or blank text in a non-text field, sets null.
+    SetField {
+        row: usize,
+        column: String,
+        path: Vec<String>,
+        value: Option<String>,
+    },
+    /// Sets item `index` of a list in a cell from text, parsed as the item
+    /// type. `list` names the struct fields from the column down to the list
+    /// (empty: the cell is the list). `index` may be the list's length,
+    /// which appends. A null list counts as empty.
+    SetListItem {
+        row: usize,
+        column: String,
+        list: Vec<String>,
+        index: usize,
+        value: Option<String>,
+    },
+    /// Inserts a null item at `index` (up to the list's length) in a list in
+    /// a cell; `list` as for [`Command::SetListItem`].
+    InsertListItem {
+        row: usize,
+        column: String,
+        list: Vec<String>,
+        index: usize,
+    },
+    /// Removes item `index` of a list in a cell; `list` as for
+    /// [`Command::SetListItem`].
+    RemoveListItem {
+        row: usize,
+        column: String,
+        list: Vec<String>,
+        index: usize,
+    },
     /// Inserts `count` empty rows before row `at` (`at` = row count appends).
     InsertRows {
         at: usize,
