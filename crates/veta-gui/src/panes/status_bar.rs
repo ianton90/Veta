@@ -5,7 +5,7 @@ use super::*;
 pub fn status_bar(
     active: Option<(&Tab, &Document)>,
     opening: usize,
-    transfers: &[crate::Transfer],
+    transfers: &[crate::app::Transfer],
     notice: Option<&str>,
     ui: Ui,
 ) -> Element<'static, Message> {

@@ -112,7 +112,7 @@ pub(super) fn value_pane<'a>(
         let editor = |e: LeafEditView<'_>, placeholder: &str| -> Element<'a, Message> {
             let mut column = column![
                 text_input(placeholder, e.text)
-                    .id(crate::LEAF_ID)
+                    .id(crate::app::LEAF_ID)
                     .size(ui.small())
                     .padding([1, 4])
                     .on_input(Message::LeafInput)

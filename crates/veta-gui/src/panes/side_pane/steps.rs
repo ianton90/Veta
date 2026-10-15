@@ -57,7 +57,7 @@ pub(super) fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element
                     iced::widget::tooltip::Position::Top,
                 )
             };
-            let editable = crate::step_dialog_supported(&steps[i]);
+            let editable = crate::app::step_dialog_supported(&steps[i]);
             line = line
                 .push(small(
                     Icon::ChevronUp,

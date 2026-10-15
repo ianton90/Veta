@@ -4,8 +4,8 @@ use super::*;
 use iced::widget::column;
 
 /// Asked before changing a step when later steps refer to rows by position.
-pub fn confirm_step<'a>(tokens: Tokens) -> Element<'a, crate::Message> {
-    use crate::Message;
+pub fn confirm_step<'a>(tokens: Tokens) -> Element<'a, crate::app::Message> {
+    use crate::app::Message;
     let body = column![
         text("Change this step?").size(20),
         text(
@@ -27,8 +27,8 @@ pub fn confirm_step<'a>(tokens: Tokens) -> Element<'a, crate::Message> {
 }
 
 /// Asked when loading a recipe into a document that has `steps` steps.
-pub fn confirm_recipe<'a>(steps: usize, tokens: Tokens) -> Element<'a, crate::Message> {
-    use crate::Message;
+pub fn confirm_recipe<'a>(steps: usize, tokens: Tokens) -> Element<'a, crate::app::Message> {
+    use crate::app::Message;
     let have = if steps == 1 {
         "This file already has 1 applied step.".to_owned()
     } else {
@@ -58,8 +58,8 @@ pub fn confirm_recipe<'a>(steps: usize, tokens: Tokens) -> Element<'a, crate::Me
 }
 
 /// "Save changes to X?" when closing a modified document.
-pub fn confirm_close<'a>(name: String, tokens: Tokens) -> Element<'a, crate::Message> {
-    use crate::{CloseAnswer, Message};
+pub fn confirm_close<'a>(name: String, tokens: Tokens) -> Element<'a, crate::app::Message> {
+    use crate::app::{CloseAnswer, Message};
     let body = column![
         text(format!("Save changes to {name}?")).size(20),
         text("Your changes will be lost if you don't save them.").color(tokens.muted_text),

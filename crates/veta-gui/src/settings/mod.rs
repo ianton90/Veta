@@ -329,7 +329,7 @@ pub fn about<'a, Message: Clone + 'a>(close: Message, tokens: Tokens) -> Element
 }
 
 fn section<'a, Message: 'a>(title: &'a str) -> Element<'a, Message> {
-    text(title).size(15).font(crate::bold()).into()
+    text(title).size(15).font(crate::app::bold()).into()
 }
 
 #[cfg(test)]

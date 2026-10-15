@@ -11,11 +11,11 @@ use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 use veta_core::display::{abbreviate, human_bytes};
 use veta_core::{Document, DocumentId, SourceMode};
 
+use crate::app::{Edit, FORMULA_ID, MenuItem, Message, SideTab, Tab, Ui, bold};
 use crate::grid::MenuTarget;
 use crate::platform::icon::{Icon, icon};
 use crate::ribbon::Action;
 use crate::settings::theme::Tokens;
-use crate::{Edit, FORMULA_ID, MenuItem, Message, SideTab, Tab, Ui, bold};
 use std::collections::HashSet;
 
 use veta_core::arrow::datatypes::DataType;
