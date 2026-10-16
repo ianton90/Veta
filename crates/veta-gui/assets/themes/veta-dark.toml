@@ -18,4 +18,6 @@ surface = "#2a2b2f"
 border = "#3b3d42"
 grid_header = "#26272b"
 grid_stripe = "#232428"
+nested_odd = "#232a35"     # lines of open nested cells, levels 1, 3, 5, …
+nested_even = "#2a3445"    # levels 2, 4, 6, …
 selection = "#5b9bff"

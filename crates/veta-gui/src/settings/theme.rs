@@ -58,6 +58,11 @@ pub struct Tokens {
     pub border: Color,
     pub grid_header: Color,
     pub grid_stripe: Color,
+    /// Background of lines of open nested cells at odd levels (1, 3, …:
+    /// a cell's fields, items and entries, their grandchildren, …).
+    pub nested_odd: Color,
+    /// Background of lines at even levels (2, 4, …).
+    pub nested_even: Color,
     pub selection: Color,
     pub primary: Color,
 }
@@ -106,6 +111,8 @@ struct Colors {
     border: Option<Hex>,
     grid_header: Option<Hex>,
     grid_stripe: Option<Hex>,
+    nested_odd: Option<Hex>,
+    nested_even: Option<Hex>,
     selection: Option<Hex>,
 }
 
@@ -135,6 +142,17 @@ fn parse_hex(s: &str) -> Option<Color> {
         byte(4)?,
         f32::from(alpha) / 255.0,
     ))
+}
+
+/// `base` with `amount` (0–1) of `tint` mixed in.
+fn mix(base: Color, tint: Color, amount: f32) -> Color {
+    let blend = |a: f32, b: f32| a + (b - a) * amount;
+    Color {
+        r: blend(base.r, tint.r),
+        g: blend(base.g, tint.g),
+        b: blend(base.b, tint.b),
+        a: base.a,
+    }
 }
 
 /// Parses a theme from TOML text.
@@ -178,6 +196,12 @@ pub fn parse(source: &str) -> Result<VetaTheme, String> {
             },
             |h| h.0,
         ),
+        nested_odd: c
+            .nested_odd
+            .map_or(mix(palette.background, palette.primary, 0.07), |h| h.0),
+        nested_even: c
+            .nested_even
+            .map_or(mix(palette.background, palette.primary, 0.14), |h| h.0),
         selection: c.selection.map_or(palette.primary, |h| h.0),
         primary: palette.primary,
     };

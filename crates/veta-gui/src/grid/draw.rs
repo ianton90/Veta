@@ -139,6 +139,13 @@ impl<Message> Grid<'_, Message> {
                     let Some(clip) = line_cell.intersection(&regions.body) else {
                         continue;
                     };
+                    // Levels alternate between two shades.
+                    let shade = if line.depth % 2 == 1 {
+                        t.nested_odd
+                    } else {
+                        t.nested_even
+                    };
+                    fill(renderer, clip, shade);
                     let (arrow, label) = line_offsets(m, line);
                     let at = |offset: f32| Rectangle {
                         x: x + offset,

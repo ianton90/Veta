@@ -560,7 +560,7 @@ impl<Message> Grid<'_, Message> {
 /// Where a line of an open cell starts its arrow and its label, from the
 /// cell's left edge.
 pub(super) fn line_offsets(m: Metrics, line: &Line) -> (f32, f32) {
-    let arrow = m.text_size + 2.0 + (line.depth - 1) as f32 * m.text_size;
+    let arrow = m.text_size + 2.0 + (line.depth - 1) as f32 * indent_step(m);
     let label = arrow + if line.gutter { m.text_size + 2.0 } else { 0.0 };
     (arrow, label)
 }
@@ -571,4 +571,9 @@ pub(super) fn label_width(m: Metrics, label: &str) -> f32 {
         return 0.0;
     }
     (label.chars().count() + 1) as f32 * m.char_width
+}
+
+/// How much each level of an open cell is indented.
+pub(super) fn indent_step(m: Metrics) -> f32 {
+    (m.text_size * 1.6).round()
 }
