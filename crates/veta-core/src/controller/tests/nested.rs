@@ -546,3 +546,40 @@ fn values_nested_to_any_depth() {
         cell(&doc, history, "history")
     );
 }
+
+#[test]
+fn fixed_size_lists() {
+    use PathPart::Index;
+    let dir = TempDir::new();
+    let mut doc = mixed(&dir);
+    let xyz = crate::display::parse_type_name("fixed_size_list<float64, 3>").unwrap();
+    execute(
+        &mut doc,
+        Command::AddColumn {
+            name: "xyz".into(),
+            data_type: xyz,
+            at: 0,
+        },
+    )
+    .unwrap();
+    // Setting an item of a null fixed-size list fills the rest with nulls.
+    execute(&mut doc, set(0, "xyz", vec![Index(1)], Some("2.5"))).unwrap();
+    assert_eq!(cell(&doc, 0, "xyz").as_deref(), Some("[null, 2.5, null]"));
+    execute(&mut doc, set(0, "xyz", vec![Index(0)], Some("1"))).unwrap();
+    assert_eq!(cell(&doc, 0, "xyz").as_deref(), Some("[1.0, 2.5, null]"));
+    for bad in [
+        set(0, "xyz", vec![Index(3)], Some("1")),
+        insert(0, "xyz", vec![], 0, None),
+        remove(0, "xyz", vec![], 0),
+    ] {
+        assert!(execute(&mut doc, bad).is_err());
+    }
+    let out = dir.join("xyz.parquet");
+    doc.save(Some(out.clone())).unwrap();
+    let saved = Document::open(&out, OpenOptions::default()).unwrap();
+    assert_eq!(cell(&saved, 0, "xyz").as_deref(), Some("[1.0, 2.5, null]"));
+    assert!(matches!(
+        saved.schema().field_with_name("xyz").unwrap().data_type(),
+        DataType::FixedSizeList(_, 3)
+    ));
+}

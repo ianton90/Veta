@@ -563,3 +563,52 @@ fn values_nested_to_any_depth_open_and_edit() {
         Some("{5: {status: paid, notes: null}}")
     );
 }
+
+#[test]
+fn fixed_size_list_columns() {
+    use crate::dialogs::{TypeChoice, TypeOption, TypeStep};
+    let dir = TempDir::new();
+    let path = dir.join("n.parquet");
+    fixtures::nested(&path);
+    let mut app = app_with(&[&path]);
+    let id = app.tabs[0].id;
+    let column = |app: &mut App, message| {
+        let _ = app.update(Message::ColumnDialog(message));
+    };
+    let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 0 }));
+    let _ = app.update(Message::Action(Action::AddColumn));
+    column(&mut app, ColumnMessage::Name("xyz".into()));
+    column(&mut app, ColumnMessage::Type(vec![], TypeOption::FixedList));
+    column(
+        &mut app,
+        ColumnMessage::Type(vec![TypeStep::Item], TypeOption::Plain(TypeChoice::Integer)),
+    );
+    column(&mut app, ColumnMessage::Submit);
+    assert!(app.dialog.is_none());
+    let doc = app.workbook.get(id).unwrap();
+    let at = doc.schema().index_of("xyz").unwrap();
+    let xyz = |app: &App| {
+        let doc = app.workbook.get(id).unwrap();
+        veta_core::display::format_batch(&doc.read(0..1).unwrap()).unwrap()[0][at].clone()
+    };
+    // Typing on a null fixed-size list sets its first item; the rest stay
+    // null, and Enter goes down the items.
+    let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: at }));
+    let _ = app.update(Message::Grid(
+        id,
+        GridEvent::StartEdit {
+            initial: Some("7".into()),
+        },
+    ));
+    let _ = app.update(Message::CommitEdit);
+    assert_eq!(xyz(&app).as_deref(), Some("[7, null, null]"));
+    assert_eq!(app.selected_cell_item(id).unwrap().item.display, "[1]");
+    let _ = app.update(Message::Grid(id, GridEvent::StartEdit { initial: None }));
+    let _ = app.update(Message::EditInput("8".into()));
+    let _ = app.update(Message::CommitEdit);
+    assert_eq!(xyz(&app).as_deref(), Some("[7, 8, null]"));
+    // Items can't be added or removed.
+    let _ = app.update(Message::Grid(id, GridEvent::DeleteRows));
+    assert_eq!(xyz(&app).as_deref(), Some("[7, 8, null]"));
+    assert!(!app.errors.is_empty());
+}

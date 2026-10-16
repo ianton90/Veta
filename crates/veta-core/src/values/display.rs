@@ -338,8 +338,10 @@ pub fn type_name(data_type: &DataType) -> String {
         DataType::List(f)
         | DataType::LargeList(f)
         | DataType::ListView(f)
-        | DataType::LargeListView(f)
-        | DataType::FixedSizeList(f, _) => format!("list<{}>", type_name(f.data_type())),
+        | DataType::LargeListView(f) => format!("list<{}>", type_name(f.data_type())),
+        DataType::FixedSizeList(f, n) => {
+            format!("fixed_size_list<{}, {n}>", type_name(f.data_type()))
+        }
         DataType::Struct(fields) => {
             let inner: Vec<String> = fields
                 .iter()
@@ -439,6 +441,17 @@ pub fn parse_type_name(name: &str) -> Option<DataType> {
     if let Some(inner) = args("list", '<', '>') {
         let item = parse_type_name(inner)?;
         return Some(DataType::List(Arc::new(Field::new("item", item, true))));
+    }
+    if let Some(inner) = args("fixed_size_list", '<', '>') {
+        let [item, size] = split_top_level(inner)[..] else {
+            return None;
+        };
+        let size: i32 = size.trim().parse().ok().filter(|n| *n > 0)?;
+        let item = parse_type_name(item)?;
+        return Some(DataType::FixedSizeList(
+            Arc::new(Field::new("item", item, true)),
+            size,
+        ));
     }
     if let Some(inner) = args("map", '<', '>') {
         let [key, value] = split_top_level(inner)[..] else {
@@ -638,6 +651,10 @@ mod tests {
         assert_eq!(parse_type_name("map<string, int64>"), Some(scores.clone()));
         assert_eq!(parse_type_name(&type_name(&scores)), Some(scores));
         assert_eq!(parse_type_name("map<string>"), None);
+        let xyz = DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, true)), 3);
+        assert_eq!(type_name(&xyz), "fixed_size_list<float64, 3>");
+        assert_eq!(parse_type_name(&type_name(&xyz)), Some(xyz));
+        assert_eq!(parse_type_name("fixed_size_list<int64, 0>"), None);
         assert_eq!(
             parse_type_name("list<int32>"),
             Some(DataType::List(Arc::new(Field::new(

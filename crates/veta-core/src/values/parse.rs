@@ -162,6 +162,23 @@ pub fn edit_list(
     Ok(root.to_string())
 }
 
+/// The JSON of a cell with the list at `list` set to `len` nulls if it is
+/// null (or missing under a struct), so that a fixed-size list can have an
+/// item set.
+pub fn fill_null_list(
+    cell_json: &str,
+    list: &[crate::display::PathPart],
+    len: usize,
+) -> Result<String> {
+    let mut root: serde_json::Value = serde_json::from_str(cell_json)
+        .map_err(|e| Error::InvalidCommand(format!("the cell is not valid JSON: {e}")))?;
+    let target = value_at_or_insert(&mut root, list)?;
+    if target.is_null() {
+        *target = serde_json::Value::Array(vec![serde_json::Value::Null; len]);
+    }
+    Ok(root.to_string())
+}
+
 /// A change to one entry of a map inside a cell (see [`edit_map`]). Entries
 /// are addressed by position; keys can't be null and must stay unique.
 #[derive(Debug, Clone, PartialEq)]

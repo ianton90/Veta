@@ -431,6 +431,17 @@ impl GridView {
                 .iter()
                 .position(|l| l.path == path && matches!(l.what, What::Slot(_)))
         });
+        // A fixed-size list has no slot: its first item instead.
+        if self.item.is_none() {
+            self.slot = None;
+            self.item = self.tree(row, column).and_then(|t| {
+                t.lines.iter().position(|l| {
+                    l.path.len() == path.len() + 1
+                        && l.path.starts_with(path)
+                        && matches!(l.what, What::Node { .. })
+                })
+            });
+        }
         self.rows = None;
         self.cols = None;
         self.reveal(row, column);

@@ -30,7 +30,8 @@ While the major version is 0, minor versions may change behaviour.
 - Nested types: structs, lists and maps, nested inside each other to any
   depth; expand a struct into columns or explode a list into rows; combine
   columns into a struct or collect them into lists by group; new columns
-  and struct fields of any nested type, built level by level.
+  and struct fields of any nested type (lists, fixed-size lists, structs,
+  maps), built level by level.
   Struct columns open in the grid (header arrow) into editable field
   columns. Opening a row shows the fields, items and entries of its nested
   cells; each struct, list or map inside opens in turn (its arrow or

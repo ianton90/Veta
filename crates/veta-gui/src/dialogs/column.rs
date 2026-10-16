@@ -64,6 +64,7 @@ impl std::fmt::Display for TypeChoice {
 pub enum TypeOption {
     Plain(TypeChoice),
     List,
+    FixedList,
     Struct,
     Map,
 }
@@ -71,7 +72,7 @@ pub enum TypeOption {
 impl TypeOption {
     fn all() -> Vec<TypeOption> {
         let mut all: Vec<TypeOption> = TypeChoice::ALL.into_iter().map(Self::Plain).collect();
-        all.extend([Self::List, Self::Struct, Self::Map]);
+        all.extend([Self::List, Self::FixedList, Self::Struct, Self::Map]);
         all
     }
 }
@@ -81,6 +82,7 @@ impl std::fmt::Display for TypeOption {
         match self {
             Self::Plain(choice) => choice.fmt(f),
             Self::List => f.write_str("List of values"),
+            Self::FixedList => f.write_str("Fixed-size list"),
             Self::Struct => f.write_str("Struct (named fields)"),
             Self::Map => f.write_str("Map (keys → values)"),
         }
@@ -93,6 +95,8 @@ impl std::fmt::Display for TypeOption {
 pub enum TypeSpec {
     Plain(TypeChoice),
     List(Box<TypeSpec>),
+    /// Item type and number of items (as typed).
+    FixedList(Box<TypeSpec>, String),
     Struct(Vec<(String, TypeSpec)>),
     /// Key type and value type.
     Map(TypeChoice, Box<TypeSpec>),
@@ -112,15 +116,16 @@ pub type TypePath = Vec<TypeStep>;
 
 impl TypeSpec {
     /// A new type of kind `option`. Lists and maps keep what they hold when
-    /// switched to each other.
+    /// switched to each other (a new fixed-size list has 3 items).
     fn new(option: TypeOption, old: &TypeSpec) -> Self {
         let inner = match old {
-            Self::List(item) | Self::Map(_, item) => (**item).clone(),
+            Self::List(item) | Self::FixedList(item, _) | Self::Map(_, item) => (**item).clone(),
             _ => Self::Plain(TypeChoice::Text),
         };
         match option {
             TypeOption::Plain(choice) => Self::Plain(choice),
             TypeOption::List => Self::List(Box::new(inner)),
+            TypeOption::FixedList => Self::FixedList(Box::new(inner), "3".into()),
             TypeOption::Map => Self::Map(TypeChoice::Text, Box::new(inner)),
             TypeOption::Struct => {
                 Self::Struct(vec![("field1".into(), Self::Plain(TypeChoice::Text))])
@@ -132,6 +137,7 @@ impl TypeSpec {
         match self {
             Self::Plain(choice) => TypeOption::Plain(*choice),
             Self::List(_) => TypeOption::List,
+            Self::FixedList(..) => TypeOption::FixedList,
             Self::Struct(_) => TypeOption::Struct,
             Self::Map(..) => TypeOption::Map,
         }
@@ -143,7 +149,9 @@ impl TypeSpec {
             return Some(self);
         };
         match (self, step) {
-            (Self::List(item) | Self::Map(_, item), TypeStep::Item) => item.get_mut(rest),
+            (Self::List(item) | Self::FixedList(item, _) | Self::Map(_, item), TypeStep::Item) => {
+                item.get_mut(rest)
+            }
             (Self::Struct(fields), TypeStep::Field(i)) => fields.get_mut(*i)?.1.get_mut(rest),
             _ => None,
         }
@@ -154,6 +162,22 @@ impl TypeSpec {
         Ok(match self {
             Self::Plain(choice) => choice.data_type(),
             Self::List(item) => DataType::new_list(item.data_type()?, true),
+            Self::FixedList(item, len) => {
+                let len: i32 = len
+                    .trim()
+                    .parse()
+                    .ok()
+                    .filter(|n| (1..=1_000_000).contains(n))
+                    .ok_or("A fixed-size list needs a length from 1 to 1,000,000.")?;
+                DataType::FixedSizeList(
+                    std::sync::Arc::new(veta_core::arrow::datatypes::Field::new(
+                        "item",
+                        item.data_type()?,
+                        true,
+                    )),
+                    len,
+                )
+            }
             Self::Map(key, value) => {
                 veta_core::display::map_type(key.data_type(), value.data_type()?)
             }
@@ -188,6 +212,10 @@ impl TypeSpec {
         }
         match data_type {
             DataType::List(item) => Some(Self::List(Box::new(Self::from_type(item.data_type())?))),
+            DataType::FixedSizeList(item, n) => Some(Self::FixedList(
+                Box::new(Self::from_type(item.data_type())?),
+                n.to_string(),
+            )),
             DataType::Struct(fields) if !fields.is_empty() => Some(Self::Struct(
                 fields
                     .iter()
@@ -236,6 +264,8 @@ pub enum ColumnMessage {
     Type(TypePath, TypeOption),
     /// The key type of the map at a path.
     Key(TypePath, TypeChoice),
+    /// The length of the fixed-size list at a path, as typed.
+    Length(TypePath, String),
     /// The name of field `n` of the struct at a path.
     FieldName(TypePath, usize, String),
     AddField(TypePath),
@@ -300,6 +330,11 @@ impl ColumnDialog {
             ColumnMessage::Key(path, key) => {
                 if let Some(TypeSpec::Map(k, _)) = self.spec.get_mut(&path) {
                     *k = key;
+                }
+            }
+            ColumnMessage::Length(path, length) => {
+                if let Some(TypeSpec::FixedList(_, len)) = self.spec.get_mut(&path) {
+                    *len = length;
                 }
             }
             ColumnMessage::FieldName(path, i, name) => {
@@ -436,6 +471,18 @@ fn inner_pickers<'a>(spec: &'a TypeSpec, path: &[TypeStep]) -> Option<Element<'a
     let mut rows = column![].spacing(6);
     match spec {
         TypeSpec::Plain(_) => return None,
+        TypeSpec::FixedList(item, len) => {
+            let at = path.to_vec();
+            let length = text_input("3", len)
+                .on_input(move |l| ColumnMessage::Length(at.clone(), l))
+                .on_submit(ColumnMessage::Submit)
+                .width(80);
+            rows = rows.push(labelled("Length", length.into()));
+            rows = rows.push(labelled("Items", picker(item, child(TypeStep::Item))));
+            if let Some(inner) = inner_pickers(item, &child(TypeStep::Item)) {
+                rows = rows.push(inner);
+            }
+        }
         TypeSpec::List(item) => {
             rows = rows.push(labelled("Items", picker(item, child(TypeStep::Item))));
             if let Some(inner) = inner_pickers(item, &child(TypeStep::Item)) {
@@ -528,6 +575,20 @@ mod tests {
                 at: 0
             })
         );
+        let mut xyz = ColumnDialog::add(0);
+        xyz.update(ColumnMessage::Name("xyz".into()));
+        xyz.update(ColumnMessage::Type(vec![], TypeOption::FixedList));
+        xyz.update(ColumnMessage::Length(vec![], "x".into()));
+        assert_eq!(xyz.update(ColumnMessage::Submit), None, "not a length");
+        xyz.update(ColumnMessage::Length(vec![], "2".into()));
+        let Some(Command::AddColumn { data_type, .. }) = xyz.update(ColumnMessage::Submit) else {
+            panic!("a command");
+        };
+        assert_eq!(
+            veta_core::display::type_name(&data_type),
+            "fixed_size_list<string, 2>"
+        );
+        assert_eq!(ColumnDialog::add(0).with_type(&data_type).spec, xyz.spec);
         let again = ColumnDialog::add(0).with_type(&scores);
         assert_eq!(
             again.spec,

@@ -5,7 +5,7 @@ use super::*;
 use arrow::datatypes::DataType;
 
 use crate::display::{PathPart, map_key_type, type_at, value_json};
-use crate::values::{ListEdit, MapEdit, edit_list, edit_map, set_nested};
+use crate::values::{ListEdit, MapEdit, edit_list, edit_map, fill_null_list, set_nested};
 
 /// Plans one of this area's commands (see `super::plan`).
 pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
@@ -24,14 +24,31 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
                 .ok_or_else(|| invalid(format!("{column} has no value at {}", describe(&path))))?
                 .clone();
             let (parent, last) = path.split_at(path.len() - 1);
-            // A list index at the end may append.
+            // A list index at the end may append; a null fixed-size list is
+            // filled with nulls first.
             if let PathPart::Index(index) = last[0] {
                 let edit = ListEdit::Set {
                     index,
                     text: value.as_deref(),
                     item_type: &leaf,
                 };
-                return edit_cell(doc, row, column, |json| edit_list(json, parent, &edit));
+                let fixed = match type_at(&column_type, parent) {
+                    Some(DataType::FixedSizeList(_, n)) => Some(*n as usize),
+                    _ => None,
+                };
+                if fixed.is_some_and(|n| index >= n) {
+                    return Err(invalid(format!(
+                        "{column} has no value at {}",
+                        describe(&path)
+                    )));
+                }
+                return edit_cell(doc, row, column, |json| {
+                    let json = match fixed {
+                        Some(n) => fill_null_list(json, parent, n)?,
+                        None => json.to_owned(),
+                    };
+                    edit_list(&json, parent, &edit)
+                });
             }
             edit_cell(doc, row, column, |json| {
                 set_nested(json, &path, value.as_deref(), &leaf)

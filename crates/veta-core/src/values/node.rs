@@ -81,11 +81,13 @@ impl Node {
         matches!(self.data_type(), DataType::FixedSizeList(..))
     }
 
-    /// Number of children: a struct's fields (also when it is null, as null
-    /// values), a list's items or a map's entries (none when null).
+    /// Number of children: a struct's fields or a fixed-size list's items
+    /// (also when it is null, as null values), a list's items or a map's
+    /// entries (none when null).
     pub fn len(&self) -> usize {
         match self.data_type() {
             DataType::Struct(fields) => fields.len(),
+            DataType::FixedSizeList(_, n) => *n as usize,
             _ => self.items().map_or(0, |(range, _, _)| range.len()),
         }
     }
@@ -107,6 +109,22 @@ impl Node {
                     array: column,
                     index: self.index,
                     null,
+                },
+            });
+        }
+        // A null fixed-size list still has its items, as nulls.
+        if let DataType::FixedSizeList(_, n) = self.data_type()
+            && self.null
+        {
+            let n = *n as usize;
+            let values = self.array.as_fixed_size_list().values().clone();
+            return (i < n).then(|| Child {
+                part: PathPart::Index(i),
+                label: i.to_string(),
+                node: Node {
+                    array: values,
+                    index: self.index * n + i,
+                    null: true,
                 },
             });
         }
@@ -260,6 +278,17 @@ mod tests {
                 .as_deref(),
             Some("2")
         );
+        // A null fixed-size list opens into its items, as nulls.
+        let xyz = DataType::FixedSizeList(
+            std::sync::Arc::new(arrow::datatypes::Field::new("item", DataType::Int64, true)),
+            3,
+        );
+        let null = node("null", &xyz);
+        assert_eq!((null.len(), null.is_fixed_size()), (3, true));
+        assert!(null.child(2).unwrap().node.is_null());
+        assert!(null.child(3).is_none());
+        let set = node("[1, 2, 3]", &xyz);
+        assert_eq!(set.child(2).unwrap().node.text().as_deref(), Some("3"));
         let by_id = node(r#"{"7": "x"}"#, &map_type(DataType::Int64, DataType::Utf8));
         let entry = by_id.child(0).unwrap();
         assert_eq!(
