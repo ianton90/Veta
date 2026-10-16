@@ -1,4 +1,5 @@
-//! Add or rename a column, and the column types offered.
+//! Add or rename a column, and the column types offered: plain types, and
+//! lists, structs and maps of any of them, nested to any depth.
 
 use super::*;
 use iced::widget::column;
@@ -57,8 +58,8 @@ impl std::fmt::Display for TypeChoice {
     }
 }
 
-/// Column types offered when adding a column: a plain type, a list, a
-/// struct or a map.
+/// The kinds of type offered at each level: a plain type, a list, a struct
+/// or a map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeOption {
     Plain(TypeChoice),
@@ -86,18 +87,131 @@ impl std::fmt::Display for TypeOption {
     }
 }
 
+/// A column type being chosen: a plain type, or a list, struct or map of
+/// other such types.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeSpec {
+    Plain(TypeChoice),
+    List(Box<TypeSpec>),
+    Struct(Vec<(String, TypeSpec)>),
+    /// Key type and value type.
+    Map(TypeChoice, Box<TypeSpec>),
+}
+
+/// A step from a type to one inside it, in the type pickers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeStep {
+    /// A list's items, or a map's values.
+    Item,
+    /// Field `n` of a struct.
+    Field(usize),
+}
+
+/// Steps from the column's type down to a type inside it.
+pub type TypePath = Vec<TypeStep>;
+
+impl TypeSpec {
+    /// A new type of kind `option`. Lists and maps keep what they hold when
+    /// switched to each other.
+    fn new(option: TypeOption, old: &TypeSpec) -> Self {
+        let inner = match old {
+            Self::List(item) | Self::Map(_, item) => (**item).clone(),
+            _ => Self::Plain(TypeChoice::Text),
+        };
+        match option {
+            TypeOption::Plain(choice) => Self::Plain(choice),
+            TypeOption::List => Self::List(Box::new(inner)),
+            TypeOption::Map => Self::Map(TypeChoice::Text, Box::new(inner)),
+            TypeOption::Struct => {
+                Self::Struct(vec![("field1".into(), Self::Plain(TypeChoice::Text))])
+            }
+        }
+    }
+
+    fn option(&self) -> TypeOption {
+        match self {
+            Self::Plain(choice) => TypeOption::Plain(*choice),
+            Self::List(_) => TypeOption::List,
+            Self::Struct(_) => TypeOption::Struct,
+            Self::Map(..) => TypeOption::Map,
+        }
+    }
+
+    /// The type at `path` inside this one.
+    fn get_mut(&mut self, path: &[TypeStep]) -> Option<&mut TypeSpec> {
+        let Some((step, rest)) = path.split_first() else {
+            return Some(self);
+        };
+        match (self, step) {
+            (Self::List(item) | Self::Map(_, item), TypeStep::Item) => item.get_mut(rest),
+            (Self::Struct(fields), TypeStep::Field(i)) => fields.get_mut(*i)?.1.get_mut(rest),
+            _ => None,
+        }
+    }
+
+    /// The type chosen, or why it isn't valid.
+    fn data_type(&self) -> Result<DataType, String> {
+        Ok(match self {
+            Self::Plain(choice) => choice.data_type(),
+            Self::List(item) => DataType::new_list(item.data_type()?, true),
+            Self::Map(key, value) => {
+                veta_core::display::map_type(key.data_type(), value.data_type()?)
+            }
+            Self::Struct(fields) => {
+                let mut out: Vec<veta_core::arrow::datatypes::Field> = Vec::new();
+                for (name, spec) in fields {
+                    let name = name.trim();
+                    if name.is_empty() {
+                        return Err("Every field needs a name.".into());
+                    }
+                    if out.iter().any(|f| f.name() == name) {
+                        return Err(format!("There are two fields named {name:?}."));
+                    }
+                    out.push(veta_core::arrow::datatypes::Field::new(
+                        name,
+                        spec.data_type()?,
+                        true,
+                    ));
+                }
+                if out.is_empty() {
+                    return Err("A struct needs at least one field.".into());
+                }
+                DataType::Struct(out.into())
+            }
+        })
+    }
+
+    /// The choice for `data_type`, if it is made of types offered.
+    fn from_type(data_type: &DataType) -> Option<Self> {
+        if let Some(choice) = TypeChoice::from_type(data_type) {
+            return Some(Self::Plain(choice));
+        }
+        match data_type {
+            DataType::List(item) => Some(Self::List(Box::new(Self::from_type(item.data_type())?))),
+            DataType::Struct(fields) if !fields.is_empty() => Some(Self::Struct(
+                fields
+                    .iter()
+                    .map(|f| Some((f.name().clone(), Self::from_type(f.data_type())?)))
+                    .collect::<Option<_>>()?,
+            )),
+            DataType::Map(entries, _) => match entries.data_type() {
+                DataType::Struct(kv) if kv.len() == 2 => Some(Self::Map(
+                    TypeChoice::from_type(kv[0].data_type())?,
+                    Box::new(Self::from_type(kv[1].data_type())?),
+                )),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
 /// Add or rename a column.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColumnDialog {
     pub mode: ColumnMode,
     name: String,
-    choice: TypeOption,
-    /// Type of a list's items, or of a map's values.
-    item: TypeChoice,
-    /// Type of a map's keys.
-    key: TypeChoice,
-    /// Names and types of a struct's fields.
-    fields: Vec<(String, TypeChoice)>,
+    spec: TypeSpec,
     error: Option<String>,
 }
 
@@ -118,13 +232,14 @@ pub enum ColumnMode {
 #[derive(Debug, Clone)]
 pub enum ColumnMessage {
     Name(String),
-    Type(TypeOption),
-    Item(TypeChoice),
-    Key(TypeChoice),
-    FieldName(usize, String),
-    FieldType(usize, TypeChoice),
-    AddField,
-    RemoveField(usize),
+    /// The kind of the type at a path (empty: the column's type).
+    Type(TypePath, TypeOption),
+    /// The key type of the map at a path.
+    Key(TypePath, TypeChoice),
+    /// The name of field `n` of the struct at a path.
+    FieldName(TypePath, usize, String),
+    AddField(TypePath),
+    RemoveField(TypePath, usize),
     Submit,
     Cancel,
 }
@@ -134,10 +249,7 @@ impl ColumnDialog {
         Self {
             mode: ColumnMode::Add { at },
             name: String::new(),
-            choice: TypeOption::Plain(TypeChoice::Text),
-            item: TypeChoice::Text,
-            key: TypeChoice::Text,
-            fields: vec![("field1".into(), TypeChoice::Text)],
+            spec: TypeSpec::Plain(TypeChoice::Text),
             error: None,
         }
     }
@@ -148,33 +260,11 @@ impl ColumnDialog {
         self
     }
 
-    /// Starts with the choice matching `data_type`, if it is one offered.
+    /// Starts with the choice matching `data_type`, if it is made of types
+    /// offered.
     pub fn with_type(mut self, data_type: &DataType) -> Self {
-        if let Some(choice) = TypeChoice::from_type(data_type) {
-            self.choice = TypeOption::Plain(choice);
-        } else if let DataType::List(item) = data_type
-            && let Some(item) = TypeChoice::from_type(item.data_type())
-        {
-            self.choice = TypeOption::List;
-            self.item = item;
-        } else if let DataType::Struct(fields) = data_type {
-            let fields: Option<Vec<_>> = fields
-                .iter()
-                .map(|f| TypeChoice::from_type(f.data_type()).map(|t| (f.name().clone(), t)))
-                .collect();
-            if let Some(fields) = fields.filter(|f| !f.is_empty()) {
-                self.choice = TypeOption::Struct;
-                self.fields = fields;
-            }
-        } else if let DataType::Map(entries, _) = data_type
-            && let DataType::Struct(kv) = entries.data_type()
-            && kv.len() == 2
-            && let Some(key) = TypeChoice::from_type(kv[0].data_type())
-            && let Some(value) = TypeChoice::from_type(kv[1].data_type())
-        {
-            self.choice = TypeOption::Map;
-            self.key = key;
-            self.item = value;
+        if let Some(spec) = TypeSpec::from_type(data_type) {
+            self.spec = spec;
         }
         self
     }
@@ -195,75 +285,51 @@ impl ColumnDialog {
         }
     }
 
-    /// The chosen column type, or why it isn't valid.
-    fn data_type(&self) -> Result<DataType, String> {
-        Ok(match self.choice {
-            TypeOption::Plain(choice) => choice.data_type(),
-            TypeOption::List => DataType::new_list(self.item.data_type(), true),
-            TypeOption::Map => {
-                veta_core::display::map_type(self.key.data_type(), self.item.data_type())
-            }
-            TypeOption::Struct => {
-                let mut fields = Vec::new();
-                for (name, choice) in &self.fields {
-                    let name = name.trim();
-                    if name.is_empty() {
-                        return Err("Every field needs a name.".into());
-                    }
-                    if fields
-                        .iter()
-                        .any(|f: &veta_core::arrow::datatypes::Field| f.name() == name)
-                    {
-                        return Err(format!("There are two fields named {name:?}."));
-                    }
-                    fields.push(veta_core::arrow::datatypes::Field::new(
-                        name,
-                        choice.data_type(),
-                        true,
-                    ));
-                }
-                if fields.is_empty() {
-                    return Err("A struct needs at least one field.".into());
-                }
-                DataType::Struct(fields.into())
-            }
-        })
-    }
-
     /// Handles a message. Returns the command to run on submit.
     pub fn update(&mut self, message: ColumnMessage) -> Option<Command> {
         self.error = None;
         match message {
             ColumnMessage::Name(name) => self.name = name,
-            ColumnMessage::Type(choice) => self.choice = choice,
-            ColumnMessage::Item(item) => self.item = item,
-            ColumnMessage::Key(key) => self.key = key,
-            ColumnMessage::FieldName(i, name) => {
-                if let Some(field) = self.fields.get_mut(i) {
+            ColumnMessage::Type(path, option) => {
+                if let Some(spec) = self.spec.get_mut(&path)
+                    && spec.option() != option
+                {
+                    *spec = TypeSpec::new(option, spec);
+                }
+            }
+            ColumnMessage::Key(path, key) => {
+                if let Some(TypeSpec::Map(k, _)) = self.spec.get_mut(&path) {
+                    *k = key;
+                }
+            }
+            ColumnMessage::FieldName(path, i, name) => {
+                if let Some(TypeSpec::Struct(fields)) = self.spec.get_mut(&path)
+                    && let Some(field) = fields.get_mut(i)
+                {
                     field.0 = name;
                 }
             }
-            ColumnMessage::FieldType(i, choice) => {
-                if let Some(field) = self.fields.get_mut(i) {
-                    field.1 = choice;
+            ColumnMessage::AddField(path) => {
+                if let Some(TypeSpec::Struct(fields)) = self.spec.get_mut(&path) {
+                    let n = (fields.len() + 1..)
+                        .map(|n| format!("field{n}"))
+                        .find(|name| fields.iter().all(|(f, _)| f != name))
+                        .unwrap_or_default();
+                    fields.push((n, TypeSpec::Plain(TypeChoice::Text)));
                 }
             }
-            ColumnMessage::AddField => {
-                let n = (self.fields.len() + 1..)
-                    .map(|n| format!("field{n}"))
-                    .find(|name| self.fields.iter().all(|(f, _)| f != name))
-                    .unwrap_or_default();
-                self.fields.push((n, TypeChoice::Text));
-            }
-            ColumnMessage::RemoveField(i) => {
-                if i < self.fields.len() {
-                    self.fields.remove(i);
+            ColumnMessage::RemoveField(path, i) => {
+                if let Some(TypeSpec::Struct(fields)) = self.spec.get_mut(&path)
+                    && i < fields.len()
+                    && fields.len() > 1
+                {
+                    fields.remove(i);
                 }
             }
             ColumnMessage::Cancel => {}
             ColumnMessage::Submit => {
                 let name = self.name.trim().to_owned();
-                let data_type = match (&self.mode, self.data_type()) {
+                let data_type = match (&self.mode, self.spec.data_type()) {
                     (ColumnMode::Rename { .. }, _) => DataType::Null,
                     (_, Ok(data_type)) => data_type,
                     (_, Err(e)) => {
@@ -317,74 +383,17 @@ impl ColumnDialog {
         .spacing(16);
         if !matches!(self.mode, ColumnMode::Rename { .. }) {
             body = body.push(
-                row![
-                    text("Type").width(70),
-                    pick_list(TypeOption::all(), Some(self.choice), ColumnMessage::Type)
-                        .width(Length::Fill),
-                ]
-                .spacing(12)
-                .align_y(Alignment::Center),
+                row![text("Type").width(70), picker(&self.spec, Vec::new()),]
+                    .spacing(12)
+                    .align_y(Alignment::Center),
             );
-            match self.choice {
-                TypeOption::Plain(_) => {}
-                TypeOption::List | TypeOption::Map => {
-                    let label = match self.choice {
-                        TypeOption::List => "Items",
-                        _ => "Values",
-                    };
-                    if self.choice == TypeOption::Map {
-                        body = body.push(
-                            row![
-                                text("Keys").width(70),
-                                pick_list(TypeChoice::ALL, Some(self.key), ColumnMessage::Key)
-                                    .width(Length::Fill),
-                            ]
-                            .spacing(12)
-                            .align_y(Alignment::Center),
-                        );
-                    }
-                    body = body.push(
-                        row![
-                            text(label).width(70),
-                            pick_list(TypeChoice::ALL, Some(self.item), ColumnMessage::Item)
-                                .width(Length::Fill),
-                        ]
-                        .spacing(12)
-                        .align_y(Alignment::Center),
-                    );
-                }
-                TypeOption::Struct => {
-                    let fields = column(self.fields.iter().enumerate().map(|(i, (name, t))| {
-                        row![
-                            text_input("Field name", name)
-                                .on_input(move |n| ColumnMessage::FieldName(i, n))
-                                .on_submit(ColumnMessage::Submit)
-                                .width(Length::FillPortion(2)),
-                            pick_list(TypeChoice::ALL, Some(*t), move |t| {
-                                ColumnMessage::FieldType(i, t)
-                            })
-                            .width(Length::FillPortion(3)),
-                            button(text("✕"))
-                                .style(button::text)
-                                .on_press(ColumnMessage::RemoveField(i)),
-                        ]
-                        .spacing(8)
-                        .align_y(Alignment::Center)
-                        .into()
-                    }))
-                    .spacing(6);
-                    body = body.push(text("Fields"));
-                    body = body.push(iced::widget::container(scrollable(fields)).max_height(220.0));
-                    body = body.push(
-                        button(text("Add field"))
-                            .style(button::secondary)
-                            .on_press(ColumnMessage::AddField),
-                    );
-                }
+            if let Some(inner) = inner_pickers(&self.spec, &[]) {
+                body = body
+                    .push(iced::widget::container(scrollable(inner).spacing(4)).max_height(320.0));
             }
             let note = match self.mode {
                 ColumnMode::AddField { .. } => "The new field starts empty (null) in every row.",
-                _ if self.choice == TypeOption::Map => {
+                _ if matches!(self.spec, TypeSpec::Map(..)) => {
                     "The new column starts empty (null). Add entries to each row in the grid."
                 }
                 _ => "The new column starts empty (null).",
@@ -399,8 +408,87 @@ impl ColumnDialog {
             ColumnMessage::Cancel,
             ColumnMessage::Submit,
         ));
-        card(body.into(), tokens, 420.0)
+        card(body.into(), tokens, 480.0)
     }
+}
+
+/// The kind picker for the type at `path`.
+fn picker(spec: &TypeSpec, path: TypePath) -> Element<'_, ColumnMessage> {
+    pick_list(TypeOption::all(), Some(spec.option()), move |option| {
+        ColumnMessage::Type(path.clone(), option)
+    })
+    .width(Length::Fill)
+    .into()
+}
+
+/// The pickers for what the type at `path` holds (a list's items, a map's
+/// keys and values, a struct's fields), indented under it; `None` for a
+/// plain type.
+fn inner_pickers<'a>(spec: &'a TypeSpec, path: &[TypeStep]) -> Option<Element<'a, ColumnMessage>> {
+    let child = |step| [path, &[step]].concat();
+    let labelled =
+        |label: &'a str, picker: Element<'a, ColumnMessage>| -> Element<'a, ColumnMessage> {
+            row![text(label).width(58), picker]
+                .spacing(12)
+                .align_y(Alignment::Center)
+                .into()
+        };
+    let mut rows = column![].spacing(6);
+    match spec {
+        TypeSpec::Plain(_) => return None,
+        TypeSpec::List(item) => {
+            rows = rows.push(labelled("Items", picker(item, child(TypeStep::Item))));
+            if let Some(inner) = inner_pickers(item, &child(TypeStep::Item)) {
+                rows = rows.push(inner);
+            }
+        }
+        TypeSpec::Map(key, value) => {
+            let at = path.to_vec();
+            let keys = pick_list(TypeChoice::ALL, Some(*key), move |k| {
+                ColumnMessage::Key(at.clone(), k)
+            })
+            .width(Length::Fill);
+            rows = rows.push(labelled("Keys", keys.into()));
+            rows = rows.push(labelled("Values", picker(value, child(TypeStep::Item))));
+            if let Some(inner) = inner_pickers(value, &child(TypeStep::Item)) {
+                rows = rows.push(inner);
+            }
+        }
+        TypeSpec::Struct(fields) => {
+            rows = rows.push(text("Fields"));
+            for (i, (name, field)) in fields.iter().enumerate() {
+                let (at, again) = (path.to_vec(), path.to_vec());
+                rows = rows.push(
+                    row![
+                        text_input("Field name", name)
+                            .on_input(move |n| ColumnMessage::FieldName(at.clone(), i, n))
+                            .on_submit(ColumnMessage::Submit)
+                            .width(Length::FillPortion(2)),
+                        iced::widget::container(picker(field, child(TypeStep::Field(i))))
+                            .width(Length::FillPortion(3)),
+                        button(text("✕"))
+                            .style(button::text)
+                            .on_press(ColumnMessage::RemoveField(again, i)),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                );
+                if let Some(inner) = inner_pickers(field, &child(TypeStep::Field(i))) {
+                    rows = rows.push(inner);
+                }
+            }
+            rows = rows.push(
+                button(text("Add field"))
+                    .style(button::secondary)
+                    .on_press(ColumnMessage::AddField(path.to_vec())),
+            );
+        }
+    }
+    Some(
+        iced::widget::container(rows)
+            .padding(iced::Padding::ZERO.left(16))
+            .into(),
+    )
 }
 
 #[cfg(test)]
@@ -411,7 +499,10 @@ mod tests {
     fn add_and_rename_build_commands() {
         let mut add = ColumnDialog::add(2);
         add.update(ColumnMessage::Name(" total ".into()));
-        add.update(ColumnMessage::Type(TypeOption::Plain(TypeChoice::Decimal)));
+        add.update(ColumnMessage::Type(
+            vec![],
+            TypeOption::Plain(TypeChoice::Decimal),
+        ));
         assert_eq!(
             add.update(ColumnMessage::Submit),
             Some(Command::AddColumn {
@@ -422,9 +513,12 @@ mod tests {
         );
         let mut map = ColumnDialog::add(0);
         map.update(ColumnMessage::Name("scores".into()));
-        map.update(ColumnMessage::Type(TypeOption::Map));
-        map.update(ColumnMessage::Key(TypeChoice::Date));
-        map.update(ColumnMessage::Item(TypeChoice::Integer));
+        map.update(ColumnMessage::Type(vec![], TypeOption::Map));
+        map.update(ColumnMessage::Key(vec![], TypeChoice::Date));
+        map.update(ColumnMessage::Type(
+            vec![TypeStep::Item],
+            TypeOption::Plain(TypeChoice::Integer),
+        ));
         let scores = veta_core::display::map_type(DataType::Date32, DataType::Int64);
         assert_eq!(
             map.update(ColumnMessage::Submit),
@@ -436,8 +530,11 @@ mod tests {
         );
         let again = ColumnDialog::add(0).with_type(&scores);
         assert_eq!(
-            (again.choice, again.key, again.item),
-            (TypeOption::Map, TypeChoice::Date, TypeChoice::Integer)
+            again.spec,
+            TypeSpec::Map(
+                TypeChoice::Date,
+                Box::new(TypeSpec::Plain(TypeChoice::Integer))
+            )
         );
         let mut rename = ColumnDialog::rename("a".into());
         rename.update(ColumnMessage::Name("b".into()));

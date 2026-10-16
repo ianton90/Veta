@@ -223,7 +223,7 @@ fn collect_columns_into_lists() {
 
 #[test]
 fn new_list_and_struct_columns() {
-    use crate::dialogs::{TypeChoice, TypeOption};
+    use crate::dialogs::{TypeChoice, TypeOption, TypeStep};
     let dir = TempDir::new();
     let path = dir.join("m.parquet");
     fixtures::mixed_settings(&path);
@@ -239,24 +239,33 @@ fn new_list_and_struct_columns() {
 
     let _ = app.update(Message::Action(Action::AddColumn));
     column(&mut app, ColumnMessage::Name("tags".into()));
-    column(&mut app, ColumnMessage::Type(TypeOption::List));
-    column(&mut app, ColumnMessage::Item(TypeChoice::Integer));
+    column(&mut app, ColumnMessage::Type(vec![], TypeOption::List));
+    column(
+        &mut app,
+        ColumnMessage::Type(vec![TypeStep::Item], TypeOption::Plain(TypeChoice::Integer)),
+    );
     column(&mut app, ColumnMessage::Submit);
     assert!(app.dialog.is_none());
     assert_eq!(type_of(&app, "tags"), "list<int64>");
 
     let _ = app.update(Message::Action(Action::AddColumn));
     column(&mut app, ColumnMessage::Name("point".into()));
-    column(&mut app, ColumnMessage::Type(TypeOption::Struct));
-    column(&mut app, ColumnMessage::FieldName(0, "x".into()));
-    column(&mut app, ColumnMessage::FieldType(0, TypeChoice::Decimal));
-    column(&mut app, ColumnMessage::AddField);
-    column(&mut app, ColumnMessage::FieldName(1, "x".into()));
+    column(&mut app, ColumnMessage::Type(vec![], TypeOption::Struct));
+    column(&mut app, ColumnMessage::FieldName(vec![], 0, "x".into()));
+    column(
+        &mut app,
+        ColumnMessage::Type(
+            vec![TypeStep::Field(0)],
+            TypeOption::Plain(TypeChoice::Decimal),
+        ),
+    );
+    column(&mut app, ColumnMessage::AddField(vec![]));
+    column(&mut app, ColumnMessage::FieldName(vec![], 1, "x".into()));
     column(&mut app, ColumnMessage::Submit);
     assert!(app.dialog.is_some(), "two fields named x");
-    column(&mut app, ColumnMessage::FieldName(1, "y".into()));
-    column(&mut app, ColumnMessage::AddField);
-    column(&mut app, ColumnMessage::RemoveField(2));
+    column(&mut app, ColumnMessage::FieldName(vec![], 1, "y".into()));
+    column(&mut app, ColumnMessage::AddField(vec![]));
+    column(&mut app, ColumnMessage::RemoveField(vec![], 2));
     column(&mut app, ColumnMessage::Submit);
     assert!(app.dialog.is_none());
     assert_eq!(type_of(&app, "point"), "struct<x: float64, y: string>");
@@ -267,8 +276,45 @@ fn new_list_and_struct_columns() {
         panic!("column dialog");
     };
     let debug = format!("{dialog:?}");
-    assert!(debug.contains("choice: Struct"), "{debug}");
-    assert!(debug.contains(r#"("y", Text)"#), "{debug}");
+    assert!(debug.contains("spec: Struct"), "{debug}");
+    assert!(debug.contains(r#"("y", Plain(Text))"#), "{debug}");
+
+    // Types nested to any depth: a list of structs holding a map of lists.
+    let _ = app.update(Message::Action(Action::AddColumn));
+    column(&mut app, ColumnMessage::Name("orders".into()));
+    column(&mut app, ColumnMessage::Type(vec![], TypeOption::List));
+    let item = vec![TypeStep::Item];
+    column(
+        &mut app,
+        ColumnMessage::Type(item.clone(), TypeOption::Struct),
+    );
+    column(
+        &mut app,
+        ColumnMessage::FieldName(item.clone(), 0, "sku".into()),
+    );
+    column(&mut app, ColumnMessage::AddField(item.clone()));
+    column(
+        &mut app,
+        ColumnMessage::FieldName(item.clone(), 1, "options".into()),
+    );
+    let options = vec![TypeStep::Item, TypeStep::Field(1)];
+    column(
+        &mut app,
+        ColumnMessage::Type(options.clone(), TypeOption::Map),
+    );
+    let values = vec![TypeStep::Item, TypeStep::Field(1), TypeStep::Item];
+    column(&mut app, ColumnMessage::Type(values, TypeOption::List));
+    column(&mut app, ColumnMessage::Submit);
+    assert!(app.dialog.is_none());
+    assert_eq!(
+        type_of(&app, "orders"),
+        "list<struct<sku: string, options: map<string, list<string>>>>"
+    );
+    let _ = app.update(Message::EditStep(2));
+    let Some(Dialog::Column { dialog, .. }) = &app.dialog else {
+        panic!("column dialog");
+    };
+    assert!(format!("{dialog:?}").contains(r#"("options", Map(Text, List(Plain(Text))))"#));
 }
 
 #[test]

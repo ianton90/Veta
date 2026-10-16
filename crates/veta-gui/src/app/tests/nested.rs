@@ -171,7 +171,7 @@ fn struct_fields_edit_in_place() {
     column(&mut app, ColumnMessage::Name("z".into()));
     column(
         &mut app,
-        ColumnMessage::Type(TypeOption::Plain(TypeChoice::Integer)),
+        ColumnMessage::Type(vec![], TypeOption::Plain(TypeChoice::Integer)),
     );
     column(&mut app, ColumnMessage::Submit);
     assert!(app.dialog.is_none());
