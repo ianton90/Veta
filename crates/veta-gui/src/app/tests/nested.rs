@@ -11,11 +11,11 @@ fn nested_values_in_formula_bar() {
     let id = app.tabs[0].id;
     let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 1 }));
     assert_eq!(app.tabs[0].grid.value(0, 1), Some(Some("{x: 1, y: 2}")));
-    assert_eq!(
-        app.tabs[0].grid.edit_value(0, 1),
-        Some(Some(r#"{"x":1,"y":2}"#))
-    );
-    assert_eq!(app.cell_text(id).as_deref(), Some(r#"{"x":1,"y":2}"#));
+    // Nested cells show as text but aren't typed as JSON: they open.
+    assert_eq!(app.cell_text(id).as_deref(), Some("{x: 1, y: 2}"));
+    assert!(app.tabs[0].grid.selected_is_container());
+    let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 4 }));
+    assert_eq!(app.cell_text(id).as_deref(), Some("{2 entries}"));
 }
 
 #[test]
@@ -117,10 +117,7 @@ fn struct_fields_edit_in_place() {
     assert_eq!(app.edit.as_ref().unwrap().text, "1");
     enter(&mut app, "10");
     assert_eq!(cell(&app, 0, "point").as_deref(), Some("{x: 10, y: 2}"));
-    assert_eq!(
-        app.selected_list_item(id).unwrap().field.as_deref(),
-        Some("y")
-    );
+    assert_eq!(app.selected_cell_item(id).unwrap().item.field(), Some("y"));
     grid(&mut app, GridEvent::ClearCell);
     assert_eq!(cell(&app, 0, "point").as_deref(), Some("{x: 10, y: null}"));
 
@@ -130,7 +127,7 @@ fn struct_fields_edit_in_place() {
     enter(&mut app, "4");
     assert_eq!(cell(&app, 2, "point").as_deref(), Some("{x: 4, y: null}"));
 
-    // Nested fields edit as JSON.
+    // A struct inside a struct opens: Enter goes to its first field.
     grid(
         &mut app,
         GridEvent::SelectItem {
@@ -140,12 +137,23 @@ fn struct_fields_edit_in_place() {
         },
     );
     grid(&mut app, GridEvent::StartEdit { initial: None });
-    assert_eq!(app.edit.as_ref().unwrap().text, r#"{"x":5,"y":6}"#);
-    enter(&mut app, r#"{"x": 7}"#);
+    assert!(app.edit.is_none(), "structs aren't typed as text");
+    let item = app.selected_cell_item(id).unwrap();
+    assert_eq!(item.item.display, ".home.x");
+    grid(&mut app, GridEvent::StartEdit { initial: None });
+    assert_eq!(app.edit.as_ref().unwrap().text, "5");
+    enter(&mut app, "7");
     assert_eq!(
         cell(&app, 0, "owner").as_deref(),
-        Some("{name: Ana, home: {x: 7, y: null}}")
+        Some("{name: Ana, home: {x: 7, y: 6}}")
     );
+    // Space closes it again.
+    grid(&mut app, GridEvent::Navigate(Nav::Up));
+    grid(&mut app, GridEvent::Navigate(Nav::Up));
+    assert_eq!(app.selected_cell_item(id).unwrap().item.display, ".home");
+    grid(&mut app, GridEvent::ToggleNode);
+    grid(&mut app, GridEvent::Navigate(Nav::Down));
+    assert!(app.selected_cell_item(id).is_none(), "past the last line");
 
     // Add a field from the field menu, then remove one.
     grid(
@@ -205,7 +213,7 @@ fn list_items_edit_in_place() {
         app.edit
             .as_ref()
             .and_then(|e| e.item.as_ref())
-            .map(|i| i.index)
+            .map(|i| i.item.index)
     };
 
     // An empty list: Enter edits the "empty" slot; each value goes on to
@@ -255,7 +263,7 @@ fn list_items_edit_in_place() {
     });
     let _ = app.update(Message::Menu(MenuItem::InsertItemBelow));
     assert_eq!(tags(&app, 0).as_deref(), Some("[a, null, null, B]"));
-    assert_eq!(app.selected_list_item(id).map(|i| i.index), Some(2));
+    assert_eq!(app.selected_cell_item(id).map(|i| i.item.index), Some(2));
     grid(&mut app, GridEvent::DeleteRows);
     assert_eq!(tags(&app, 0).as_deref(), Some("[a, null, B]"));
     grid(&mut app, GridEvent::Navigate(Nav::Up));
@@ -303,7 +311,7 @@ fn map_entries_edit_in_place() {
     let editing = |app: &App| {
         app.edit
             .as_ref()
-            .map(|e| (e.item.as_ref().unwrap().index, e.key))
+            .map(|e| (e.item.as_ref().unwrap().item.index, e.key))
     };
     let menu = |app: &mut App, item| {
         app.menu = Some(ContextMenu {
@@ -443,4 +451,115 @@ fn edit_nested_values_and_expand_explode() {
     finish_compute(&mut app, id);
     // Row 1 now has two tags: 2 + 2 + 1 (null row) + 3.
     assert_eq!(app.workbook.get(id).unwrap().num_rows(), 8);
+}
+
+#[test]
+fn values_nested_to_any_depth_open_and_edit() {
+    let dir = TempDir::new();
+    let path = dir.join("deep.parquet");
+    fixtures::deep_nested(&path, 40);
+    let mut app = app_with(&[&path]);
+    let id = app.tabs[0].id;
+    let grid = |app: &mut App, event| {
+        let _ = app.update(Message::Grid(id, event));
+    };
+    let enter = |app: &mut App, text: &str| {
+        let _ = app.update(Message::EditInput(text.into()));
+        let _ = app.update(Message::CommitEdit);
+    };
+    let cell = |app: &App, row: usize, column: &str| {
+        let doc = app.workbook.get(id).unwrap();
+        let i = doc.schema().index_of(column).unwrap();
+        veta_core::display::format_batch(&doc.read(row..row + 1).unwrap()).unwrap()[0][i].clone()
+    };
+    let at = |app: &App| app.selected_cell_item(id).map(|i| i.item.display);
+    let column = |name: &str| {
+        veta_testkit::fixtures::deep_nested_schema()
+            .index_of(name)
+            .unwrap()
+    };
+    let find = |app: &App, name: &str, test: &dyn Fn(&str) -> bool| {
+        (0..40)
+            .find(|&r| cell(app, r, name).is_some_and(|v| test(&v)))
+            .unwrap()
+    };
+
+    // A list of lists, from empty: the new item is a list, so it opens.
+    let row = find(&app, "matrix", &|v| v == "[]");
+    grid(
+        &mut app,
+        GridEvent::Select {
+            row,
+            column: column("matrix"),
+        },
+    );
+    grid(&mut app, GridEvent::StartEdit { initial: None });
+    assert_eq!(cell(&app, row, "matrix").as_deref(), Some("[null]"));
+    assert_eq!(at(&app).as_deref(), Some("[0][0]"), "the inner list's slot");
+    grid(&mut app, GridEvent::StartEdit { initial: None });
+    enter(&mut app, "1");
+    enter(&mut app, "2");
+    enter(&mut app, "");
+    assert_eq!(cell(&app, row, "matrix").as_deref(), Some("[[1, 2]]"));
+    assert_eq!(at(&app).as_deref(), Some("[0]"), "back on the inner list");
+
+    // A map inside a struct inside a list: rename a key, set its value.
+    let row = find(&app, "orders", &|v| {
+        v.starts_with("[{") && v.contains("color")
+    });
+    grid(
+        &mut app,
+        GridEvent::Select {
+            row,
+            column: column("orders"),
+        },
+    );
+    grid(&mut app, GridEvent::StartEdit { initial: None });
+    assert_eq!(at(&app).as_deref(), Some("[0].sku"), "into the first order");
+    for _ in 0..3 {
+        grid(&mut app, GridEvent::Navigate(Nav::Down));
+    }
+    assert_eq!(at(&app).as_deref(), Some("[0].options"));
+    grid(&mut app, GridEvent::ToggleNode);
+    grid(&mut app, GridEvent::Navigate(Nav::Down));
+    assert_eq!(at(&app).as_deref(), Some(r#"[0].options["color"]"#));
+    app.menu = Some(ContextMenu {
+        document: id,
+        target: MenuTarget::Entry,
+        position: iced::Point::ORIGIN,
+    });
+    let _ = app.update(Message::Menu(MenuItem::EditKey));
+    enter(&mut app, "colour");
+    grid(&mut app, GridEvent::StartEdit { initial: None });
+    enter(&mut app, "teal");
+    let orders = cell(&app, row, "orders").unwrap();
+    assert!(orders.contains("options: {colour: teal, "), "{orders}");
+
+    // A whole-number-keyed map of structs: a new entry opens its struct.
+    let row = find(&app, "history", &|v| v == "{}");
+    grid(
+        &mut app,
+        GridEvent::Select {
+            row,
+            column: column("history"),
+        },
+    );
+    grid(
+        &mut app,
+        GridEvent::StartEdit {
+            initial: Some("5".into()),
+        },
+    );
+    let _ = app.update(Message::CommitEdit);
+    assert_eq!(
+        at(&app).as_deref(),
+        Some("[\"5\"].status"),
+        "into its struct"
+    );
+    grid(&mut app, GridEvent::StartEdit { initial: None });
+    enter(&mut app, "paid");
+    assert_eq!(
+        cell(&app, row, "history").as_deref(),
+        Some("{5: {status: paid, notes: null}}")
+    );
 }

@@ -65,8 +65,9 @@ veta-core/src/
   files/                 parquet (open, save), source (in memory / paged),
                          recipe (JSON), convert/ (CSV, JSON, encodings,
                          export)
-  values/                display (cell text, value trees), parse (text to
-                         values, nested edits), clipboard
+  values/                display (cell text, types, paths), node (one
+                         value and its children, at any depth), parse
+                         (text to values, nested edits), clipboard
 veta-core/tests/         integration tests: workflows, recipes, large
                          files, import/export, edge files
 
@@ -86,7 +87,7 @@ veta-gui/src/
   grid/                  the virtualized table
     mod.rs               GridView: per-tab state, selection, events
     geometry.rs          columns on screen, row lines, hit testing
-    items.rs             open list / struct cells
+    items.rs             open cells: nested values as trees of lines
     load.rs              row windows, background reads, filter view
     input.rs             the Grid widget and its event handling
     draw.rs              drawing

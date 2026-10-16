@@ -448,7 +448,7 @@ impl App {
                     }
                 }
                 GridEvent::InsertRows | GridEvent::DeleteRows
-                    if let Some(item) = self.selected_list_item(id) =>
+                    if let Some(item) = self.selected_cell_item(id) =>
                 {
                     let change = if event == GridEvent::InsertRows {
                         ItemChange::InsertAbove
@@ -468,14 +468,9 @@ impl App {
                         position,
                     });
                 }
-                GridEvent::ClearCell if let Some(item) = self.selected_list_item(id) => {
-                    if item.index < item.len {
-                        let change = veta_core::values::ListEdit::Set {
-                            index: item.index,
-                            text: None,
-                            item_type: &item.data_type,
-                        };
-                        match self.change_list(id, &item, &change) {
+                GridEvent::ClearCell if let Some(item) = self.selected_cell_item(id) => {
+                    if !item.item.is_slot() {
+                        match self.set_item_value(id, &item, None) {
                             Ok(()) => self.refresh(id),
                             Err(e) => self.errors.push(e),
                         }

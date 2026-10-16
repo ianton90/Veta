@@ -52,14 +52,11 @@ pub fn formula_bar<'a>(
                         name = format!("{name}.{part}");
                     }
                     if let Some(item) = tab.grid.selected_item() {
-                        let key = edit.is_some_and(|e| e.key);
-                        name = match (item.field, item.key) {
-                            (Some(field), _) => format!("{name}.{field}"),
-                            (None, Some(None)) => format!("{name} new key"),
-                            (None, Some(Some(k))) if key => format!("{name} key {k:?}"),
-                            (None, Some(Some(k))) => format!("{name}[{k:?}]"),
-                            (None, None) => format!("{name}[{}]", item.index),
-                        };
+                        let key = edit.is_some_and(|e| e.key) && !item.is_slot();
+                        name = format!("{name}{}", item.display);
+                        if key {
+                            name.push_str(" key");
+                        }
                     }
                     format!("{name} · ")
                 })
@@ -79,7 +76,8 @@ pub fn formula_bar<'a>(
         .id(FORMULA_ID)
         .size(ui.small())
         .padding([3, 6]);
-    if selected.is_some() {
+    // Structs, lists and maps open in the grid; they aren't typed as text.
+    if selected.is_some() && (edit.is_some() || !tab.grid.selected_is_container()) {
         input = input
             .on_input(Message::EditInput)
             .on_submit(Message::CommitEdit);
@@ -95,7 +93,7 @@ pub fn formula_bar<'a>(
         row![
             text(label)
                 .size(ui.small())
-                .width(200)
+                .width(280)
                 .color(t.muted_text)
                 .wrapping(text::Wrapping::None),
             icon(Icon::Function, ui.size).color(t.muted_text),

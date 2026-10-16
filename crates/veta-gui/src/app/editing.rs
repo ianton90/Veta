@@ -2,6 +2,8 @@
 //! entries), and undo / redo.
 
 use super::*;
+use veta_core::display::PathPart;
+use veta_core::values::node::NodeKind;
 
 impl App {
     /// Messages about editing cells and nested values.
@@ -23,32 +25,39 @@ impl App {
                 }
             },
             Message::CommitEdit => {
-                // A value entered in the last item of a list, or in the slot
-                // for a new one, goes on to a new item at the end; an empty
-                // new item ends.
-                // Map entries go key, value, next key; an empty new key ends.
-                let item = self.edit.as_ref().and_then(|e| e.item.clone());
-                let empty = self.edit.as_ref().is_some_and(|e| e.text.is_empty());
-                let key = self.edit.as_ref().is_some_and(|e| e.key);
+                // In a list or map, a value entered in the last item goes on
+                // to a new one at the end (a map asks for its key first, then
+                // its value); an empty new item ends. Struct fields go down.
+                let edit = self.edit.clone();
+                let item = edit.as_ref().and_then(|e| e.item.clone());
+                let empty = edit.as_ref().is_some_and(|e| e.text.is_empty());
+                let key = edit.as_ref().is_some_and(|e| e.key);
                 if self.commit_edit()
                     && let Some(id) = self.active
                 {
-                    match item {
-                        Some(item) if key && item.index == item.len && !empty => {
-                            self.select_item(id, Some(item.index));
+                    match item.map(|i| i.item) {
+                        Some(item) if item.is_slot() && empty => {
+                            self.grid_do(id, |g, d| {
+                                g.select_path(&item.parent, d);
+                            });
+                        }
+                        Some(item) if key && item.is_slot() => {
+                            // The new entry: on to its value.
+                            self.grid_do(id, |g, d| {
+                                g.select_path(&item.path, d);
+                            });
                             return self.start_edit(id, None);
                         }
-                        Some(item) if key && item.index < item.len => {
-                            self.select_item(id, Some(item.index));
+                        Some(item) if key => {
+                            self.grid_do(id, |g, d| {
+                                g.select_path(&item.path, d);
+                            });
                         }
-                        Some(item) if item.field.is_some() => {
+                        Some(item) if item.parent_kind == NodeKind::Struct => {
                             self.grid_event(id, GridEvent::Navigate(Nav::Down));
                         }
-                        Some(item) if item.index == item.len && empty => {
-                            self.select_item(id, None);
-                        }
-                        Some(item) if item.index + 1 >= item.len => {
-                            self.select_item(id, Some(usize::MAX));
+                        Some(item) if item.index + 1 >= item.len && !item.fixed => {
+                            self.grid_do(id, |g, d| g.select_slot(&item.parent, d));
                             return self.start_edit(id, None);
                         }
                         _ => self.grid_event(id, GridEvent::Navigate(Nav::Down)),
@@ -154,13 +163,13 @@ impl App {
 
     /// Removes the selected field of an open struct cell from its column.
     pub(crate) fn remove_field(&mut self, id: DocumentId) {
-        let Some(item) = self.selected_list_item(id) else {
+        let Some(item) = self.selected_cell_item(id) else {
             return;
         };
-        let Some(name) = item.field else {
+        let Some(name) = item.item.field().map(str::to_owned) else {
             return;
         };
-        if !item.list.is_empty() {
+        if !item.parent().is_empty() {
             self.errors
                 .push("Only fields of top-level struct columns can be removed.".into());
             return;
@@ -182,101 +191,65 @@ impl App {
         Some((row, doc.schema().field(column).name().clone()))
     }
 
-    /// Selects item `item` of the selected list cell (opening its row), or
-    /// the cell itself.
-    fn select_item(&mut self, id: DocumentId, item: Option<usize>) {
+    /// Runs `f` on a document's grid.
+    pub(crate) fn grid_do(&mut self, id: DocumentId, f: impl FnOnce(&mut GridView, &Document)) {
         if let (Some(doc), Some(tab)) = (
             self.workbook.get(id),
             self.tabs.iter_mut().find(|t| t.id == id),
         ) {
-            tab.grid.select_item(item, doc);
+            f(&mut tab.grid, doc);
         }
     }
 
-    /// The selected item of an open list cell, if one is.
-    pub(crate) fn selected_list_item(&self, id: DocumentId) -> Option<ListItem> {
+    /// The selected line of an open cell, if one is.
+    pub(crate) fn selected_cell_item(&self, id: DocumentId) -> Option<CellItem> {
         let (row, column) = self.selected_cell(id)?;
         let tab = self.tabs.iter().find(|t| t.id == id)?;
         let item = tab.grid.selected_item()?;
-        let list = tab.grid.selected_field()?.0.to_vec();
-        Some(ListItem {
+        let cell = tab
+            .grid
+            .selected_field()?
+            .0
+            .iter()
+            .cloned()
+            .map(PathPart::Field)
+            .collect();
+        Some(CellItem {
             row,
             column,
-            list,
-            index: item.index,
-            len: item.len,
-            data_type: item.data_type,
-            field: item.field,
-            key: item.key,
+            cell,
+            item,
         })
     }
 
-    /// Changes the list holding `item`.
-    pub(crate) fn change_list(
+    /// Sets the value of line `item` (a slot of a list: a new item at the
+    /// end), from text; `None` sets null.
+    pub(crate) fn set_item_value(
         &mut self,
         id: DocumentId,
-        item: &ListItem,
-        change: &veta_core::values::ListEdit,
+        item: &CellItem,
+        text: Option<&str>,
     ) -> Result<(), String> {
-        use veta_core::display::PathPart;
-        use veta_core::values::ListEdit;
-        let (row, column) = (item.row, item.column.clone());
-        let path: Vec<PathPart> = item.list.iter().cloned().map(PathPart::Field).collect();
-        let child = |i: usize| {
-            let mut p = path.clone();
-            p.push(match (&item.field, item.key.is_some()) {
-                (Some(f), _) => PathPart::Field(f.clone()),
-                (None, true) => PathPart::Entry(i),
-                (None, false) => PathPart::Index(i),
-            });
-            p
-        };
-        let command = match *change {
-            ListEdit::Set { index, text, .. } => Command::SetValue {
-                row,
-                column,
-                path: child(index),
-                value: text.map(str::to_owned),
-            },
-            _ if item.field.is_some() => {
-                return Err("struct fields can't be inserted or removed here".into());
-            }
-            ListEdit::Insert(_) if item.key.is_some() => {
-                return Err("map entries need a key".into());
-            }
-            ListEdit::Insert(index) => Command::InsertItem {
-                row,
-                column,
-                path,
-                index,
-                key: None,
-            },
-            ListEdit::Remove(index) => Command::RemoveItem {
-                row,
-                column,
-                path,
-                index,
-            },
+        let command = Command::SetValue {
+            row: item.row,
+            column: item.column.clone(),
+            path: item.path(),
+            value: text.map(str::to_owned),
         };
         self.nested_command(id, command)
     }
 
     /// Renames the key of map entry `item`, or adds an entry with that key
-    /// when `item` is the new-entry slot.
-    fn change_map_key(&mut self, id: DocumentId, item: &ListItem, key: &str) -> Result<(), String> {
-        use veta_core::display::PathPart;
-        let (row, column, index) = (item.row, item.column.clone(), item.index);
-        let path: Vec<PathPart> = item.list.iter().cloned().map(PathPart::Field).collect();
+    /// when `item` is the slot for a new one.
+    fn change_map_key(&mut self, id: DocumentId, item: &CellItem, key: &str) -> Result<(), String> {
+        let (row, column, path, index) = (
+            item.row,
+            item.column.clone(),
+            item.parent(),
+            item.item.index,
+        );
         let key = key.to_owned();
-        let command = if index < item.len {
-            Command::SetKey {
-                row,
-                column,
-                path,
-                index,
-                key,
-            }
-        } else {
+        let command = if item.item.is_slot() {
             Command::InsertItem {
                 row,
                 column,
@@ -284,16 +257,25 @@ impl App {
                 index,
                 key: Some(key),
             }
+        } else {
+            Command::SetKey {
+                row,
+                column,
+                path,
+                index,
+                key,
+            }
         };
         self.nested_command(id, command)
     }
 
-    /// Starts editing the key of the selected map entry.
+    /// Starts editing the key of the selected map entry (or the new key, on
+    /// the slot).
     pub(crate) fn start_key_edit(&mut self, id: DocumentId) -> Task<Message> {
-        let Some(item) = self.selected_list_item(id) else {
+        let Some(item) = self.selected_cell_item(id) else {
             return Task::none();
         };
-        let Some(key) = item.key.clone() else {
+        let Some(key) = item.item.key().map(|k| k.unwrap_or_default().to_owned()) else {
             return Task::none();
         };
         self.edit = Some(Edit {
@@ -301,7 +283,7 @@ impl App {
             row: item.row,
             column: item.column.clone(),
             field: None,
-            text: key.unwrap_or_default(),
+            text: key,
             item: Some(item),
             key: true,
             error: None,
@@ -312,51 +294,83 @@ impl App {
         ])
     }
 
-    /// Selects the new-entry slot of the selected map cell and starts
-    /// editing the new key.
+    /// Selects the slot at the end of the map holding the selected entry (or
+    /// the selected map) and starts editing the new key.
     pub(crate) fn add_map_entry(&mut self, id: DocumentId) -> Task<Message> {
-        self.select_item(id, Some(usize::MAX));
+        let map = match self.selected_cell_item(id) {
+            Some(item) if item.item.parent_kind == NodeKind::Map => item.item.parent,
+            Some(item) if item.item.kind == Some(NodeKind::Map) => item.item.path,
+            Some(_) => return Task::none(),
+            None => Vec::new(),
+        };
+        self.grid_do(id, |g, d| g.select_slot(&map, d));
         self.start_key_edit(id)
     }
 
-    /// Inserts a null item above or below the selected item, or removes it,
-    /// and selects the new item (or the one now in its place).
+    /// Inserts a null item above or below the selected list item, or removes
+    /// the selected item or entry, and selects the new item (or the one now
+    /// in its place). Inserting into a map adds an entry at the end.
     pub(crate) fn insert_or_remove_item(
         &mut self,
         id: DocumentId,
-        item: &ListItem,
+        item: &CellItem,
         change: ItemChange,
     ) -> Task<Message> {
-        use veta_core::values::ListEdit;
-        if item.field.is_some() {
+        let it = &item.item;
+        if it.parent_kind == NodeKind::Struct {
             return Task::none();
         }
-        // A map entry needs a key first: inserting adds one at the end.
-        if item.key.is_some() && change != ItemChange::Remove {
+        if it.fixed {
+            self.errors
+                .push("Items of a fixed-size list can't be added or removed.".into());
+            return Task::none();
+        }
+        if it.parent_kind == NodeKind::Map && change != ItemChange::Remove {
             return self.add_map_entry(id);
         }
-        let (change, select) = match change {
-            ItemChange::InsertAbove => {
-                let at = item.index.min(item.len);
-                (ListEdit::Insert(at), at)
+        let part = |i: usize| match it.parent_kind {
+            NodeKind::Map => PathPart::Entry(i),
+            _ => PathPart::Index(i),
+        };
+        let (row, column, path) = (item.row, item.column.clone(), item.parent());
+        let (command, select) = match change {
+            ItemChange::InsertAbove | ItemChange::InsertBelow => {
+                let at = match change {
+                    ItemChange::InsertAbove => it.index,
+                    _ => it.index + 1,
+                }
+                .min(it.len);
+                let command = Command::InsertItem {
+                    row,
+                    column,
+                    path,
+                    index: at,
+                    key: None,
+                };
+                (command, Some(at))
             }
-            ItemChange::InsertBelow => {
-                let at = (item.index + 1).min(item.len);
-                (ListEdit::Insert(at), at)
-            }
-            ItemChange::Remove if item.index < item.len => {
-                let len = item.len - 1;
-                (
-                    ListEdit::Remove(item.index),
-                    item.index.min(len.saturating_sub(1)),
-                )
+            ItemChange::Remove if !it.is_slot() => {
+                let command = Command::RemoveItem {
+                    row,
+                    column,
+                    path,
+                    index: it.index,
+                };
+                let left = it.len - 1;
+                (command, (left > 0).then(|| it.index.min(left - 1)))
             }
             ItemChange::Remove => return Task::none(),
         };
-        match self.change_list(id, item, &change) {
+        match self.nested_command(id, command) {
             Ok(()) => {
                 self.refresh(id);
-                self.select_item(id, Some(select));
+                let target = match select {
+                    Some(i) => [it.parent.clone(), vec![part(i)]].concat(),
+                    None => it.parent.clone(),
+                };
+                self.grid_do(id, |g, d| {
+                    g.select_path(&target, d);
+                });
             }
             Err(e) => self.errors.push(e),
         }
@@ -396,52 +410,131 @@ impl App {
         self.nested_command(id, command)
     }
 
-    /// Starts editing the selected cell in the formula bar.
+    /// Starts editing the selected cell or line in the formula bar.
+    ///
+    /// Structs, lists and maps aren't edited as text: Enter goes into them
+    /// (to their first line, editing it if it is a plain value), and typing
+    /// adds an item at the end of a list or map (a map entry starts with
+    /// its key).
     pub(crate) fn start_edit(&mut self, id: DocumentId, initial: Option<String>) -> Task<Message> {
         let Some((row, column)) = self.selected_cell(id) else {
             return Task::none();
         };
-        // Lists are edited item by item: Enter edits the first item, typing
-        // starts a new one at the end.
-        if let Some(tab) = self.tabs.iter().find(|t| t.id == id)
-            && let Some(kind) = tab.grid.selected_opens_items()
+        let Some(tab) = self.tabs.iter().find(|t| t.id == id) else {
+            return Task::none();
+        };
+        // A nested cell: into its lines.
+        if let Some(kind) = tab.grid.selected_opens_items()
             && tab.grid.selected_item().is_none()
+            && !tab.grid.selected_is_line()
         {
-            let item = match kind {
-                crate::grid::OpenKind::List | crate::grid::OpenKind::Map if initial.is_some() => {
-                    usize::MAX
+            match (kind, &initial) {
+                (NodeKind::List | NodeKind::Map, Some(_)) => {
+                    self.grid_do(id, |g, d| g.select_slot(&[], d));
                 }
-                _ => 0,
-            };
-            self.select_item(id, Some(item));
+                _ => self.grid_do(id, |g, d| g.select_item(Some(0), d)),
+            }
         }
-        let item = self.selected_list_item(id);
-        // The new-entry slot of a map starts with its key.
-        if let Some(item) = &item
-            && item.key == Some(None)
-        {
+        let item = self.selected_cell_item(id);
+        let Some(item) = item else {
+            if self
+                .tabs
+                .iter()
+                .find(|t| t.id == id)
+                .is_some_and(|t| t.grid.selected_is_container())
+            {
+                return Task::none();
+            }
+            // A plain cell, or a field of an expanded struct column.
+            let text = initial.unwrap_or_else(|| self.cell_text(id).unwrap_or_default());
+            let field = self.selected_struct_field(id);
+            return self.open_editor(Edit {
+                document: id,
+                row,
+                column,
+                field,
+                item: None,
+                key: false,
+                text,
+                error: None,
+            });
+        };
+        let it = item.item.clone();
+        if it.is_slot() && it.parent_kind == NodeKind::Map {
             let task = self.start_key_edit(id);
             if let (Some(edit), Some(text)) = (&mut self.edit, initial) {
                 edit.text = text;
             }
             return task;
         }
-        let text = initial.unwrap_or_else(|| self.cell_text(id).unwrap_or_default());
-        let field = if item.is_some() {
-            None
-        } else {
-            self.selected_struct_field(id)
+        if it.is_slot() && NodeKind::of(&it.data_type).is_container() {
+            // A new struct, list or map item: add it and go into it.
+            let command = Command::InsertItem {
+                row: item.row,
+                column: item.column.clone(),
+                path: item.parent(),
+                index: it.index,
+                key: None,
+            };
+            if let Err(e) = self.nested_command(id, command) {
+                self.errors.push(e);
+                return Task::none();
+            }
+            self.refresh(id);
+            self.grid_do(id, |g, d| {
+                g.select_path(&it.path, d);
+            });
+            return self.enter_container(id, &it.path, initial);
+        }
+        if it.is_container() {
+            return self.enter_container(id, &it.path, initial);
+        }
+        let text = match initial {
+            Some(text) => text,
+            None if it.is_slot() => String::new(),
+            None => self.cell_text(id).unwrap_or_default(),
         };
-        self.edit = Some(Edit {
+        self.open_editor(Edit {
             document: id,
             row,
             column,
-            field,
-            item,
+            field: None,
+            item: Some(item),
             key: false,
             text,
             error: None,
+        })
+    }
+
+    /// Opens the selected struct, list or map line at `path` and goes to its
+    /// first line; typing (`initial`) goes on as [`Self::start_edit`] there
+    /// (at the end of a list or map).
+    fn enter_container(
+        &mut self,
+        id: DocumentId,
+        path: &[PathPart],
+        initial: Option<String>,
+    ) -> Task<Message> {
+        let kind = self
+            .selected_cell_item(id)
+            .and_then(|i| i.item.kind)
+            .unwrap_or(NodeKind::Struct);
+        self.grid_do(id, |g, d| {
+            g.open_path(path, d);
+            match (kind, &initial) {
+                (NodeKind::List | NodeKind::Map, Some(_)) => g.select_slot(path, d),
+                _ => g.select_first_child(d),
+            }
         });
+        match initial {
+            Some(_) => self.start_edit(id, initial),
+            None => iced::widget::operation::focus(GRID_ID),
+        }
+    }
+
+    /// Shows `edit` in the formula bar and the cell editor.
+    fn open_editor(&mut self, edit: Edit) -> Task<Message> {
+        self.edit = Some(edit);
         Task::batch([
             iced::widget::operation::focus(EDITOR_ID),
             iced::widget::operation::move_cursor_to_end(EDITOR_ID),
@@ -477,8 +570,7 @@ impl App {
         };
         let unchanged = match &edit.item {
             Some(item) if edit.key => {
-                item.key.as_ref().map(|k| k.as_deref().unwrap_or_default())
-                    == Some(edit.text.as_str())
+                item.item.key().map(Option::unwrap_or_default) == Some(edit.text.as_str())
             }
             _ => self.cell_text(edit.document).as_deref() == Some(edit.text.as_str()),
         };
@@ -489,12 +581,7 @@ impl App {
             self.change_map_key(edit.document, item, &edit.text)
         } else if let Some(item) = &edit.item {
             let text = (!edit.text.is_empty()).then_some(edit.text.as_str());
-            let change = veta_core::values::ListEdit::Set {
-                index: item.index,
-                text,
-                item_type: &item.data_type,
-            };
-            self.change_list(edit.document, item, &change)
+            self.set_item_value(edit.document, item, text)
         } else if let Some(field) = &edit.field {
             let text = (!edit.text.is_empty()).then_some(edit.text.as_str());
             self.set_field(edit.document, edit.row, &edit.column, field, text)

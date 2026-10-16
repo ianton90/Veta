@@ -48,7 +48,7 @@ impl GridView {
     pub fn set_preview(&mut self, at: Option<usize>, document: &Document) {
         // Other rows show after another step or without the filter.
         if at != self.at || self.filter.is_some() {
-            self.open_rows.clear();
+            self.close_all();
         }
         self.at = at;
         self.filter = None;
@@ -65,7 +65,7 @@ impl GridView {
     pub fn set_filter(&mut self, view: Option<(Filter, Pipeline)>, document: &Document) {
         self.at = None;
         self.filter = view.map(|(filter, pipeline)| FilterView { filter, pipeline });
-        self.open_rows.clear();
+        self.close_all();
         self.refresh(document);
     }
 
@@ -86,7 +86,7 @@ impl GridView {
         if !view.pipeline.install(computed) {
             return false;
         }
-        self.open_rows.clear();
+        self.close_all();
         self.refresh(document);
         true
     }
@@ -144,7 +144,7 @@ impl GridView {
         };
         // Row numbers mean other rows now.
         if num_rows != self.num_rows {
-            self.open_rows.clear();
+            self.close_all();
         }
         self.num_rows = num_rows;
         let before = self.selected;
@@ -244,11 +244,9 @@ impl GridView {
 
     /// Makes `batch` the loaded rows, starting at row `start`.
     fn install(&mut self, start: usize, batch: veta_core::Result<RecordBatch>) {
-        let end = start + batch.as_ref().map_or(0, RecordBatch::num_rows);
         let formatted = batch.and_then(|batch| {
             let batch = self.display_batch(batch)?;
             let mut cells = format_batch(&batch)?;
-            let mut details = std::collections::HashMap::new();
             for (i, column) in batch.columns().iter().enumerate() {
                 if !has_items(column.data_type()) {
                     continue;
@@ -259,54 +257,22 @@ impl GridView {
                     }
                 }
             }
-            for &row in self.open_rows.range(start..end) {
-                let local = row - start;
-                let columns = batch
-                    .columns()
-                    .iter()
-                    .map(|column| {
-                        let array = column.as_ref();
-                        let kind = match array.data_type() {
-                            DataType::List(_) | DataType::LargeList(_) => ItemsKind::List,
-                            DataType::Struct(_) => ItemsKind::Struct,
-                            t if map_types(t).is_some() => ItemsKind::Map,
-                            t if has_items(t) => ItemsKind::ReadOnly,
-                            _ => ItemsKind::None,
-                        };
-                        if kind == ItemsKind::Struct {
-                            let items =
-                                veta_core::display::struct_fields(array, local).unwrap_or_default();
-                            return Items {
-                                items,
-                                more: 0,
-                                kind,
-                            };
-                        }
-                        let items = veta_core::display::list_items(array, local, MAX_ITEMS)
-                            .unwrap_or_default();
-                        let more = veta_core::display::item_count(array, local) - items.len();
-                        Items { items, more, kind }
-                    })
-                    .collect();
-                details.insert(row, columns);
-            }
-            Ok((cells, nested_json(&batch)?, details))
+            Ok((cells, batch))
         });
         match formatted {
-            Ok((cells, json, details)) => {
+            Ok((cells, batch)) => {
                 self.window_start = start;
                 self.cells = cells;
-                self.json = json;
-                self.details = details;
+                self.batch = Some(batch);
                 self.error = None;
             }
             Err(e) => {
                 self.cells.clear();
-                self.json.clear();
-                self.details.clear();
+                self.batch = None;
                 self.error = Some(e.to_string());
             }
         }
+        self.build_trees();
     }
 
     /// `batch` (document columns) as the columns on screen.
@@ -335,35 +301,4 @@ impl GridView {
             &options,
         )?)
     }
-}
-
-/// JSON text of the nested columns of `batch`: `result[row][column]` is
-/// `None` for columns that aren't nested.
-fn nested_json(
-    batch: &veta_core::arrow::record_batch::RecordBatch,
-) -> veta_core::Result<Vec<Vec<Option<Option<String>>>>> {
-    let nested: Vec<bool> = batch
-        .columns()
-        .iter()
-        .map(|c| c.data_type().is_nested())
-        .collect();
-    if !nested.contains(&true) {
-        return Ok(Vec::new());
-    }
-    (0..batch.num_rows())
-        .map(|row| {
-            batch
-                .columns()
-                .iter()
-                .zip(&nested)
-                .map(|(column, &is_nested)| {
-                    if is_nested {
-                        Ok(Some(veta_core::display::value_json(column.as_ref(), row)?))
-                    } else {
-                        Ok(None)
-                    }
-                })
-                .collect()
-        })
-        .collect()
 }

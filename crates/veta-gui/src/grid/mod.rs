@@ -7,8 +7,8 @@
 //! rows in view (plus a margin) are ever read from the document.
 //!
 //! Files: `geometry` (columns on screen, row lines, hit testing), `items`
-//! (open list and struct cells), `load` (reading rows, the filter view),
-//! `input` (the widget and its event handling) and `draw`.
+//! (open cells: nested values as trees of lines), `load` (reading rows, the
+//! filter view), `input` (the widget and its event handling) and `draw`.
 
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer::{self, Quad};
@@ -45,6 +45,7 @@ mod tests;
 
 use geometry::*;
 pub use input::*;
+pub use items::SelectedItem;
 use items::*;
 pub use load::*;
 
@@ -147,10 +148,13 @@ pub enum GridEvent {
     Collapse {
         column: usize,
     },
-    /// Show or hide the items of the list and map cells of `row`.
+    /// Show or hide the lines of the struct, list and map cells of `row`.
     ToggleItems {
         row: usize,
     },
+    /// Open or close the selected line (a struct, list or map), or the
+    /// selected cell's row.
+    ToggleNode,
     /// An item of an open list or map cell was clicked (`item` may be the
     /// number of items: the slot for a new one).
     SelectItem {
@@ -218,7 +222,7 @@ pub struct GridView {
     body_width: f32,
     scroll_x: f32,
     selected: Option<(usize, usize)>,
-    /// Selected item of the selected (open, list) cell.
+    /// Selected line of the selected (open) cell.
     item: Option<usize>,
     /// Whole-row selection as (anchor, end), inclusive, set by clicking row
     /// numbers.
@@ -228,9 +232,9 @@ pub struct GridView {
     /// First row of `cells`.
     window_start: usize,
     cells: Vec<Vec<Option<String>>>,
-    /// JSON text of nested cells in `cells` (row-major, by column index),
-    /// for editing; other cells are edited as displayed.
-    json: Vec<Vec<Option<Option<String>>>>,
+    /// The loaded rows as the columns on screen, for the lines of open
+    /// cells.
+    batch: Option<RecordBatch>,
     /// Struct columns shown as their fields, by column key.
     expanded: BTreeSet<Vec<String>>,
     /// Read rows on another thread while scrolling (paged documents).
@@ -240,11 +244,15 @@ pub struct GridView {
     /// The latest read started, and its rows; older results are dropped.
     reading: Option<(u64, Range<usize>)>,
     next_read: u64,
-    /// Rows whose list and map cells show their items.
+    /// Rows whose struct, list and map cells show their lines.
     open_rows: BTreeSet<usize>,
-    /// Items of the open rows in `cells`: per screen column, (index or key,
-    /// value) pairs, plus the number of items not listed.
-    details: std::collections::HashMap<usize, Vec<Items>>,
+    /// Values opened inside cells: row, column key and path in the cell.
+    open_nodes: BTreeSet<(usize, Vec<String>, Vec<veta_core::display::PathPart>)>,
+    /// The list or map showing a slot for a new item: row, screen column
+    /// and path in the cell.
+    slot: Option<(usize, usize, Vec<veta_core::display::PathPart>)>,
+    /// Lines of the open cells of loaded rows, per screen column.
+    trees: std::collections::HashMap<usize, Vec<CellTree>>,
     error: Option<String>,
     /// A temporary filter over the document's output (not a step).
     filter: Option<FilterView>,
@@ -253,30 +261,6 @@ pub struct GridView {
 /// A document column and the field names down to a field of it (empty
 /// for the column itself).
 pub type Target = (usize, Vec<String>);
-
-/// The selected item of an open list or struct cell (see
-/// [`GridView::selected_item`]).
-#[derive(Debug, Clone, PartialEq)]
-pub struct SelectedItem {
-    /// Item index (the list's length for the new-item slot), or field index.
-    pub index: usize,
-    /// Number of items, or of fields.
-    pub len: usize,
-    /// The item type, or the field's type.
-    pub data_type: DataType,
-    /// The field name, for a struct field.
-    pub field: Option<String>,
-    /// For a map entry, its key (`None` inside for the new-entry slot).
-    pub key: Option<Option<String>>,
-}
-
-/// Cells whose items edit in place.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpenKind {
-    List,
-    Map,
-    Struct,
-}
 
 impl GridView {
     pub fn new(document: &Document, text_size: f32) -> Self {
@@ -299,14 +283,16 @@ impl GridView {
             cols: None,
             window_start: 0,
             cells: Vec::new(),
-            json: Vec::new(),
+            batch: None,
             expanded: BTreeSet::new(),
             background: false,
             wanted: None,
             reading: None,
             next_read: 0,
             open_rows: BTreeSet::new(),
-            details: Default::default(),
+            open_nodes: BTreeSet::new(),
+            slot: None,
+            trees: Default::default(),
             error: None,
             filter: None,
         };
@@ -329,17 +315,19 @@ impl GridView {
         Some((column.path(), &column.data_type))
     }
 
-    /// Text to edit the selected cell with (see [`Self::edit_value`]).
+    /// Text of the selected cell or line, as shown and edited: `Some(None)`
+    /// for null, `None` if not loaded. A slot is empty text; lists and maps
+    /// show their size.
     pub fn selected_edit_value(&self) -> Option<Option<&str>> {
         let (row, column) = self.selected?;
-        if let Some(item) = self.item {
-            let items = self.items(row, column)?;
-            return Some(match items.items.get(item) {
-                Some(i) => i.edit.as_deref(),
-                None => Some(""),
+        if self.item.is_some() {
+            let line = self.selected_line()?;
+            return Some(match line.what {
+                items::What::Slot(_) => Some(""),
+                _ => line.text.as_deref(),
             });
         }
-        self.edit_value(row, column)
+        self.value(row, column)
     }
 
     /// The selected screen columns (or the selected cell's) as document
@@ -470,20 +458,6 @@ impl GridView {
         self.cell(row, column).map(Option::as_deref)
     }
 
-    /// Text to edit a loaded cell with: JSON for nested values, otherwise
-    /// as displayed. `Some(None)` for null, `None` if not loaded.
-    pub fn edit_value(&self, row: usize, column: usize) -> Option<Option<&str>> {
-        let json = self
-            .json
-            .get(row.checked_sub(self.window_start)?)
-            .and_then(|r| r.get(column))
-            .and_then(Option::as_ref);
-        match json {
-            Some(value) => Some(value.as_deref()),
-            None => self.value(row, column),
-        }
-    }
-
     /// Error from the last read, if it failed.
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
@@ -506,6 +480,7 @@ impl GridView {
                     self.select_item(Some(item), document);
                 }
             }
+            GridEvent::ToggleNode => self.toggle_selected(document),
             GridEvent::Select { row, column } => {
                 if row < self.num_rows && column < self.columns.len() {
                     self.item = None;
@@ -571,13 +546,7 @@ impl GridView {
                     self.select_key(&key);
                 }
             }
-            GridEvent::ToggleItems { row } => {
-                if !self.open_rows.remove(&row) && row < self.num_rows {
-                    self.open_rows.insert(row);
-                }
-                self.load(document, true);
-                self.reveal(row, self.selected.map_or(0, |(_, c)| c));
-            }
+            GridEvent::ToggleItems { row } => self.toggle_row(row, document),
             GridEvent::AutoFit { column } => {
                 if column < self.columns.len() {
                     self.fit_column(column);
@@ -599,6 +568,7 @@ impl GridView {
                 self.set_scroll(self.first_row, self.scroll_x);
             }
         }
+        self.after_select();
         self.load(document, false);
     }
 

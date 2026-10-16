@@ -2,6 +2,7 @@
 //! background work).
 
 use super::*;
+use veta_core::display::PathPart;
 
 /// A background import or export, shown in the status bar.
 #[derive(Debug)]
@@ -140,8 +141,8 @@ pub(crate) struct Edit {
     /// The struct field edited, when the cell is a field of an expanded
     /// struct column.
     pub(crate) field: Option<StructField>,
-    /// The list item edited, when an item of an open list cell is.
-    pub(crate) item: Option<ListItem>,
+    /// The line edited, when a line of an open cell is.
+    pub(crate) item: Option<CellItem>,
     /// The map entry's key is edited (`item` is the entry, or the slot for
     /// a new one), not its value.
     pub(crate) key: bool,
@@ -157,26 +158,32 @@ pub(crate) struct StructField {
     pub(crate) data_type: veta_core::arrow::datatypes::DataType,
 }
 
-/// An item of a list, or a field of a struct, in a cell (or in a struct
-/// field of it).
+/// The selected line of an open cell (a struct field, list item or map
+/// entry at any depth, or the slot for a new item), with its cell.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ListItem {
+pub(crate) struct CellItem {
     pub(crate) row: usize,
     pub(crate) column: String,
-    /// Struct fields down to the list or struct (empty: the cell is it).
-    pub(crate) list: Vec<String>,
-    /// Item index (the number of items for a new item), or field index.
-    pub(crate) index: usize,
-    pub(crate) len: usize,
-    pub(crate) data_type: veta_core::arrow::datatypes::DataType,
-    /// The field's name, for a struct field.
-    pub(crate) field: Option<String>,
-    /// For a map entry, its key (`None` inside for the new-entry slot);
-    /// `data_type` is then the value type.
-    pub(crate) key: Option<Option<String>>,
+    /// Struct fields from the column down to the cell, for a field of an
+    /// expanded struct column (empty: the column itself).
+    pub(crate) cell: Vec<PathPart>,
+    pub(crate) item: crate::grid::SelectedItem,
 }
 
-/// Inserting or removing a list item (see `App::insert_or_remove_item`).
+impl CellItem {
+    /// From the column down to the value (the new item, for a slot).
+    pub(crate) fn path(&self) -> Vec<PathPart> {
+        [self.cell.clone(), self.item.path.clone()].concat()
+    }
+
+    /// From the column down to the struct, list or map holding it.
+    pub(crate) fn parent(&self) -> Vec<PathPart> {
+        [self.cell.clone(), self.item.parent.clone()].concat()
+    }
+}
+
+/// Inserting or removing a list item or map entry (see
+/// `App::insert_or_remove_item`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ItemChange {
     InsertAbove,

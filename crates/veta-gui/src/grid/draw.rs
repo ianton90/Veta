@@ -1,6 +1,7 @@
 //! Drawing the grid.
 
 use super::*;
+use veta_core::values::node::NodeKind;
 
 impl<Message> Grid<'_, Message> {
     /// Body of [`Widget::draw`].
@@ -123,97 +124,86 @@ impl<Message> Grid<'_, Message> {
                     color,
                     clip,
                 );
-                // Items of an open row, one per line: index or key, value.
-                let Some(items) = view.details.get(&row).and_then(|d| d.get(column)) else {
+                // Lines of an open cell: arrow, label (field, index or
+                // key) and value, indented by depth.
+                let Some(tree) = view.tree(row, column) else {
                     continue;
                 };
-                let indent = m.text_size + 2.0;
-                for (k, item) in items.items.iter().enumerate() {
-                    let (label, value) = (&item.label, &item.text);
+                for (k, line) in tree.lines.iter().enumerate() {
                     let line_cell = Rectangle {
-                        x: x + indent,
+                        x,
                         y: y + (k + 1) as f32 * m.row_height,
-                        width: width - indent,
+                        width,
                         height: m.row_height,
                     };
                     let Some(clip) = line_cell.intersection(&regions.body) else {
                         continue;
                     };
-                    draw_text(
-                        renderer,
-                        label.clone(),
-                        line_cell,
-                        false,
-                        m.type_text_size,
-                        Font::DEFAULT,
-                        muted,
-                        clip,
-                    );
-                    let label_width = (label.chars().count() + 1) as f32 * m.char_width;
-                    let value_cell = Rectangle {
-                        x: line_cell.x + label_width,
-                        width: line_cell.width - label_width,
+                    let (arrow, label) = line_offsets(m, line);
+                    let at = |offset: f32| Rectangle {
+                        x: x + offset,
+                        width: (width - offset).max(0.0),
                         ..line_cell
                     };
-                    let (text, color) = match value {
-                        Some(v) => (single_line(v), text_color),
-                        None => (NULL_TEXT.to_owned(), muted),
-                    };
-                    draw_text(
-                        renderer,
-                        text,
-                        value_cell,
-                        false,
-                        m.text_size,
-                        Font::DEFAULT,
-                        color,
-                        clip,
-                    );
-                }
-                // The slot for a new item.
-                if items.has_slot(view.appending(row, column)) {
-                    let line_cell = Rectangle {
-                        x: x + indent,
-                        y: y + (items.items.len() + 1) as f32 * m.row_height,
-                        width: width - indent,
-                        height: m.row_height,
-                    };
-                    if let Some(clip) = line_cell.intersection(&regions.body) {
-                        let text = match (items.items.is_empty(), items.kind) {
-                            (true, _) => "empty".to_owned(),
-                            (false, ItemsKind::Map) => "new entry".to_owned(),
-                            (false, _) => items.items.len().to_string(),
+                    let muted_text =
+                        |renderer: &mut Renderer, text: String, offset: f32, size: f32| {
+                            draw_text(
+                                renderer,
+                                text,
+                                at(offset),
+                                false,
+                                size,
+                                Font::DEFAULT,
+                                muted,
+                                clip,
+                            );
                         };
-                        draw_text(
-                            renderer,
-                            text,
-                            line_cell,
-                            false,
-                            m.type_text_size,
-                            Font::DEFAULT,
-                            muted,
-                            clip,
-                        );
-                    }
-                }
-                if items.more > 0 {
-                    let line_cell = Rectangle {
-                        x: x + indent,
-                        y: y + (items.items.len() + 1) as f32 * m.row_height,
-                        width: width - indent,
-                        height: m.row_height,
-                    };
-                    if let Some(clip) = line_cell.intersection(&regions.body) {
-                        draw_text(
-                            renderer,
-                            format!("… {} more", items.more),
-                            line_cell,
-                            false,
-                            m.text_size,
-                            Font::DEFAULT,
-                            muted,
-                            clip,
-                        );
+                    match &line.what {
+                        What::Node { kind, open, .. } => {
+                            if kind.is_container() {
+                                let glyph = if *open {
+                                    Icon::ChevronDown
+                                } else {
+                                    Icon::ChevronRight
+                                };
+                                draw_text(
+                                    renderer,
+                                    glyph.codepoint().to_string(),
+                                    at(arrow),
+                                    false,
+                                    m.text_size,
+                                    icon::FONT,
+                                    t.selection,
+                                    clip,
+                                );
+                            }
+                            muted_text(renderer, line.label.clone(), label, m.type_text_size);
+                            let (text, color) = match &line.text {
+                                Some(v) => (single_line(v), text_color),
+                                None => (NULL_TEXT.to_owned(), muted),
+                            };
+                            draw_text(
+                                renderer,
+                                text,
+                                at(label + label_width(m, &line.label)),
+                                false,
+                                m.text_size,
+                                Font::DEFAULT,
+                                color,
+                                clip,
+                            );
+                        }
+                        What::Slot(place) => {
+                            let text = match (place.len, place.parent) {
+                                (0, _) => "empty".to_owned(),
+                                (_, NodeKind::Map) => "new entry".to_owned(),
+                                (n, _) => n.to_string(),
+                            };
+                            muted_text(renderer, text, label, m.type_text_size);
+                        }
+                        What::More(n) => {
+                            muted_text(renderer, format!("… {n} more"), label, m.text_size);
+                        }
                     }
                 }
             }

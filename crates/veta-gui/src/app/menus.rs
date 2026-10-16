@@ -92,7 +92,7 @@ impl App {
                     MenuItem::EditKey => return self.start_key_edit(id),
                     MenuItem::AddEntry => return self.add_map_entry(id),
                     MenuItem::InsertItem | MenuItem::InsertItemBelow | MenuItem::DeleteItem => {
-                        if let Some(list_item) = self.selected_list_item(id) {
+                        if let Some(list_item) = self.selected_cell_item(id) {
                             let change = match item {
                                 MenuItem::InsertItem => ItemChange::InsertAbove,
                                 MenuItem::InsertItemBelow => ItemChange::InsertBelow,

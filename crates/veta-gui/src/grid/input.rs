@@ -1,6 +1,7 @@
 //! The [`Grid`] widget: layout, input handling and focus.
 
 use super::*;
+use veta_core::values::node::NodeKind;
 
 /// The grid widget. Create with [`grid`].
 pub struct Grid<'a, Message> {
@@ -353,6 +354,11 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                                 column,
                                 item,
                             }));
+                            if self.line_toggle_at(&regions, position) {
+                                shell.publish((self.on_event)(GridEvent::ToggleNode));
+                                state.last_click = None;
+                                return;
+                            }
                         }
                         None => shell.publish((self.on_event)(GridEvent::Select { row, column })),
                     }
@@ -382,12 +388,17 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 let in_rows = |row: usize| view.selected_rows().is_some_and(|r| r.contains(&row));
                 let target = if let Some((row, column, item)) = self.item_at(&regions, position) {
                     shell.publish((self.on_event)(GridEvent::SelectItem { row, column, item }));
-                    if view.columns[column].is_struct {
-                        Some(MenuTarget::Field)
-                    } else if view.columns[column].map {
-                        Some(MenuTarget::Entry)
-                    } else {
-                        Some(MenuTarget::Item)
+                    let parent = view
+                        .tree(row, column)
+                        .and_then(|t| t.lines.get(item))
+                        .and_then(|l| match l.what {
+                            What::Node { at, .. } | What::Slot(at) => Some(at.parent),
+                            What::More(_) => None,
+                        });
+                    match parent {
+                        Some(NodeKind::Struct) => Some(MenuTarget::Field),
+                        Some(NodeKind::Map) => Some(MenuTarget::Entry),
+                        _ => Some(MenuTarget::Item),
                     }
                 } else if let Some((row, column)) = self.cell_at(&regions, position) {
                     if !(view.rows.is_some() && in_rows(row)) {
@@ -530,6 +541,15 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                         shell.publish((self.on_event)(event));
                         shell.capture_event();
                     }
+                    return;
+                }
+                // Space opens and closes structs, lists and maps.
+                if key.as_ref() == keyboard::Key::Named(Named::Space)
+                    && !ctrl
+                    && view.selected_is_container()
+                {
+                    shell.publish((self.on_event)(GridEvent::ToggleNode));
+                    shell.capture_event();
                     return;
                 }
                 let edit = match key.as_ref() {

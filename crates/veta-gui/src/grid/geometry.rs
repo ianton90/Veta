@@ -19,14 +19,8 @@ pub(super) struct Column {
     pub(super) width: f32,
     /// A struct whose fields aren't shown.
     pub(super) expandable: bool,
-    /// Lists or maps: cells show a summary and can open into items.
+    /// Structs, lists and maps: cells open into lines (see `items`).
     pub(super) items: bool,
-    /// Lists whose items can be edited, added and removed in place.
-    pub(super) list: bool,
-    /// Maps: entries edit, add and remove in place.
-    pub(super) map: bool,
-    /// Structs: cells open into their fields, edited in place.
-    pub(super) is_struct: bool,
     /// The expanded struct whose first field this is (collapse button).
     pub(super) collapses: Option<Vec<String>>,
 }
@@ -66,10 +60,7 @@ pub(super) fn display_columns(schema: &Schema, expanded: &BTreeSet<Vec<String>>)
             name: key.join("."),
             source,
             expandable: matches!(data_type, DataType::Struct(c) if !c.is_empty()),
-            items: has_items(data_type),
-            list: matches!(data_type, DataType::List(_) | DataType::LargeList(_)),
-            map: map_types(data_type).is_some(),
-            is_struct: matches!(data_type, DataType::Struct(c) if !c.is_empty()),
+            items: veta_core::values::node::NodeKind::of(data_type).is_container(),
             data_type: data_type.clone(),
             type_name: type_name(data_type),
             numeric: is_numeric(data_type),
@@ -125,7 +116,7 @@ impl GridView {
     }
 
     pub(super) fn max_first_row(&self) -> usize {
-        if self.details.is_empty() {
+        if self.trees.is_empty() {
             return self.num_rows.saturating_sub(self.visible_rows);
         }
         // The first row from which the last rows fill the body.
@@ -142,16 +133,11 @@ impl GridView {
         first.min(self.num_rows.saturating_sub(1))
     }
 
-    /// Screen lines `row` takes: one, plus its items while open.
+    /// Screen lines `row` takes: one, plus the lines of its cells while
+    /// open.
     pub(super) fn row_lines(&self, row: usize) -> usize {
-        self.details.get(&row).map_or(1, |columns| {
-            let lines = columns
-                .iter()
-                .enumerate()
-                .map(|(c, items)| items.lines(self.appending(row, c)))
-                .max()
-                .unwrap_or(0);
-            1 + lines
+        self.trees.get(&row).map_or(1, |cells| {
+            1 + cells.iter().map(|t| t.lines.len()).max().unwrap_or(0)
         })
     }
 
@@ -385,10 +371,10 @@ impl<Message> Grid<'_, Message> {
             .visible_columns(regions.body)
             .into_iter()
             .find(|&(c, _, _)| c == column)?;
-        // An item: its line, after the item labels' indent.
-        let (line, indent) = match self.view.item {
-            Some(item) => (line + 1 + item, regions.m.text_size + 2.0),
-            None => (line, 0.0),
+        // A line of an open cell: from its arrow (or label) on.
+        let (line, indent) = match (self.view.item, self.view.selected_line()) {
+            (Some(item), Some(l)) => (line + 1 + item, line_offsets(regions.m, l).0),
+            _ => (line, 0.0),
         };
         let rect = Rectangle {
             x: x + indent,
@@ -404,16 +390,16 @@ impl<Message> Grid<'_, Message> {
     /// the label.
     pub(super) fn editor_rect(&self, regions: &Regions) -> Option<Rectangle> {
         let rect = self.selected_cell_rect(regions)?;
-        let (row, column) = self.view.selected?;
-        let label = match self.view.item {
-            Some(item) if !self.editor_covers_label => {
-                &self.view.items(row, column)?.items.get(item)?.label
-            }
-            _ => return Some(rect),
+        let Some(line) = self.view.item.and(self.view.selected_line()) else {
+            return Some(rect);
         };
-        // As the label is drawn (see `draw`).
-        let shift =
-            ((label.chars().count() + 1) as f32 * regions.m.char_width).min(rect.width / 2.0);
+        // As the line is drawn (see `draw`).
+        let (arrow, label) = line_offsets(regions.m, line);
+        let mut shift = label - arrow;
+        if !self.editor_covers_label {
+            shift += label_width(regions.m, &line.label);
+        }
+        let shift = shift.min(rect.width / 2.0);
         Some(Rectangle {
             x: rect.x + shift,
             width: rect.width - shift,
@@ -526,7 +512,34 @@ impl<Message> Grid<'_, Message> {
             .visible_columns(regions.body)
             .into_iter()
             .find(|&(_, x, w)| position.x >= x && position.x < x + w)?;
-        (item < self.view.selectable_items(row, column)).then_some((row, column, item))
+        self.view
+            .is_selectable(row, column, item)
+            .then_some((row, column, item))
+    }
+
+    /// Whether `position` is on the open/close arrow of a line of an open
+    /// cell (a struct, list or map).
+    pub(super) fn line_toggle_at(&self, regions: &Regions, position: Point) -> bool {
+        let Some((row, column, item)) = self.item_at(regions, position) else {
+            return false;
+        };
+        let Some(line) = self.view.tree(row, column).and_then(|t| t.lines.get(item)) else {
+            return false;
+        };
+        let What::Node { kind, .. } = line.what else {
+            return false;
+        };
+        let Some((_, x, _)) = self
+            .visible_columns(regions.body)
+            .into_iter()
+            .find(|&(c, _, _)| c == column)
+        else {
+            return false;
+        };
+        let arrow = x + line_offsets(regions.m, line).0;
+        kind.is_container()
+            && position.x >= arrow - 2.0
+            && position.x < arrow + regions.m.text_size + 2.0
     }
 
     pub(super) fn cell_at(&self, regions: &Regions, position: Point) -> Option<(usize, usize)> {
@@ -544,13 +557,18 @@ impl<Message> Grid<'_, Message> {
     }
 }
 
-/// The key and value types of a map.
-pub(super) fn map_types(data_type: &DataType) -> Option<(&DataType, &DataType)> {
-    let DataType::Map(entries, _) = data_type else {
-        return None;
-    };
-    match entries.data_type() {
-        DataType::Struct(kv) if kv.len() == 2 => Some((kv[0].data_type(), kv[1].data_type())),
-        _ => None,
+/// Where a line of an open cell starts its arrow and its label, from the
+/// cell's left edge.
+pub(super) fn line_offsets(m: Metrics, line: &Line) -> (f32, f32) {
+    let arrow = m.text_size + 2.0 + (line.depth - 1) as f32 * m.text_size;
+    let label = arrow + if line.gutter { m.text_size + 2.0 } else { 0.0 };
+    (arrow, label)
+}
+
+/// Width taken by a line's label and the space after it.
+pub(super) fn label_width(m: Metrics, label: &str) -> f32 {
+    if label.is_empty() {
+        return 0.0;
     }
+    (label.chars().count() + 1) as f32 * m.char_width
 }
