@@ -27,16 +27,16 @@ While the major version is 0, minor versions may change behaviour.
 - CSV and JSON import and export, with delimiter, quote, decimal and
   encoding options; values that don't fit a column's type are kept in an
   error column instead of being dropped.
-- Nested types: structs, lists and maps, edited in the grid or as JSON in
-  the formula bar; expand a struct into columns or explode a list into rows;
-  combine columns into a struct or collect them into lists by group; new
-  list, struct and map columns.
+- Nested types: structs, lists and maps, nested inside each other to any
+  depth; expand a struct into columns or explode a list into rows; combine
+  columns into a struct or collect them into lists by group; new columns
+  and struct fields of any nested type, built level by level.
   Struct columns open in the grid (header arrow) into editable field
-  columns; list and map cells show a summary that opens into one line per
-  item. List items edit in place, with items added at the end or inserted
-  and deleted anywhere; map entries edit their keys and values
-  in place, with entries added and deleted; struct cells open into fields
-  that edit in place.
+  columns. Opening a row shows the fields, items and entries of its nested
+  cells; each struct, list or map inside opens in turn (its arrow or
+  Space), indented. Values edit in place at any depth; list items are added
+  at the end or inserted and deleted anywhere; map entries edit their keys
+  (any key type) and values, with entries added and deleted.
   Add or remove fields of struct columns.
 - Ribbon, light and dark themes (TOML), settings.
 
