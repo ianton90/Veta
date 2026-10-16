@@ -409,17 +409,14 @@ fn nested_items(
             | DataType::FixedSizeList(..)
             | DataType::Map(..),
         ) => vec![
-            Some((
-                Icon::Plus,
-                if matches!(column_type, Some(DataType::Map(..))) {
-                    "Add entry at the end".into()
+            (!matches!(column_type, Some(DataType::FixedSizeList(..)))).then(|| {
+                let label = if matches!(column_type, Some(DataType::Map(..))) {
+                    "Add entry at the end"
                 } else {
-                    "Add item at the end".into()
-                },
-                "",
-                MenuItem::AddInside,
-            ))
-            .filter(|_| !matches!(column_type, Some(DataType::FixedSizeList(..)))),
+                    "Add item at the end"
+                };
+                (Icon::Plus, label.into(), "", MenuItem::AddInside)
+            }),
             Some((
                 Icon::Rows,
                 "Explode to rows".into(),

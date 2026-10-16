@@ -675,6 +675,32 @@ pub fn from_json(text: &str, schema: &SchemaRef) -> Result<Vec<Step>> {
     Ok(steps)
 }
 
+/// A path to a type inside a column as recipe text: field names, `[]` for
+/// list items, `{}` for map values.
+fn path_names(path: &[crate::display::PathPart]) -> Vec<String> {
+    use crate::display::PathPart;
+    path.iter()
+        .map(|part| match part {
+            PathPart::Field(name) => name.clone(),
+            PathPart::Index(_) => "[]".into(),
+            PathPart::Entry(_) => "{}".into(),
+        })
+        .collect()
+}
+
+/// Reads a path written by [`path_names`].
+fn path_parts(names: &[String]) -> Vec<crate::display::PathPart> {
+    use crate::display::PathPart;
+    names
+        .iter()
+        .map(|name| match name.as_str() {
+            "[]" => PathPart::Index(0),
+            "{}" => PathPart::Entry(0),
+            _ => PathPart::Field(name.clone()),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -875,30 +901,4 @@ mod tests {
         assert!(err.contains("step 1"), "{err}");
         assert!(from_json(&recipe(1, ""), &s).unwrap().is_empty());
     }
-}
-
-/// A path to a type inside a column as recipe text: field names, `[]` for
-/// list items, `{}` for map values.
-fn path_names(path: &[crate::display::PathPart]) -> Vec<String> {
-    use crate::display::PathPart;
-    path.iter()
-        .map(|part| match part {
-            PathPart::Field(name) => name.clone(),
-            PathPart::Index(_) => "[]".into(),
-            PathPart::Entry(_) => "{}".into(),
-        })
-        .collect()
-}
-
-/// Reads a path written by [`path_names`].
-fn path_parts(names: &[String]) -> Vec<crate::display::PathPart> {
-    use crate::display::PathPart;
-    names
-        .iter()
-        .map(|name| match name.as_str() {
-            "[]" => PathPart::Index(0),
-            "{}" => PathPart::Entry(0),
-            _ => PathPart::Field(name.clone()),
-        })
-        .collect()
 }
