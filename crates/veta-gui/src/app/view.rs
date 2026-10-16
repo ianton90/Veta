@@ -215,7 +215,14 @@ impl App {
                     .get(menu.document)
                     .and_then(|d| d.schema().fields().get(c).map(|f| f.data_type().clone()))
             });
-            let sections = panes::menu_sections(menu.target, rows, columns, column_type.as_ref());
+            let line = self
+                .tabs
+                .iter()
+                .find(|t| t.id == menu.document)
+                .and_then(|t| t.grid.selected_item())
+                .and_then(|i| i.kind);
+            let sections =
+                panes::menu_sections(menu.target, rows, columns, column_type.as_ref(), line);
             // Opens up or to the left where it wouldn't fit below or right.
             let height = panes::menu_height(&sections, ui);
             let mut position = menu.position;

@@ -115,7 +115,7 @@ fn settings_dialog_saves_config() {
 fn menu_sections_follow_the_target() {
     use veta_core::arrow::datatypes::{DataType, Field, Fields};
     let titles = |target, column_type: Option<&DataType>| -> Vec<&str> {
-        panes::menu_sections(target, 1, 1, column_type)
+        panes::menu_sections(target, 1, 1, column_type, None)
             .into_iter()
             .map(|(title, _)| title)
             .collect()

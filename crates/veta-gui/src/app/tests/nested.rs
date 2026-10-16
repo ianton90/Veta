@@ -361,31 +361,39 @@ fn map_entries_edit_in_place() {
     assert!(app.edit.is_none());
     assert_eq!(scores(&app, 0).as_deref(), Some("{maths: 10, art: 7}"));
 
-    // Add an entry from the menu, set a value to null, delete an entry.
-    menu(&mut app, MenuItem::AddEntry);
-    assert_eq!(editing(&app), Some((2, true)));
+    // Insert an entry below from the menu (its key, then its value), set
+    // a value to null, delete an entry.
+    menu(&mut app, MenuItem::InsertItemBelow);
+    assert_eq!(editing(&app), Some((1, true)), "the new key, below maths");
     enter(&mut app, "pe");
     enter(&mut app, "3");
-    let _ = app.update(Message::Escape);
     assert_eq!(
         scores(&app, 0).as_deref(),
-        Some("{maths: 10, art: 7, pe: 3}")
+        Some("{maths: 10, pe: 3, art: 7}")
     );
     grid(
         &mut app,
         GridEvent::SelectItem {
             row: 0,
             column: 4,
-            item: 1,
+            item: 2,
         },
     );
     grid(&mut app, GridEvent::ClearCell);
     assert_eq!(
         scores(&app, 0).as_deref(),
-        Some("{maths: 10, art: null, pe: 3}")
+        Some("{maths: 10, pe: 3, art: null}")
     );
     grid(&mut app, GridEvent::DeleteRows);
     assert_eq!(scores(&app, 0).as_deref(), Some("{maths: 10, pe: 3}"));
+    // Ctrl++ on an entry asks for a key above it.
+    grid(&mut app, GridEvent::InsertRows);
+    enter(&mut app, "art");
+    let _ = app.update(Message::Escape);
+    assert_eq!(
+        scores(&app, 0).as_deref(),
+        Some("{maths: 10, art: null, pe: 3}")
+    );
 
     // Typing on a null map cell starts a new key.
     grid(&mut app, GridEvent::Select { row: 2, column: 4 });
@@ -611,4 +619,93 @@ fn fixed_size_list_columns() {
     let _ = app.update(Message::Grid(id, GridEvent::DeleteRows));
     assert_eq!(xyz(&app).as_deref(), Some("[7, 8, null]"));
     assert!(!app.errors.is_empty());
+}
+
+#[test]
+fn add_and_remove_at_any_level() {
+    use crate::dialogs::{TypeChoice, TypeOption};
+    let dir = TempDir::new();
+    let path = dir.join("deep.parquet");
+    fixtures::deep_nested(&path, 40);
+    let mut app = app_with(&[&path]);
+    let id = app.tabs[0].id;
+    let grid = |app: &mut App, event| {
+        let _ = app.update(Message::Grid(id, event));
+    };
+    let menu = |app: &mut App, target, item| {
+        app.menu = Some(ContextMenu {
+            document: id,
+            target,
+            position: iced::Point::ORIGIN,
+        });
+        let _ = app.update(Message::Menu(item));
+    };
+    let at = |app: &App| app.selected_cell_item(id).map(|i| i.item.display);
+    let schema = veta_testkit::fixtures::deep_nested_schema();
+    let column = |name: &str| schema.index_of(name).unwrap();
+    let type_of = |app: &App, name: &str| {
+        let doc = app.workbook.get(id).unwrap();
+        veta_core::display::type_name(doc.schema().field_with_name(name).unwrap().data_type())
+    };
+    let cell = |app: &App, row: usize, name: &str| {
+        let doc = app.workbook.get(id).unwrap();
+        let i = doc.schema().index_of(name).unwrap();
+        veta_core::display::format_batch(&doc.read(row..row + 1).unwrap()).unwrap()[0][i].clone()
+    };
+    let row = (0..40)
+        .find(|&r| cell(&app, r, "orders").is_some_and(|o| o.starts_with("[{")))
+        .unwrap();
+
+    // A field added to a struct inside a list, from a field's menu.
+    grid(
+        &mut app,
+        GridEvent::Select {
+            row,
+            column: column("orders"),
+        },
+    );
+    grid(&mut app, GridEvent::StartEdit { initial: None });
+    assert_eq!(at(&app).as_deref(), Some("[0].sku"));
+    menu(&mut app, MenuTarget::Field, MenuItem::AddField);
+    let _ = app.update(Message::ColumnDialog(ColumnMessage::Name(
+        "discount".into(),
+    )));
+    let _ = app.update(Message::ColumnDialog(ColumnMessage::Type(
+        vec![],
+        TypeOption::Plain(TypeChoice::Integer),
+    )));
+    let _ = app.update(Message::ColumnDialog(ColumnMessage::Submit));
+    assert!(app.dialog.is_none());
+    assert!(type_of(&app, "orders").ends_with("discount: int64>>"));
+    // ...and removed again.
+    assert!(app.tabs[0].grid.select_path(
+        &[
+            veta_core::display::PathPart::Index(0),
+            veta_core::display::PathPart::Field("discount".into())
+        ],
+        app.workbook.get(id).unwrap()
+    ));
+    menu(&mut app, MenuTarget::Field, MenuItem::RemoveField);
+    assert!(!type_of(&app, "orders").contains("discount"));
+
+    // A nested map's own line adds an entry at its end.
+    grid(
+        &mut app,
+        GridEvent::Select {
+            row,
+            column: column("orders"),
+        },
+    );
+    grid(&mut app, GridEvent::StartEdit { initial: None });
+    for _ in 0..3 {
+        grid(&mut app, GridEvent::Navigate(Nav::Down));
+    }
+    assert_eq!(at(&app).as_deref(), Some("[0].options"));
+    menu(&mut app, MenuTarget::Field, MenuItem::AddInside);
+    assert_eq!(at(&app).as_deref(), Some("[0].options[new key]"));
+    let _ = app.update(Message::EditInput("note".into()));
+    let _ = app.update(Message::CommitEdit);
+    let _ = app.update(Message::EditInput("gift".into()));
+    let _ = app.update(Message::CommitEdit);
+    assert!(cell(&app, row, "orders").unwrap().contains("note: gift}"));
 }

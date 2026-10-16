@@ -248,9 +248,14 @@ pub struct GridView {
     open_rows: BTreeSet<usize>,
     /// Values opened inside cells: row, column key and path in the cell.
     open_nodes: BTreeSet<(usize, Vec<String>, Vec<veta_core::display::PathPart>)>,
-    /// The list or map showing a slot for a new item: row, screen column
-    /// and path in the cell.
-    slot: Option<(usize, usize, Vec<veta_core::display::PathPart>)>,
+    /// The list or map showing a slot for a new item: row, screen column,
+    /// path in the cell and the slot's position (`None`: at the end).
+    slot: Option<(
+        usize,
+        usize,
+        Vec<veta_core::display::PathPart>,
+        Option<usize>,
+    )>,
     /// Lines of the open cells of loaded rows, per screen column.
     trees: std::collections::HashMap<usize, Vec<CellTree>>,
     error: Option<String>,

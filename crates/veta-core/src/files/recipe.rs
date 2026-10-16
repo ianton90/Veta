@@ -192,14 +192,20 @@ enum RecipeStep {
         keys: Vec<String>,
         columns: Vec<String>,
     },
+    /// `path`: field names, `[]` (list items) and `{}` (map values) from
+    /// the column down to the struct; left out for the column itself.
     AddField {
         column: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        path: Vec<String>,
         name: String,
         #[serde(rename = "type")]
         data_type: String,
     },
     RemoveField {
         column: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        path: Vec<String>,
         name: String,
     },
 }
@@ -421,15 +427,18 @@ impl RecipeStep {
             },
             Step::AddField {
                 column,
+                path,
                 name,
                 data_type,
             } => RecipeStep::AddField {
                 column: column.clone(),
+                path: path_names(path),
                 name: name.clone(),
                 data_type: type_name(data_type),
             },
-            Step::RemoveField { column, name } => RecipeStep::RemoveField {
+            Step::RemoveField { column, path, name } => RecipeStep::RemoveField {
                 column: column.clone(),
+                path: path_names(path),
                 name: name.clone(),
             },
             Step::CollectList { keys, columns } => RecipeStep::CollectList {
@@ -580,14 +589,20 @@ impl RecipeStep {
             RecipeStep::CollectList { keys, columns } => Step::CollectList { keys, columns },
             RecipeStep::AddField {
                 column,
+                path,
                 name,
                 data_type,
             } => Step::AddField {
                 column,
+                path: path_parts(&path),
                 name,
                 data_type: parse_type(&data_type)?,
             },
-            RecipeStep::RemoveField { column, name } => Step::RemoveField { column, name },
+            RecipeStep::RemoveField { column, path, name } => Step::RemoveField {
+                column,
+                path: path_parts(&path),
+                name,
+            },
             RecipeStep::CustomColumn {
                 name,
                 expression,
@@ -752,11 +767,22 @@ mod tests {
             },
             Step::AddField {
                 column: "s".into(),
+                path: Vec::new(),
                 name: "extra".into(),
                 data_type: DataType::new_list(DataType::Int64, true),
             },
+            Step::AddField {
+                column: "s".into(),
+                path: vec![
+                    crate::display::PathPart::Field("extra".into()),
+                    crate::display::PathPart::Index(0),
+                ],
+                name: "deep".into(),
+                data_type: DataType::Int64,
+            },
             Step::RemoveField {
                 column: "s".into(),
+                path: Vec::new(),
                 name: "extra".into(),
             },
             Step::CollectList {
@@ -849,4 +875,30 @@ mod tests {
         assert!(err.contains("step 1"), "{err}");
         assert!(from_json(&recipe(1, ""), &s).unwrap().is_empty());
     }
+}
+
+/// A path to a type inside a column as recipe text: field names, `[]` for
+/// list items, `{}` for map values.
+fn path_names(path: &[crate::display::PathPart]) -> Vec<String> {
+    use crate::display::PathPart;
+    path.iter()
+        .map(|part| match part {
+            PathPart::Field(name) => name.clone(),
+            PathPart::Index(_) => "[]".into(),
+            PathPart::Entry(_) => "{}".into(),
+        })
+        .collect()
+}
+
+/// Reads a path written by [`path_names`].
+fn path_parts(names: &[String]) -> Vec<crate::display::PathPart> {
+    use crate::display::PathPart;
+    names
+        .iter()
+        .map(|name| match name.as_str() {
+            "[]" => PathPart::Index(0),
+            "{}" => PathPart::Entry(0),
+            _ => PathPart::Field(name.clone()),
+        })
+        .collect()
 }

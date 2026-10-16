@@ -137,31 +137,49 @@ impl App {
         self.execute(id, command);
     }
 
-    /// Opens the Add field dialog on the selected struct column.
-    pub(crate) fn open_add_field(&mut self, id: DocumentId) -> Task<Message> {
-        let column = self.selected_column_names(id).into_iter().next();
+    /// Opens the Add field dialog on the struct at `path` in the selected
+    /// cell's column (`None`: the selected struct column, or the field of an
+    /// expanded struct column the cell shows).
+    pub(crate) fn open_add_field(
+        &mut self,
+        id: DocumentId,
+        path: Option<Vec<PathPart>>,
+    ) -> Task<Message> {
+        let column = match path {
+            Some(_) => self.selected_cell(id).map(|(_, c)| c),
+            None => self.selected_column_names(id).into_iter().next(),
+        };
+        let path = path.unwrap_or_else(|| {
+            self.tabs
+                .iter()
+                .find(|t| t.id == id)
+                .and_then(|t| t.grid.selected_field())
+                .map(|(fields, _)| fields.iter().cloned().map(PathPart::Field).collect())
+                .unwrap_or_default()
+        });
         let is_struct = column.as_ref().is_some_and(|c| {
             self.workbook.get(id).is_some_and(|d| {
                 d.schema().field_with_name(c).is_ok_and(|f| {
                     matches!(
-                        f.data_type(),
-                        veta_core::arrow::datatypes::DataType::Struct(_)
+                        veta_core::display::type_at(f.data_type(), &path),
+                        Some(veta_core::arrow::datatypes::DataType::Struct(_))
                     )
                 })
             })
         });
         match column {
             Some(column) if is_struct => {
-                self.open_column_dialog(id, ColumnDialog::add_field(column))
+                self.open_column_dialog(id, ColumnDialog::add_field(column, path))
             }
             _ => {
-                self.errors.push("Select a struct column first.".into());
+                self.errors.push("Select a struct first.".into());
                 Task::none()
             }
         }
     }
 
-    /// Removes the selected field of an open struct cell from its column.
+    /// Removes the selected field of an open struct, at any depth, from its
+    /// column's type.
     pub(crate) fn remove_field(&mut self, id: DocumentId) {
         let Some(item) = self.selected_cell_item(id) else {
             return;
@@ -169,18 +187,48 @@ impl App {
         let Some(name) = item.item.field().map(str::to_owned) else {
             return;
         };
-        if !item.parent().is_empty() {
-            self.errors
-                .push("Only fields of top-level struct columns can be removed.".into());
-            return;
-        }
         self.execute(
             id,
             Command::RemoveField {
+                path: item.parent(),
                 column: item.column,
                 name,
             },
         );
+    }
+
+    /// Adds to the selected struct, list or map line (or nested cell): a
+    /// field, an item at the end, or an entry at the end.
+    pub(crate) fn add_inside(&mut self, id: DocumentId) -> Task<Message> {
+        let (kind, path, cell) = match self.selected_cell_item(id) {
+            Some(item) => match item.item.kind {
+                Some(kind) if kind.is_container() => (kind, item.item.path.clone(), item.path()),
+                _ => return Task::none(),
+            },
+            None => {
+                let Some(kind) = self
+                    .tabs
+                    .iter()
+                    .find(|t| t.id == id)
+                    .and_then(|t| t.grid.selected_opens_items())
+                else {
+                    return Task::none();
+                };
+                (kind, Vec::new(), Vec::new())
+            }
+        };
+        match kind {
+            NodeKind::Struct if cell.is_empty() => self.open_add_field(id, None),
+            NodeKind::Struct => self.open_add_field(id, Some(cell)),
+            NodeKind::Map => {
+                self.grid_do(id, |g, d| g.select_slot(&path, d));
+                self.start_key_edit(id)
+            }
+            _ => {
+                self.grid_do(id, |g, d| g.select_slot(&path, d));
+                self.start_edit(id, None)
+            }
+        }
     }
 
     /// Row and column name of the selected cell in a document's grid.
@@ -294,22 +342,10 @@ impl App {
         ])
     }
 
-    /// Selects the slot at the end of the map holding the selected entry (or
-    /// the selected map) and starts editing the new key.
-    pub(crate) fn add_map_entry(&mut self, id: DocumentId) -> Task<Message> {
-        let map = match self.selected_cell_item(id) {
-            Some(item) if item.item.parent_kind == NodeKind::Map => item.item.parent,
-            Some(item) if item.item.kind == Some(NodeKind::Map) => item.item.path,
-            Some(_) => return Task::none(),
-            None => Vec::new(),
-        };
-        self.grid_do(id, |g, d| g.select_slot(&map, d));
-        self.start_key_edit(id)
-    }
-
     /// Inserts a null item above or below the selected list item, or removes
     /// the selected item or entry, and selects the new item (or the one now
-    /// in its place). Inserting into a map adds an entry at the end.
+    /// in its place). Inserting into a map asks for the new entry's key
+    /// there.
     pub(crate) fn insert_or_remove_item(
         &mut self,
         id: DocumentId,
@@ -325,8 +361,16 @@ impl App {
                 .push("Items of a fixed-size list can't be added or removed.".into());
             return Task::none();
         }
+        // A map entry needs its key first: the slot for it opens there.
         if it.parent_kind == NodeKind::Map && change != ItemChange::Remove {
-            return self.add_map_entry(id);
+            let at = match change {
+                ItemChange::InsertAbove => it.index,
+                _ => it.index + 1,
+            }
+            .min(it.len);
+            let parent = it.parent.clone();
+            self.grid_do(id, |g, d| g.select_slot_at(&parent, Some(at), d));
+            return self.start_key_edit(id);
         }
         let part = |i: usize| match it.parent_kind {
             NodeKind::Map => PathPart::Entry(i),

@@ -19,6 +19,8 @@ use std::ops::Range;
 
 use arrow::datatypes::DataType;
 
+use crate::display::PathPart;
+
 use crate::display::type_name;
 use crate::error::Error;
 
@@ -96,15 +98,20 @@ pub enum Step {
     ExplodeList {
         column: String,
     },
-    /// Adds a null field `name` at the end of struct column `column`.
+    /// Adds a null field `name` at the end of the struct at `path` in
+    /// column `column` (empty: the column is the struct). `path` steps
+    /// through struct fields, list items and map values (their positions
+    /// don't matter: every item or value gets the field).
     AddField {
         column: String,
+        path: Vec<PathPart>,
         name: String,
         data_type: DataType,
     },
-    /// Removes field `name` from struct column `column`.
+    /// Removes field `name` from the struct at `path` in column `column`.
     RemoveField {
         column: String,
+        path: Vec<PathPart>,
         name: String,
     },
     /// One row per group of equal `keys` (ordered by them), with `columns`
@@ -207,10 +214,17 @@ impl Step {
             Step::ExplodeList { column } => format!("Exploded {column} into rows"),
             Step::AddField {
                 column,
+                path,
                 name,
                 data_type,
-            } => format!("Added field {column}.{name} ({})", type_name(data_type)),
-            Step::RemoveField { column, name } => format!("Removed field {column}.{name}"),
+            } => format!(
+                "Added field {column}{}.{name} ({})",
+                type_path(path),
+                type_name(data_type)
+            ),
+            Step::RemoveField { column, path, name } => {
+                format!("Removed field {column}{}.{name}", type_path(path))
+            }
             Step::CollectList { keys, columns } => {
                 let what = match columns.as_slice() {
                     [one] => one.clone(),
@@ -252,3 +266,15 @@ pub(crate) fn invalid(message: String) -> Error {
 #[cfg(test)]
 #[allow(clippy::single_range_in_vec_init)] // Row ranges, not a range of values.
 mod tests;
+
+/// A path to a type inside a column as text: `.field`, `[]` for list items,
+/// `{}` for map values.
+pub fn type_path(path: &[PathPart]) -> String {
+    path.iter()
+        .map(|part| match part {
+            PathPart::Field(name) => format!(".{name}"),
+            PathPart::Index(_) => "[]".into(),
+            PathPart::Entry(_) => "{}".into(),
+        })
+        .collect()
+}

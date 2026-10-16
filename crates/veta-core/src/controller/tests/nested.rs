@@ -583,3 +583,83 @@ fn fixed_size_lists() {
         DataType::FixedSizeList(_, 3)
     ));
 }
+
+#[test]
+fn struct_fields_at_any_depth() {
+    use PathPart::{Entry, Index};
+    let dir = TempDir::new();
+    let path = dir.join("deep.parquet");
+    fixtures::deep_nested(&path, 30);
+    for options in [OpenOptions::default(), OpenOptions::paged()] {
+        let mut doc = Document::open(&path, options).unwrap();
+        let type_of = |doc: &Document, column: &str| {
+            crate::display::type_name(doc.schema().field_with_name(column).unwrap().data_type())
+        };
+        let add = |column: &str, path: Vec<PathPart>, name: &str| Command::AddField {
+            column: column.into(),
+            path,
+            name: name.into(),
+            data_type: DataType::Int64,
+        };
+        // Every order (a struct in a list) gets the field.
+        execute(&mut doc, add("orders", vec![Index(0)], "discount")).unwrap();
+        assert!(type_of(&doc, "orders").contains("options: map<string, string>, discount: int64>"));
+        let row = (0..30)
+            .find(|&r| cell(&doc, r, "orders").is_some_and(|o| o.starts_with("[{")))
+            .unwrap();
+        assert!(
+            cell(&doc, row, "orders")
+                .unwrap()
+                .contains("discount: null}")
+        );
+        execute(
+            &mut doc,
+            set(row, "orders", vec![Index(0), f("discount")], Some("5")),
+        )
+        .unwrap();
+        assert!(cell(&doc, row, "orders").unwrap().contains("discount: 5}"));
+        // A struct inside a map's values, and inside a struct.
+        execute(&mut doc, add("history", vec![Entry(0)], "by")).unwrap();
+        assert!(type_of(&doc, "history").contains("notes: list<string>, by: int64>"));
+        execute(
+            &mut doc,
+            Command::RemoveField {
+                column: "history".into(),
+                path: vec![Entry(0)],
+                name: "notes".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            type_of(&doc, "history"),
+            "map<int64, struct<status: string, by: int64>>"
+        );
+        execute(&mut doc, add("address", vec![f("geo")], "alt")).unwrap();
+        assert!(
+            type_of(&doc, "address")
+                .contains("geo: struct<lat: float64, lon: float64, alt: int64>")
+        );
+        execute(
+            &mut doc,
+            add("profile", vec![f("children"), Index(0)], "school"),
+        )
+        .unwrap();
+        for bad in [
+            add("orders", vec![], "x"),
+            add("orders", vec![Index(0)], "sku"),
+            add("tags", vec![Index(0)], "x"),
+            add("address", vec![f("nope")], "x"),
+        ] {
+            assert!(execute(&mut doc, bad).is_err());
+        }
+        assert_eq!(
+            doc.steps()[0].describe(),
+            "Added field orders[].discount (int64)"
+        );
+        let out = dir.join("deep-fields.parquet");
+        doc.save(Some(out.clone())).unwrap();
+        let saved = Document::open(&out, OpenOptions::default()).unwrap();
+        assert_eq!(type_of(&saved, "history"), type_of(&doc, "history"));
+        assert_eq!(cell(&saved, row, "orders"), cell(&doc, row, "orders"));
+    }
+}

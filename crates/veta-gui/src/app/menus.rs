@@ -51,8 +51,9 @@ pub(crate) enum MenuItem {
     DeleteItem,
     /// Edit the key of a map entry.
     EditKey,
-    /// Add an entry at the end of a map.
-    AddEntry,
+    /// Add to the selected struct, list or map: a field, or an item or
+    /// entry at the end.
+    AddInside,
     /// Expand a struct column and the structs inside it.
     ExpandAll,
     ExplodeList,
@@ -87,10 +88,14 @@ impl App {
                 match item {
                     MenuItem::KeepRows => self.keep_rows(id),
                     MenuItem::EditCell => return self.start_edit(id, None),
-                    MenuItem::AddField => return self.open_add_field(id),
+                    MenuItem::AddField => {
+                        // A struct field's menu adds to the struct holding it.
+                        let path = self.selected_cell_item(id).map(|i| i.parent());
+                        return self.open_add_field(id, path);
+                    }
                     MenuItem::RemoveField => self.remove_field(id),
                     MenuItem::EditKey => return self.start_key_edit(id),
-                    MenuItem::AddEntry => return self.add_map_entry(id),
+                    MenuItem::AddInside => return self.add_inside(id),
                     MenuItem::InsertItem | MenuItem::InsertItemBelow | MenuItem::DeleteItem => {
                         if let Some(list_item) = self.selected_cell_item(id) {
                             let change = match item {

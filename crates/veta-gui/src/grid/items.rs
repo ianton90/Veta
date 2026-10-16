@@ -64,11 +64,12 @@ pub(super) struct CellTree {
 impl CellTree {
     /// The lines of an open cell holding `root`: its children, and the
     /// children of those for which `open` holds. Lists and maps get a slot
-    /// line when empty, or when `slot` is their path.
+    /// line when empty, or where `slot` says: their path, and the position
+    /// of the slot (`None`: after the last child).
     pub(super) fn of(
         root: &Node,
         open: &dyn Fn(&[PathPart]) -> bool,
-        slot: Option<&[PathPart]>,
+        slot: Option<(&[PathPart], Option<usize>)>,
     ) -> Self {
         let mut lines = Vec::new();
         push_children(root, &mut Vec::new(), 1, open, slot, &mut lines);
@@ -81,7 +82,7 @@ fn push_children(
     path: &mut Vec<PathPart>,
     depth: usize,
     open: &dyn Fn(&[PathPart]) -> bool,
-    slot: Option<&[PathPart]>,
+    slot: Option<(&[PathPart], Option<usize>)>,
     lines: &mut Vec<Line>,
 ) {
     let kind = node.kind();
@@ -95,7 +96,30 @@ fn push_children(
             .or_else(|| type_at(t, &[PathPart::Entry(0)]))
             .is_some_and(|t| NodeKind::of(t).is_container()),
     };
+    let can_add = matches!(kind, NodeKind::List | NodeKind::Map) && !fixed;
+    // Where this list or map shows a slot, if it does.
+    let slot_at = match slot {
+        Some((p, at)) if can_add && p == path.as_slice() => Some(at.unwrap_or(len).min(len)),
+        _ if can_add && len == 0 => Some(0),
+        _ => None,
+    };
+    let slot_line = |path: &[PathPart], index| Line {
+        path: path.to_vec(),
+        depth,
+        label: String::new(),
+        text: None,
+        gutter,
+        what: What::Slot(Place {
+            parent: kind,
+            index,
+            len,
+            fixed,
+        }),
+    };
     for (index, child) in node.children().take(MAX_ITEMS).enumerate() {
+        if slot_at == Some(index) {
+            lines.push(slot_line(path, index));
+        }
         path.push(child.part);
         let child_kind = child.node.kind();
         let is_open = child_kind.is_container() && open(path);
@@ -121,27 +145,17 @@ fn push_children(
         }
         path.pop();
     }
-    let place = Place {
-        parent: kind,
-        index: len,
-        len,
-        fixed,
-    };
-    let line = |what| Line {
-        path: path.clone(),
-        depth,
-        label: String::new(),
-        text: None,
-        gutter,
-        what,
-    };
     if len > MAX_ITEMS {
-        lines.push(line(What::More(len - MAX_ITEMS)));
-    } else if matches!(kind, NodeKind::List | NodeKind::Map)
-        && !fixed
-        && (len == 0 || slot == Some(path.as_slice()))
-    {
-        lines.push(line(What::Slot(place)));
+        lines.push(Line {
+            path: path.clone(),
+            depth,
+            label: String::new(),
+            text: None,
+            gutter,
+            what: What::More(len - MAX_ITEMS),
+        });
+    } else if slot_at == Some(len) {
+        lines.push(slot_line(path, len));
     }
 }
 
@@ -220,8 +234,8 @@ impl GridView {
                     let slot = self
                         .slot
                         .as_ref()
-                        .filter(|(r, sc, _)| (*r, *sc) == (row, c))
-                        .map(|(_, _, p)| p.as_slice());
+                        .filter(|(r, sc, _, _)| (*r, *sc) == (row, c))
+                        .map(|(_, _, p, at)| (p.as_slice(), *at));
                     CellTree::of(&root, &open, slot)
                 })
                 .collect();
@@ -420,11 +434,18 @@ impl GridView {
     /// Shows the slot after the last item of the list or map at `path` in
     /// the selected cell (opening it) and selects it.
     pub fn select_slot(&mut self, path: &[PathPart], document: &Document) {
+        self.select_slot_at(path, None, document);
+    }
+
+    /// Shows the slot for a new item of the list or map at `path` in the
+    /// selected cell before child `at` (`None`: after the last one), opening
+    /// it, and selects it.
+    pub fn select_slot_at(&mut self, path: &[PathPart], at: Option<usize>, document: &Document) {
         let Some((row, column)) = self.selected else {
             return;
         };
         self.open_path(path, document);
-        self.slot = Some((row, column, path.to_vec()));
+        self.slot = Some((row, column, path.to_vec(), at));
         self.build_trees();
         self.item = self.tree(row, column).and_then(|t| {
             t.lines

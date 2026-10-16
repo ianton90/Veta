@@ -80,18 +80,20 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
         )),
         Command::AddField {
             column,
+            path,
             name,
             data_type,
         } => {
             let step = Step::AddField {
                 column,
+                path,
                 name,
                 data_type,
             };
             Ok((step.describe(), Change::PushStep(step)))
         }
-        Command::RemoveField { column, name } => {
-            let step = Step::RemoveField { column, name };
+        Command::RemoveField { column, path, name } => {
+            let step = Step::RemoveField { column, path, name };
             Ok((step.describe(), Change::PushStep(step)))
         }
         other => Err(invalid(format!("not a {} command: {other:?}", "columns"))),

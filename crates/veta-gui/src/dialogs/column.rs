@@ -251,9 +251,11 @@ pub enum ColumnMode {
     Rename {
         from: String,
     },
-    /// Add a field to struct column `column`.
+    /// Add a field to the struct at `path` in column `column` (empty: the
+    /// column).
     AddField {
         column: String,
+        path: Vec<veta_core::display::PathPart>,
     },
 }
 
@@ -299,10 +301,10 @@ impl ColumnDialog {
         self
     }
 
-    /// Adds a field to struct column `column`.
-    pub fn add_field(column: String) -> Self {
+    /// Adds a field to the struct at `path` in column `column`.
+    pub fn add_field(column: String, path: Vec<veta_core::display::PathPart>) -> Self {
         Self {
-            mode: ColumnMode::AddField { column },
+            mode: ColumnMode::AddField { column, path },
             ..Self::add(0)
         }
     }
@@ -378,8 +380,9 @@ impl ColumnDialog {
                         data_type,
                         at: *at,
                     },
-                    ColumnMode::AddField { column } => Command::AddField {
+                    ColumnMode::AddField { column, path } => Command::AddField {
                         column: column.clone(),
+                        path: path.clone(),
                         name,
                         data_type,
                     },
@@ -397,7 +400,9 @@ impl ColumnDialog {
         let title = match &self.mode {
             ColumnMode::Add { .. } => "Add column".to_owned(),
             ColumnMode::Rename { .. } => "Rename column".to_owned(),
-            ColumnMode::AddField { column } => format!("Add field to {column}"),
+            ColumnMode::AddField { column, path } => {
+                format!("Add field to {column}{}", veta_core::steps::type_path(path))
+            }
         };
         let action = match &self.mode {
             ColumnMode::Rename { .. } => "Rename",

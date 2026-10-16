@@ -140,12 +140,17 @@ impl App {
                     let commands: Vec<Command> = targets
                         .iter()
                         .zip(names)
-                        .filter_map(|((_, path), column)| match path.as_slice() {
-                            [name] => Some(Command::RemoveField {
+                        .filter_map(|((_, path), column)| {
+                            let (name, parents) = path.split_last()?;
+                            Some(Command::RemoveField {
                                 column,
+                                path: parents
+                                    .iter()
+                                    .cloned()
+                                    .map(veta_core::display::PathPart::Field)
+                                    .collect(),
                                 name: name.clone(),
-                            }),
-                            _ => None,
+                            })
                         })
                         .collect();
                     if commands.len() < targets.len() {

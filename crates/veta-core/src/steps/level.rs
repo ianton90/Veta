@@ -199,19 +199,27 @@ impl Level {
             )),
             Step::AddField {
                 column,
+                path,
                 name,
                 data_type,
             } => Ok(with_fields(
                 crate::transforms::nested::change_field_fields(
                     &self.schema,
                     column,
+                    path,
                     name,
                     Some(data_type),
                 )?,
                 self.num_rows,
             )),
-            Step::RemoveField { column, name } => Ok(with_fields(
-                crate::transforms::nested::change_field_fields(&self.schema, column, name, None)?,
+            Step::RemoveField { column, path, name } => Ok(with_fields(
+                crate::transforms::nested::change_field_fields(
+                    &self.schema,
+                    column,
+                    path,
+                    name,
+                    None,
+                )?,
                 self.num_rows,
             )),
             Step::CombineStruct { columns, name } => Ok(with_fields(

@@ -87,6 +87,7 @@ fn add_and_remove_struct_fields() {
         let mut doc = Document::open(&path, options).unwrap();
         let add = |name: &str, data_type| Command::AddField {
             column: "point".into(),
+            path: Vec::new(),
             name: name.into(),
             data_type,
         };
@@ -108,6 +109,7 @@ fn add_and_remove_struct_fields() {
         .unwrap();
         let remove = |name: &str| Command::RemoveField {
             column: "point".into(),
+            path: Vec::new(),
             name: name.into(),
         };
         execute(&mut doc, remove("x")).unwrap();
@@ -118,6 +120,7 @@ fn add_and_remove_struct_fields() {
                 &mut doc,
                 Command::RemoveField {
                     column: "id".into(),
+                    path: Vec::new(),
                     name: "x".into()
                 }
             )

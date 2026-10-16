@@ -11,6 +11,7 @@ use arrow::compute::take;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 
+use crate::display::PathPart;
 use crate::error::Result;
 use crate::steps::invalid;
 
@@ -133,82 +134,181 @@ pub(crate) fn expand_levels(
 }
 
 /// Fields after adding field `name` (`Some` type) to, or removing it from
-/// (`None`), the struct column `column`. Added fields go last.
+/// (`None`), the struct at `path` in column `column`. Added fields go last.
 pub(crate) fn change_field_fields(
     schema: &Schema,
     column: &str,
+    path: &[PathPart],
     name: &str,
     add: Option<&DataType>,
 ) -> Result<Vec<Field>> {
     let index = column_index(schema, column)?;
-    let DataType::Struct(children) = schema.field(index).data_type() else {
-        return Err(invalid(format!("{column} is not a struct column")));
-    };
-    let exists = children.iter().any(|f| f.name() == name);
-    let children: Vec<Field> = match add {
-        Some(data_type) => {
-            if name.trim().is_empty() {
-                return Err(invalid("field name cannot be empty".into()));
+    let at = || format!("{column}{}", crate::steps::type_path(path));
+    let changed = change_struct_at(schema.field(index).data_type(), path, &mut |children| {
+        let exists = children.iter().any(|f| f.name() == name);
+        Ok(match add {
+            Some(data_type) => {
+                if name.trim().is_empty() {
+                    return Err(invalid("field name cannot be empty".into()));
+                }
+                if exists {
+                    return Err(invalid(format!("{} already has a field {name:?}", at())));
+                }
+                let mut children: Vec<Field> =
+                    children.iter().map(|f| f.as_ref().clone()).collect();
+                children.push(Field::new(name, data_type.clone(), true));
+                children
             }
-            if exists {
-                return Err(invalid(format!("{column} already has a field {name:?}")));
+            None => {
+                if !exists {
+                    return Err(invalid(format!("{} has no field {name:?}", at())));
+                }
+                if children.len() == 1 {
+                    return Err(invalid("a struct needs at least one field".into()));
+                }
+                children
+                    .iter()
+                    .filter(|f| f.name() != name)
+                    .map(|f| f.as_ref().clone())
+                    .collect()
             }
-            let mut children: Vec<Field> = children.iter().map(|f| f.as_ref().clone()).collect();
-            children.push(Field::new(name, data_type.clone(), true));
-            children
-        }
-        None => {
-            if !exists {
-                return Err(invalid(format!("{column} has no field {name:?}")));
-            }
-            if children.len() == 1 {
-                return Err(invalid("a struct needs at least one field".into()));
-            }
-            children
-                .iter()
-                .filter(|f| f.name() != name)
-                .map(|f| f.as_ref().clone())
-                .collect()
-        }
-    };
+        })
+    })
+    .ok_or_else(|| invalid(format!("{} is not a struct", at())))??;
     let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
-    fields[index] = schema
-        .field(index)
-        .clone()
-        .with_data_type(DataType::Struct(children.into()));
+    fields[index] = schema.field(index).clone().with_data_type(changed);
     Ok(fields)
 }
 
-/// Adds a null field to, or removes one from, a struct column of `batch`;
-/// `schema` is the output schema.
+/// `data_type` with the fields of the struct at `path` changed by `change`;
+/// `None` if there is no struct there.
+fn change_struct_at(
+    data_type: &DataType,
+    path: &[PathPart],
+    change: &mut dyn FnMut(&arrow::datatypes::Fields) -> Result<Vec<Field>>,
+) -> Option<Result<DataType>> {
+    let inner = |field: &Arc<Field>, change: &mut dyn FnMut(&_) -> Result<Vec<Field>>| {
+        change_struct_at(field.data_type(), &path[1..], change)
+            .map(|t| t.map(|t| Arc::new(field.as_ref().clone().with_data_type(t))))
+    };
+    Some(match (data_type, path.first()) {
+        (DataType::Struct(fields), None) => change(fields).map(|f| DataType::Struct(f.into())),
+        (DataType::Struct(fields), Some(PathPart::Field(name))) => {
+            let i = fields.iter().position(|f| f.name() == name)?;
+            inner(&fields[i], change)?.map(|f| {
+                let mut out: Vec<Arc<Field>> = fields.iter().cloned().collect();
+                out[i] = f;
+                DataType::Struct(out.into())
+            })
+        }
+        (DataType::List(item), Some(PathPart::Index(_))) => {
+            inner(item, change)?.map(DataType::List)
+        }
+        (DataType::LargeList(item), Some(PathPart::Index(_))) => {
+            inner(item, change)?.map(DataType::LargeList)
+        }
+        (DataType::FixedSizeList(item, n), Some(PathPart::Index(_))) => {
+            inner(item, change)?.map(|f| DataType::FixedSizeList(f, *n))
+        }
+        (DataType::Map(entries, sorted), Some(PathPart::Entry(_))) => {
+            let DataType::Struct(kv) = entries.data_type() else {
+                return None;
+            };
+            let value = kv.get(1)?;
+            inner(value, change)?.map(|value| {
+                let kv: Vec<Arc<Field>> = vec![kv[0].clone(), value];
+                let entries = entries
+                    .as_ref()
+                    .clone()
+                    .with_data_type(DataType::Struct(kv.into()));
+                DataType::Map(Arc::new(entries), *sorted)
+            })
+        }
+        _ => return None,
+    })
+}
+
+/// Adds a null field to, or removes one from, a struct at any depth in a
+/// column of `batch`; `schema` is the output schema.
 pub(crate) fn change_field(
     batch: &RecordBatch,
     column: &str,
     schema: &Arc<Schema>,
 ) -> Result<RecordBatch> {
     let index = column_index(&batch.schema(), column)?;
-    let structs = batch.column(index).as_struct();
-    let DataType::Struct(fields) = schema.field(index).data_type() else {
-        return Err(invalid(format!("{column} is not a struct column")));
-    };
-    let children = fields
-        .iter()
-        .map(|f| {
-            structs
-                .column_by_name(f.name())
-                .cloned()
-                .unwrap_or_else(|| new_null_array(f.data_type(), structs.len()))
-        })
-        .collect();
-    let changed =
-        arrow::array::StructArray::try_new(fields.clone(), children, structs.nulls().cloned())?;
     let mut columns = batch.columns().to_vec();
-    columns[index] = Arc::new(changed);
+    columns[index] = conform(&columns[index], schema.field(index).data_type())?;
     Ok(RecordBatch::try_new_with_options(
         schema.clone(),
         columns,
         &arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
     )?)
+}
+
+/// `array` rebuilt as type `to`, which has the same shape except for
+/// struct fields added (null) or removed, at any depth.
+fn conform(array: &ArrayRef, to: &DataType) -> Result<ArrayRef> {
+    use arrow::array::{FixedSizeListArray, LargeListArray, ListArray, MapArray, StructArray};
+    if array.data_type() == to {
+        return Ok(array.clone());
+    }
+    Ok(match to {
+        DataType::Struct(fields) => {
+            let structs = array.as_struct();
+            let children = fields
+                .iter()
+                .map(|f| match structs.column_by_name(f.name()) {
+                    Some(child) => conform(child, f.data_type()),
+                    None => Ok(new_null_array(f.data_type(), structs.len())),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Arc::new(StructArray::try_new(
+                fields.clone(),
+                children,
+                structs.nulls().cloned(),
+            )?)
+        }
+        DataType::List(item) => {
+            let list = array.as_list::<i32>();
+            Arc::new(ListArray::try_new(
+                item.clone(),
+                list.offsets().clone(),
+                conform(list.values(), item.data_type())?,
+                list.nulls().cloned(),
+            )?)
+        }
+        DataType::LargeList(item) => {
+            let list = array.as_list::<i64>();
+            Arc::new(LargeListArray::try_new(
+                item.clone(),
+                list.offsets().clone(),
+                conform(list.values(), item.data_type())?,
+                list.nulls().cloned(),
+            )?)
+        }
+        DataType::FixedSizeList(item, n) => {
+            let list = array.as_fixed_size_list();
+            Arc::new(FixedSizeListArray::try_new(
+                item.clone(),
+                *n,
+                conform(list.values(), item.data_type())?,
+                list.nulls().cloned(),
+            )?)
+        }
+        DataType::Map(entries, sorted) => {
+            let map = array.as_map();
+            let entries_array: ArrayRef = Arc::new(map.entries().clone());
+            let conformed = conform(&entries_array, entries.data_type())?;
+            Arc::new(MapArray::try_new(
+                entries.clone(),
+                map.offsets().clone(),
+                conformed.as_struct().clone(),
+                map.nulls().cloned(),
+                *sorted,
+            )?)
+        }
+        _ => arrow::compute::cast(array, to)?,
+    })
 }
 
 /// Fields after combining `columns` into a struct column `name`.

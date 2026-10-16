@@ -154,15 +154,20 @@ pub enum Command {
     ExplodeList {
         column: String,
     },
-    /// Adds a null field at the end of a struct column.
+    /// Adds a null field at the end of the struct at `path` in a column
+    /// (empty: the column is the struct). `path` goes through struct fields,
+    /// list items and map values; their positions don't matter, every item
+    /// or value gets the field.
     AddField {
         column: String,
+        path: Vec<PathPart>,
         name: String,
         data_type: DataType,
     },
-    /// Removes a field from a struct column.
+    /// Removes a field from the struct at `path` in a column.
     RemoveField {
         column: String,
+        path: Vec<PathPart>,
         name: String,
     },
     /// One row per group of equal keys, other chosen columns as lists.

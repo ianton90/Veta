@@ -2,16 +2,19 @@
 
 use super::*;
 use iced::widget::column;
+use veta_core::values::node::NodeKind;
 
 /// One entry of a right-click menu: icon, label, shortcut, action.
 type MenuEntry = (Icon, String, &'static str, MenuItem);
 
 /// The right-click menu's sections for `target`: a title and its entries.
+/// `line` is the kind of the selected line of an open cell, if one is.
 pub fn menu_sections(
     target: MenuTarget,
     rows: usize,
     columns: usize,
     column_type: Option<&DataType>,
+    line: Option<NodeKind>,
 ) -> Vec<(&'static str, Vec<MenuEntry>)> {
     let entry = |icon, label: &str, shortcut, item| (icon, label.to_owned(), shortcut, item);
     let count = |n: usize, one: &str, many: &str| {
@@ -32,6 +35,38 @@ pub fn menu_sections(
         ));
         return sections;
     }
+    // A struct, list or map line also adds inside itself.
+    let inside = |sections: &mut Vec<(&'static str, Vec<MenuEntry>)>| match line {
+        Some(NodeKind::Struct) => {
+            sections.push((
+                "Struct",
+                vec![entry(Icon::Plus, "Add field…", "", MenuItem::AddInside)],
+            ));
+        }
+        Some(NodeKind::List) => {
+            sections.push((
+                "List",
+                vec![entry(
+                    Icon::Plus,
+                    "Add item at the end",
+                    "",
+                    MenuItem::AddInside,
+                )],
+            ));
+        }
+        Some(NodeKind::Map) => {
+            sections.push((
+                "Map",
+                vec![entry(
+                    Icon::Plus,
+                    "Add entry at the end",
+                    "",
+                    MenuItem::AddInside,
+                )],
+            ));
+        }
+        _ => {}
+    };
     if target == MenuTarget::Field {
         sections.push((
             "Struct field",
@@ -42,6 +77,7 @@ pub fn menu_sections(
                 entry(Icon::Trash, "Remove field", "", MenuItem::RemoveField),
             ],
         ));
+        inside(&mut sections);
         return sections;
     }
     if target == MenuTarget::Entry {
@@ -50,7 +86,18 @@ pub fn menu_sections(
             vec![
                 entry(Icon::Rename, "Edit value", "Enter", MenuItem::EditCell),
                 entry(Icon::Rename, "Edit key", "", MenuItem::EditKey),
-                entry(Icon::Plus, "Add entry", "Ctrl++", MenuItem::AddEntry),
+                entry(
+                    Icon::InsertRows,
+                    "Insert entry above",
+                    "Ctrl++",
+                    MenuItem::InsertItem,
+                ),
+                entry(
+                    Icon::InsertRows,
+                    "Insert entry below",
+                    "",
+                    MenuItem::InsertItemBelow,
+                ),
                 entry(Icon::Trash, "Delete entry", "Ctrl+-", MenuItem::DeleteItem),
                 entry(
                     Icon::Eraser,
@@ -60,6 +107,7 @@ pub fn menu_sections(
                 ),
             ],
         ));
+        inside(&mut sections);
         return sections;
     }
     if target == MenuTarget::Item {
@@ -83,6 +131,7 @@ pub fn menu_sections(
                 entry(Icon::Eraser, "Set to null", "Delete", MenuItem::ClearCell),
             ],
         ));
+        inside(&mut sections);
         return sections;
     }
     sections.push((
@@ -359,12 +408,25 @@ fn nested_items(
             | DataType::LargeList(_)
             | DataType::FixedSizeList(..)
             | DataType::Map(..),
-        ) => vec![Some((
-            Icon::Rows,
-            "Explode to rows".into(),
-            "",
-            MenuItem::ExplodeList,
-        ))],
+        ) => vec![
+            Some((
+                Icon::Plus,
+                if matches!(column_type, Some(DataType::Map(..))) {
+                    "Add entry at the end".into()
+                } else {
+                    "Add item at the end".into()
+                },
+                "",
+                MenuItem::AddInside,
+            ))
+            .filter(|_| !matches!(column_type, Some(DataType::FixedSizeList(..)))),
+            Some((
+                Icon::Rows,
+                "Explode to rows".into(),
+                "",
+                MenuItem::ExplodeList,
+            )),
+        ],
         _ => Vec::new(),
     }
 }

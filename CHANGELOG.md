@@ -38,7 +38,8 @@ While the major version is 0, minor versions may change behaviour.
   Space), indented. Values edit in place at any depth; list items are added
   at the end or inserted and deleted anywhere; map entries edit their keys
   (any key type) and values, with entries added and deleted.
-  Add or remove fields of struct columns.
+  Add or remove struct fields at any depth (also inside list items and
+  map values); insert list items and map entries at any position.
 - Ribbon, light and dark themes (TOML), settings.
 
 **Command line (`veta-cli`)**
