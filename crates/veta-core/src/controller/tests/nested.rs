@@ -1,6 +1,7 @@
 //! Controller tests: nested values and struct/list columns.
 
 use super::*;
+use crate::display::PathPart;
 
 #[test]
 fn nested_cells_edit_as_json_and_expand_explode() {
@@ -185,62 +186,21 @@ fn new_nested_columns_save() {
     }
     execute(&mut doc, set_cell(1, "point", Some(r#"{"x": 1.5}"#))).unwrap();
     execute(&mut doc, set_cell(2, "tags", Some("[1, 2]"))).unwrap();
+    execute(&mut doc, insert(1, "scores", vec![], 0, Some("math"))).unwrap();
     execute(
         &mut doc,
-        Command::InsertMapEntry {
-            row: 1,
-            column: "scores".into(),
-            map: Vec::new(),
-            index: 0,
-            key: "math".into(),
-        },
-    )
-    .unwrap();
-    execute(
-        &mut doc,
-        Command::SetMapValue {
-            row: 1,
-            column: "scores".into(),
-            map: Vec::new(),
-            index: 0,
-            value: Some("9".into()),
-        },
+        set(1, "scores", vec![PathPart::Entry(0)], Some("9")),
     )
     .unwrap();
     // A map with whole-number keys.
-    for command in [
-        Command::InsertMapEntry {
-            row: 0,
-            column: "names".into(),
-            map: Vec::new(),
-            index: 0,
-            key: "7".into(),
-        },
-        Command::SetMapValue {
-            row: 0,
-            column: "names".into(),
-            map: Vec::new(),
-            index: 0,
-            value: Some("x".into()),
-        },
-        Command::SetMapKey {
-            row: 0,
-            column: "names".into(),
-            map: Vec::new(),
-            index: 0,
-            key: "8".into(),
-        },
-    ] {
-        execute(&mut doc, command).unwrap();
-    }
-    let bad_key = Command::InsertMapEntry {
-        row: 0,
-        column: "names".into(),
-        map: Vec::new(),
-        index: 1,
-        key: "eight".into(),
-    };
-    assert!(execute(&mut doc, bad_key).is_err());
+    execute(&mut doc, insert(0, "names", vec![], 0, Some("7"))).unwrap();
+    execute(
+        &mut doc,
+        set(0, "names", vec![PathPart::Entry(0)], Some("x")),
+    )
+    .unwrap();
+    execute(&mut doc, rename_key(0, "names", vec![], 0, "8")).unwrap();
+    assert!(execute(&mut doc, insert(0, "names", vec![], 1, Some("eight"))).is_err());
     execute(
         &mut doc,
         set_cell(2, "names", Some(r#"{"1": "a", "2": null}"#)),
@@ -334,93 +294,113 @@ fn leaf_columns_of_nested_schema() {
     assert_eq!(x, &DataType::Int64);
 }
 
+fn f(name: &str) -> PathPart {
+    PathPart::Field(name.into())
+}
+
+fn set(row: usize, column: &str, path: Vec<PathPart>, value: Option<&str>) -> Command {
+    Command::SetValue {
+        row,
+        column: column.into(),
+        path,
+        value: value.map(Into::into),
+    }
+}
+
+fn insert(
+    row: usize,
+    column: &str,
+    path: Vec<PathPart>,
+    index: usize,
+    key: Option<&str>,
+) -> Command {
+    Command::InsertItem {
+        row,
+        column: column.into(),
+        path,
+        index,
+        key: key.map(Into::into),
+    }
+}
+
+fn remove(row: usize, column: &str, path: Vec<PathPart>, index: usize) -> Command {
+    Command::RemoveItem {
+        row,
+        column: column.into(),
+        path,
+        index,
+    }
+}
+
+fn rename_key(row: usize, column: &str, path: Vec<PathPart>, index: usize, key: &str) -> Command {
+    Command::SetKey {
+        row,
+        column: column.into(),
+        path,
+        index,
+        key: key.into(),
+    }
+}
+
 #[test]
-fn nested_field_and_list_item_commands() {
+fn struct_fields_and_list_items_by_path() {
+    use PathPart::Index;
     let dir = TempDir::new();
     let path = dir.join("n.parquet");
     fixtures::nested(&path);
     for options in [OpenOptions::default(), OpenOptions::paged()] {
         let mut doc = Document::open(&path, options).unwrap();
-        let names = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let set_field = |row, column: &str, path: &[&str], value: Option<&str>| Command::SetField {
-            row,
-            column: column.into(),
-            path: names(path),
-            value: value.map(Into::into),
-        };
-        execute(&mut doc, set_field(0, "point", &["x"], Some("5"))).unwrap();
-        assert_eq!(cell(&doc, 0, "point").as_deref(), Some("{x: 5, y: 2}"));
-        execute(&mut doc, set_field(0, "point", &["y"], None)).unwrap();
+        execute(&mut doc, set(0, "point", vec![f("x")], Some("5"))).unwrap();
+        execute(&mut doc, set(0, "point", vec![f("y")], None)).unwrap();
         assert_eq!(cell(&doc, 0, "point").as_deref(), Some("{x: 5, y: null}"));
         assert_eq!(doc.steps().len(), 1, "edits join one step");
-        execute(&mut doc, set_field(0, "owner", &["home", "x"], Some("9"))).unwrap();
+        execute(
+            &mut doc,
+            set(0, "owner", vec![f("home"), f("x")], Some("9")),
+        )
+        .unwrap();
         assert!(cell(&doc, 0, "owner").unwrap().contains("x: 9"));
+        // A field under a null struct creates it.
+        execute(
+            &mut doc,
+            set(2, "owner", vec![f("home"), f("y")], Some("1")),
+        )
+        .unwrap();
+        assert_eq!(
+            cell(&doc, 2, "owner").as_deref(),
+            Some("{name: null, home: {x: null, y: 1}}")
+        );
         for bad in [
-            set_field(0, "point", &["x"], Some("abc")),
-            set_field(0, "point", &["z"], Some("1")),
-            set_field(9, "point", &["x"], Some("1")),
-            set_field(0, "nope", &["x"], Some("1")),
+            set(0, "point", vec![f("x")], Some("abc")),
+            set(0, "point", vec![f("z")], Some("1")),
+            set(9, "point", vec![f("x")], Some("1")),
+            set(0, "nope", vec![f("x")], Some("1")),
+            set(0, "point", vec![], Some("1")),
         ] {
             assert!(execute(&mut doc, bad).is_err());
         }
 
-        let list = |command: fn(usize, String, Vec<String>, usize) -> Command, row, index| {
-            command(row, "tags".into(), Vec::new(), index)
-        };
-        let insert: fn(usize, String, Vec<String>, usize) -> Command =
-            |row, column, list, index| Command::InsertListItem {
-                row,
-                column,
-                list,
-                index,
-            };
-        let remove: fn(usize, String, Vec<String>, usize) -> Command =
-            |row, column, list, index| Command::RemoveListItem {
-                row,
-                column,
-                list,
-                index,
-            };
-        let set_item = |row, index, value: &str| Command::SetListItem {
-            row,
-            column: "tags".into(),
-            list: Vec::new(),
-            index,
-            value: Some(value.into()),
-        };
+        // List items: set, append, insert, remove; a null list is empty.
         let before = cell(&doc, 0, "tags").unwrap();
-        execute(&mut doc, set_item(0, 1, "z")).unwrap();
-        execute(&mut doc, set_item(0, 2, "w")).unwrap();
+        execute(&mut doc, set(0, "tags", vec![Index(1)], Some("z"))).unwrap();
+        execute(&mut doc, set(0, "tags", vec![Index(2)], Some("w"))).unwrap();
         assert_eq!(cell(&doc, 0, "tags").as_deref(), Some("[a, z, w]"));
-        execute(&mut doc, list(insert, 0, 0)).unwrap();
+        execute(&mut doc, insert(0, "tags", vec![], 0, None)).unwrap();
         assert_eq!(cell(&doc, 0, "tags").as_deref(), Some("[null, a, z, w]"));
-        execute(&mut doc, list(remove, 0, 3)).unwrap();
-        execute(&mut doc, list(remove, 0, 0)).unwrap();
+        execute(&mut doc, remove(0, "tags", vec![], 3)).unwrap();
+        execute(&mut doc, remove(0, "tags", vec![], 0)).unwrap();
         assert_eq!(cell(&doc, 0, "tags").as_deref(), Some("[a, z]"));
-        assert!(execute(&mut doc, list(remove, 0, 5)).is_err());
-        // A null list counts as empty.
-        execute(&mut doc, list(insert, 2, 0)).unwrap();
+        assert!(execute(&mut doc, remove(0, "tags", vec![], 5)).is_err());
+        assert!(execute(&mut doc, set(0, "tags", vec![Index(5)], Some("q"))).is_err());
+        execute(&mut doc, insert(2, "tags", vec![], 0, None)).unwrap();
         assert_eq!(cell(&doc, 2, "tags").as_deref(), Some("[null]"));
-        let not_a_list = Command::InsertListItem {
-            row: 0,
-            column: "point".into(),
-            list: Vec::new(),
-            index: 0,
-        };
-        assert!(execute(&mut doc, not_a_list).is_err());
-        // A list of structs: set a field of an item through the cell's JSON.
-        execute(
-            &mut doc,
-            Command::SetListItem {
-                row: 0,
-                column: "path".into(),
-                list: Vec::new(),
-                index: 0,
-                value: Some(r#"{"x": 1, "y": 1}"#.into()),
-            },
-        )
-        .unwrap();
-        assert!(cell(&doc, 0, "path").unwrap().starts_with("[{x: 1, y: 1}"));
+        assert!(execute(&mut doc, insert(0, "point", vec![], 0, None)).is_err());
+        // A field of a struct inside a list.
+        execute(&mut doc, set(0, "path", vec![Index(1), f("y")], Some("40"))).unwrap();
+        assert_eq!(
+            cell(&doc, 0, "path").as_deref(),
+            Some("[{x: 0, y: 0}, {x: 3, y: 40}]")
+        );
 
         while undo(&mut doc) {}
         assert_eq!(cell(&doc, 0, "tags").unwrap(), before);
@@ -429,70 +409,140 @@ fn nested_field_and_list_item_commands() {
 }
 
 #[test]
-fn map_entry_commands() {
+fn map_entries_by_path() {
     let dir = TempDir::new();
     let path = dir.join("n.parquet");
     fixtures::nested(&path);
     let mut doc = Document::open(&path, OpenOptions::default()).unwrap();
     let scores = |doc: &Document, row| cell(doc, row, "scores");
     let before = scores(&doc, 0).unwrap();
-    let set = |row, index, value: Option<&str>| Command::SetMapValue {
-        row,
-        column: "scores".into(),
-        map: Vec::new(),
-        index,
-        value: value.map(Into::into),
-    };
-    let rename = |row, index, key: &str| Command::SetMapKey {
-        row,
-        column: "scores".into(),
-        map: Vec::new(),
-        index,
-        key: key.into(),
-    };
-    let insert = |row, index, key: &str| Command::InsertMapEntry {
-        row,
-        column: "scores".into(),
-        map: Vec::new(),
-        index,
-        key: key.into(),
-    };
-    let remove = |row, index| Command::RemoveMapEntry {
-        row,
-        column: "scores".into(),
-        map: Vec::new(),
-        index,
-    };
-    execute(&mut doc, set(0, 1, Some("8"))).unwrap();
-    execute(&mut doc, rename(0, 0, "maths")).unwrap();
+    let entry = PathPart::Entry;
+    execute(&mut doc, set(0, "scores", vec![entry(1)], Some("8"))).unwrap();
+    execute(&mut doc, rename_key(0, "scores", vec![], 0, "maths")).unwrap();
     assert_eq!(scores(&doc, 0).as_deref(), Some("{maths: 9, art: 8}"));
-    execute(&mut doc, insert(0, 2, "pe")).unwrap();
-    execute(&mut doc, set(0, 2, Some("5"))).unwrap();
+    execute(&mut doc, insert(0, "scores", vec![], 2, Some("pe"))).unwrap();
+    execute(&mut doc, set(0, "scores", vec![entry(2)], Some("5"))).unwrap();
     assert_eq!(
         scores(&doc, 0).as_deref(),
         Some("{maths: 9, art: 8, pe: 5}")
     );
-    execute(&mut doc, remove(0, 0)).unwrap();
+    execute(&mut doc, remove(0, "scores", vec![], 0)).unwrap();
     assert_eq!(scores(&doc, 0).as_deref(), Some("{art: 8, pe: 5}"));
-    // A null map counts as empty; a null value stays null.
-    execute(&mut doc, insert(2, 0, "math")).unwrap();
+    execute(&mut doc, insert(2, "scores", vec![], 0, Some("math"))).unwrap();
     assert_eq!(scores(&doc, 2).as_deref(), Some("{math: null}"));
     for bad in [
-        rename(0, 0, "pe"),
-        insert(0, 0, "art"),
-        set(0, 0, Some("x")),
-        set(0, 9, Some("1")),
-        remove(1, 0),
-        Command::InsertMapEntry {
-            row: 0,
-            column: "tags".into(),
-            map: Vec::new(),
-            index: 0,
-            key: "k".into(),
-        },
+        rename_key(0, "scores", vec![], 0, "pe"),
+        insert(0, "scores", vec![], 0, Some("art")),
+        insert(0, "scores", vec![], 0, None),
+        set(0, "scores", vec![entry(0)], Some("x")),
+        set(0, "scores", vec![entry(9)], Some("1")),
+        remove(1, "scores", vec![], 0),
+        rename_key(0, "tags", vec![], 0, "k"),
     ] {
         assert!(execute(&mut doc, bad).is_err());
     }
     while undo(&mut doc) {}
     assert_eq!(scores(&doc, 0).unwrap(), before);
+}
+
+#[test]
+fn values_nested_to_any_depth() {
+    use PathPart::{Entry, Index};
+    let dir = TempDir::new();
+    let path = dir.join("deep.parquet");
+    fixtures::deep_nested(&path, 50);
+    let mut doc = Document::open(&path, OpenOptions::default()).unwrap();
+    // A row whose first order has options, and one with a matrix.
+    let row = (0..50)
+        .find(|&r| {
+            cell(&doc, r, "orders").is_some_and(|o| o.starts_with("[{") && o.contains("color"))
+        })
+        .unwrap();
+    // orders[0].options: rename a key, set its value, add an entry.
+    let options = vec![Index(0), f("options")];
+    execute(
+        &mut doc,
+        rename_key(row, "orders", options.clone(), 0, "colour"),
+    )
+    .unwrap();
+    let mut value = options.clone();
+    value.push(Entry(0));
+    execute(&mut doc, set(row, "orders", value, Some("teal"))).unwrap();
+    execute(
+        &mut doc,
+        insert(row, "orders", options.clone(), 2, Some("fit")),
+    )
+    .unwrap();
+    let orders = cell(&doc, row, "orders").unwrap();
+    assert!(
+        orders.contains("options: {colour: teal, size: "),
+        "{orders}"
+    );
+    assert!(orders.contains("fit: null}"), "{orders}");
+    // A list inside a list: append to the first inner list, add a new one.
+    execute(&mut doc, set(3, "matrix", vec![], None)).unwrap_err();
+    execute(&mut doc, insert(1, "matrix", vec![], 0, None)).unwrap();
+    execute(
+        &mut doc,
+        set(1, "matrix", vec![Index(0), Index(0)], Some("42")),
+    )
+    .unwrap();
+    assert!(cell(&doc, 1, "matrix").unwrap().starts_with("[[42], "));
+    // An int-keyed map of structs holding lists.
+    let history = (0..50)
+        .find(|&r| cell(&doc, r, "history").is_some_and(|h| h.contains("notes: [")))
+        .unwrap();
+    execute(&mut doc, insert(history, "history", vec![], 0, Some("1"))).unwrap();
+    execute(
+        &mut doc,
+        set(history, "history", vec![Entry(0), f("status")], Some("new")),
+    )
+    .unwrap();
+    execute(
+        &mut doc,
+        insert(history, "history", vec![Entry(0), f("notes")], 0, None),
+    )
+    .unwrap();
+    execute(
+        &mut doc,
+        set(
+            history,
+            "history",
+            vec![Entry(0), f("notes"), Index(0)],
+            Some("hi"),
+        ),
+    )
+    .unwrap();
+    assert!(
+        cell(&doc, history, "history")
+            .unwrap()
+            .starts_with("{1: {status: new, notes: [hi]}"),
+        "{:?}",
+        cell(&doc, history, "history")
+    );
+    // The struct column: a list of structs inside it.
+    execute(&mut doc, insert(4, "profile", vec![f("children")], 0, None)).unwrap();
+    execute(
+        &mut doc,
+        set(
+            4,
+            "profile",
+            vec![f("children"), Index(0), f("name")],
+            Some("Zoe"),
+        ),
+    )
+    .unwrap();
+    assert!(
+        cell(&doc, 4, "profile")
+            .unwrap()
+            .contains("children: [{name: Zoe, age: null}")
+    );
+    let out = dir.join("deep-edited.parquet");
+    doc.save(Some(out.clone())).unwrap();
+    let saved = Document::open(&out, OpenOptions::default()).unwrap();
+    assert_eq!(cell(&saved, 1, "matrix"), cell(&doc, 1, "matrix"));
+    assert_eq!(
+        cell(&saved, history, "history"),
+        cell(&doc, history, "history")
+    );
 }

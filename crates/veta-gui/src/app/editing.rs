@@ -218,60 +218,45 @@ impl App {
         item: &ListItem,
         change: &veta_core::values::ListEdit,
     ) -> Result<(), String> {
+        use veta_core::display::PathPart;
         use veta_core::values::ListEdit;
-        let (row, column, list) = (item.row, item.column.clone(), item.list.clone());
-        // A struct field: only its value can be set.
-        let command = if let Some(field) = &item.field {
-            let ListEdit::Set { text, .. } = change else {
+        let (row, column) = (item.row, item.column.clone());
+        let path: Vec<PathPart> = item.list.iter().cloned().map(PathPart::Field).collect();
+        let child = |i: usize| {
+            let mut p = path.clone();
+            p.push(match (&item.field, item.key.is_some()) {
+                (Some(f), _) => PathPart::Field(f.clone()),
+                (None, true) => PathPart::Entry(i),
+                (None, false) => PathPart::Index(i),
+            });
+            p
+        };
+        let command = match *change {
+            ListEdit::Set { index, text, .. } => Command::SetValue {
+                row,
+                column,
+                path: child(index),
+                value: text.map(str::to_owned),
+            },
+            _ if item.field.is_some() => {
                 return Err("struct fields can't be inserted or removed here".into());
-            };
-            let mut path = list;
-            path.push(field.clone());
-            Command::SetField {
+            }
+            ListEdit::Insert(_) if item.key.is_some() => {
+                return Err("map entries need a key".into());
+            }
+            ListEdit::Insert(index) => Command::InsertItem {
                 row,
                 column,
                 path,
-                value: text.map(str::to_owned),
-            }
-        } else if item.key.is_some() {
-            match *change {
-                ListEdit::Set { index, text, .. } => Command::SetMapValue {
-                    row,
-                    column,
-                    map: list,
-                    index,
-                    value: text.map(str::to_owned),
-                },
-                ListEdit::Remove(index) => Command::RemoveMapEntry {
-                    row,
-                    column,
-                    map: list,
-                    index,
-                },
-                ListEdit::Insert(_) => return Err("map entries need a key".into()),
-            }
-        } else {
-            match *change {
-                ListEdit::Set { index, text, .. } => Command::SetListItem {
-                    row,
-                    column,
-                    list,
-                    index,
-                    value: text.map(str::to_owned),
-                },
-                ListEdit::Insert(index) => Command::InsertListItem {
-                    row,
-                    column,
-                    list,
-                    index,
-                },
-                ListEdit::Remove(index) => Command::RemoveListItem {
-                    row,
-                    column,
-                    list,
-                    index,
-                },
-            }
+                index,
+                key: None,
+            },
+            ListEdit::Remove(index) => Command::RemoveItem {
+                row,
+                column,
+                path,
+                index,
+            },
         };
         self.nested_command(id, command)
     }
@@ -279,24 +264,25 @@ impl App {
     /// Renames the key of map entry `item`, or adds an entry with that key
     /// when `item` is the new-entry slot.
     fn change_map_key(&mut self, id: DocumentId, item: &ListItem, key: &str) -> Result<(), String> {
-        let (row, column, map, index) =
-            (item.row, item.column.clone(), item.list.clone(), item.index);
+        use veta_core::display::PathPart;
+        let (row, column, index) = (item.row, item.column.clone(), item.index);
+        let path: Vec<PathPart> = item.list.iter().cloned().map(PathPart::Field).collect();
         let key = key.to_owned();
         let command = if index < item.len {
-            Command::SetMapKey {
+            Command::SetKey {
                 row,
                 column,
-                map,
+                path,
                 index,
                 key,
             }
         } else {
-            Command::InsertMapEntry {
+            Command::InsertItem {
                 row,
                 column,
-                map,
+                path,
                 index,
-                key,
+                key: Some(key),
             }
         };
         self.nested_command(id, command)
@@ -396,10 +382,15 @@ impl App {
         field: &StructField,
         text: Option<&str>,
     ) -> Result<(), String> {
-        let command = Command::SetField {
+        let command = Command::SetValue {
             row,
             column: column.to_owned(),
-            path: field.path.clone(),
+            path: field
+                .path
+                .iter()
+                .cloned()
+                .map(veta_core::display::PathPart::Field)
+                .collect(),
             value: text.map(str::to_owned),
         };
         self.nested_command(id, command)

@@ -150,7 +150,7 @@ pub fn json_column(array: &dyn Array) -> Result<arrow::array::StringArray> {
 
 /// The item range, values and (for maps) keys of a list or map value;
 /// `None` for other types and nulls.
-fn items_of(
+pub(crate) fn items_of(
     array: &dyn Array,
     row: usize,
 ) -> Option<(
@@ -341,12 +341,46 @@ pub fn item_count(array: &dyn Array, row: usize) -> usize {
     items_of(array, row).map_or(0, |(range, _, _)| range.len())
 }
 
-/// A step into a nested value: a struct field, a list index or a map key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A step into a nested value: a struct field, a list item or the value of
+/// a map entry, by position.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PathPart {
     Field(String),
     Index(usize),
-    Key(String),
+    Entry(usize),
+}
+
+/// The type of the value at `path` inside a value of `data_type`.
+pub fn type_at<'a>(data_type: &'a DataType, path: &[PathPart]) -> Option<&'a DataType> {
+    let mut current = data_type;
+    for part in path {
+        current = match (current, part) {
+            (DataType::Struct(fields), PathPart::Field(name)) => {
+                fields.iter().find(|f| f.name() == name)?.data_type()
+            }
+            (
+                DataType::List(item) | DataType::LargeList(item) | DataType::FixedSizeList(item, _),
+                PathPart::Index(_),
+            ) => item.data_type(),
+            (DataType::Map(entries, _), PathPart::Entry(_)) => match entries.data_type() {
+                DataType::Struct(kv) if kv.len() == 2 => kv[1].data_type(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+    }
+    Some(current)
+}
+
+/// The key type of a map type.
+pub fn map_key_type(data_type: &DataType) -> Option<&DataType> {
+    match data_type {
+        DataType::Map(entries, _) => match entries.data_type() {
+            DataType::Struct(kv) if kv.len() == 2 => Some(kv[0].data_type()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Short, human-friendly name of a type, e.g. `int64`, `string`,

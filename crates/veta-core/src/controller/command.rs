@@ -7,6 +7,7 @@ use std::ops::Range;
 
 use arrow::datatypes::DataType;
 
+use crate::display::PathPart;
 use crate::model::{KeyValue, WriterSettings};
 use crate::steps::{Cast, CustomColumn, Fill, Filter, Merge, Replace, Sort, Split, Step, TextOp};
 
@@ -53,76 +54,46 @@ pub enum Command {
         targets: Vec<(usize, Vec<String>)>,
         values: Vec<Vec<Option<String>>>,
     },
-    /// Sets a field of a struct cell from text, parsed as the field's type.
-    /// `path` names the fields from the column down (through structs only).
-    /// `None`, or blank text in a non-text field, sets null.
-    SetField {
+    /// Sets the value at `path` inside a nested cell from text, parsed as
+    /// that value's type. `path` goes down through struct fields, list items
+    /// and map entries (by position); missing struct fields, and structs
+    /// under a null one, are created. A list index equal to the list's length
+    /// appends. `None`, or blank text in a non-text value, sets null. The
+    /// path can't be empty (that is [`Command::SetCell`]).
+    SetValue {
         row: usize,
         column: String,
-        path: Vec<String>,
+        path: Vec<PathPart>,
         value: Option<String>,
     },
-    /// Sets item `index` of a list in a cell from text, parsed as the item
-    /// type. `list` names the struct fields from the column down to the list
-    /// (empty: the cell is the list). `index` may be the list's length,
-    /// which appends. A null list counts as empty.
-    SetListItem {
+    /// Inserts an item at `index` (up to the number of items) in the list or
+    /// map at `path` in a cell (empty: the cell is it). A list gets a null
+    /// item and takes no key; a map gets an entry with `key` (read as the key
+    /// type; not empty, not already used) and a null value. A null list or
+    /// map counts as empty.
+    InsertItem {
         row: usize,
         column: String,
-        list: Vec<String>,
+        path: Vec<PathPart>,
         index: usize,
-        value: Option<String>,
+        key: Option<String>,
     },
-    /// Inserts a null item at `index` (up to the list's length) in a list in
-    /// a cell; `list` as for [`Command::SetListItem`].
-    InsertListItem {
+    /// Removes item `index` of the list, or entry `index` of the map, at
+    /// `path` in a cell.
+    RemoveItem {
         row: usize,
         column: String,
-        list: Vec<String>,
-        index: usize,
-    },
-    /// Removes item `index` of a list in a cell; `list` as for
-    /// [`Command::SetListItem`].
-    RemoveListItem {
-        row: usize,
-        column: String,
-        list: Vec<String>,
+        path: Vec<PathPart>,
         index: usize,
     },
-    /// Sets the value of entry `index` of a map in a cell from text, parsed
-    /// as the value type. `map` names the struct fields from the column down
-    /// to the map (empty: the cell is the map).
-    SetMapValue {
+    /// Renames the key of entry `index` of the map at `path` in a cell (read
+    /// as the key type; not empty, not already used).
+    SetKey {
         row: usize,
         column: String,
-        map: Vec<String>,
-        index: usize,
-        value: Option<String>,
-    },
-    /// Renames the key of entry `index` of a map in a cell, read as the key
-    /// type; keys can't be empty and must stay unique. `map` as for [`Command::SetMapValue`].
-    SetMapKey {
-        row: usize,
-        column: String,
-        map: Vec<String>,
+        path: Vec<PathPart>,
         index: usize,
         key: String,
-    },
-    /// Inserts an entry with a new key and a null value at `index` (up to the
-    /// number of entries) in a map in a cell. A null map counts as empty.
-    InsertMapEntry {
-        row: usize,
-        column: String,
-        map: Vec<String>,
-        index: usize,
-        key: String,
-    },
-    /// Removes entry `index` of a map in a cell.
-    RemoveMapEntry {
-        row: usize,
-        column: String,
-        map: Vec<String>,
-        index: usize,
     },
     /// Inserts `count` empty rows before row `at` (`at` = row count appends).
     InsertRows {

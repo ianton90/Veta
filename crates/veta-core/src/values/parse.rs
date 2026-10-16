@@ -326,10 +326,12 @@ fn value_at<'a>(
     for part in pointer {
         let missing = || Error::InvalidCommand("that part of the value no longer exists".into());
         target = match part {
-            PathPart::Field(name) | PathPart::Key(name) => {
-                target.get_mut(name.as_str()).ok_or_else(missing)?
-            }
+            PathPart::Field(name) => target.get_mut(name.as_str()).ok_or_else(missing)?,
             PathPart::Index(i) => target.get_mut(*i).ok_or_else(missing)?,
+            PathPart::Entry(i) => match target {
+                serde_json::Value::Object(map) => map.values_mut().nth(*i).ok_or_else(missing)?,
+                _ => return Err(missing()),
+            },
         };
     }
     Ok(target)

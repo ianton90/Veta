@@ -1,132 +1,97 @@
-//! Nested value commands: struct fields, list items and map entries inside
-//! a cell. Each
-//! becomes an edit of the whole cell.
+//! Nested value commands: values, list items and map entries at any depth
+//! inside a cell. Each becomes an edit of the whole cell, through its JSON.
 
 use super::*;
 use arrow::datatypes::DataType;
 
-use crate::display::{PathPart, field_type, value_json};
+use crate::display::{PathPart, map_key_type, type_at, value_json};
 use crate::values::{ListEdit, MapEdit, edit_list, edit_map, set_nested};
 
 /// Plans one of this area's commands (see `super::plan`).
 pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
     match command {
-        Command::SetField {
+        Command::SetValue {
             row,
             column,
             path,
             value,
         } => {
-            let leaf = column_type(doc, &column)?;
-            let leaf = field_type(&leaf, &path)
-                .ok_or_else(|| invalid(format!("{column} has no field {}", path.join("."))))?
+            if path.is_empty() {
+                return Err(invalid("no value inside the cell given".into()));
+            }
+            let column_type = column_type(doc, &column)?;
+            let leaf = type_at(&column_type, &path)
+                .ok_or_else(|| invalid(format!("{column} has no value at {}", describe(&path))))?
                 .clone();
-            let pointer = pointer(&path);
+            let (parent, last) = path.split_at(path.len() - 1);
+            // A list index at the end may append.
+            if let PathPart::Index(index) = last[0] {
+                let edit = ListEdit::Set {
+                    index,
+                    text: value.as_deref(),
+                    item_type: &leaf,
+                };
+                return edit_cell(doc, row, column, |json| edit_list(json, parent, &edit));
+            }
             edit_cell(doc, row, column, |json| {
-                set_nested(json, &pointer, value.as_deref(), &leaf)
+                set_nested(json, &path, value.as_deref(), &leaf)
             })
         }
-        Command::SetListItem {
+        Command::InsertItem {
             row,
             column,
-            list,
-            index,
-            value,
-        } => {
-            let item_type = item_type(doc, &column, &list)?;
-            let edit = ListEdit::Set {
-                index,
-                text: value.as_deref(),
-                item_type: &item_type,
-            };
-            edit_cell(doc, row, column, |json| {
-                edit_list(json, &pointer(&list), &edit)
-            })
-        }
-        Command::InsertListItem {
-            row,
-            column,
-            list,
-            index,
-        } => {
-            item_type(doc, &column, &list)?;
-            edit_cell(doc, row, column, |json| {
-                edit_list(json, &pointer(&list), &ListEdit::Insert(index))
-            })
-        }
-        Command::RemoveListItem {
-            row,
-            column,
-            list,
-            index,
-        } => {
-            item_type(doc, &column, &list)?;
-            edit_cell(doc, row, column, |json| {
-                edit_list(json, &pointer(&list), &ListEdit::Remove(index))
-            })
-        }
-        Command::SetMapValue {
-            row,
-            column,
-            map,
-            index,
-            value,
-        } => {
-            let (_, value_type) = map_types(doc, &column, &map)?;
-            let edit = MapEdit::SetValue {
-                index,
-                text: value.as_deref(),
-                value_type: &value_type,
-            };
-            edit_cell(doc, row, column, |json| {
-                edit_map(json, &pointer(&map), &edit)
-            })
-        }
-        Command::SetMapKey {
-            row,
-            column,
-            map,
+            path,
             index,
             key,
-        } => {
-            let (key_type, _) = map_types(doc, &column, &map)?;
-            let edit = MapEdit::SetKey {
-                index,
-                key: &key,
-                key_type: &key_type,
-            };
-            edit_cell(doc, row, column, |json| {
-                edit_map(json, &pointer(&map), &edit)
-            })
-        }
-        Command::InsertMapEntry {
+        } => match container(doc, &column, &path)? {
+            Container::List => edit_cell(doc, row, column, |json| {
+                edit_list(json, &path, &ListEdit::Insert(index))
+            }),
+            Container::Map(key_type) => {
+                let key = key.ok_or_else(|| invalid("a map entry needs a key".into()))?;
+                let edit = MapEdit::Insert {
+                    index,
+                    key: &key,
+                    key_type: &key_type,
+                };
+                edit_cell(doc, row, column, |json| edit_map(json, &path, &edit))
+            }
+            Container::Fixed => Err(invalid("fixed-size lists can't grow".into())),
+        },
+        Command::RemoveItem {
             row,
             column,
-            map,
+            path,
+            index,
+        } => match container(doc, &column, &path)? {
+            Container::List => edit_cell(doc, row, column, |json| {
+                edit_list(json, &path, &ListEdit::Remove(index))
+            }),
+            Container::Map(_) => edit_cell(doc, row, column, |json| {
+                edit_map(json, &path, &MapEdit::Remove(index))
+            }),
+            Container::Fixed => Err(invalid("fixed-size lists can't shrink".into())),
+        },
+        Command::SetKey {
+            row,
+            column,
+            path,
             index,
             key,
-        } => {
-            let (key_type, _) = map_types(doc, &column, &map)?;
-            let edit = MapEdit::Insert {
-                index,
-                key: &key,
-                key_type: &key_type,
-            };
-            edit_cell(doc, row, column, |json| {
-                edit_map(json, &pointer(&map), &edit)
-            })
-        }
-        Command::RemoveMapEntry {
-            row,
-            column,
-            map,
-            index,
-        } => {
-            map_types(doc, &column, &map)?;
-            edit_cell(doc, row, column, |json| {
-                edit_map(json, &pointer(&map), &MapEdit::Remove(index))
-            })
-        }
+        } => match container(doc, &column, &path)? {
+            Container::Map(key_type) => {
+                let edit = MapEdit::SetKey {
+                    index,
+                    key: &key,
+                    key_type: &key_type,
+                };
+                edit_cell(doc, row, column, |json| edit_map(json, &path, &edit))
+            }
+            _ => Err(invalid(format!(
+                "{column} has no map at {}",
+                describe(&path)
+            ))),
+        },
         _ => unreachable!("not a nested value command"),
     }
 }
@@ -140,43 +105,47 @@ fn column_type(doc: &Document, column: &str) -> Result<DataType> {
         .clone())
 }
 
-/// The item type of the list at `list` in `column`.
-fn item_type(doc: &Document, column: &str, list: &[String]) -> Result<DataType> {
-    let data_type = column_type(doc, column)?;
-    match field_type(&data_type, list) {
-        Some(DataType::List(item) | DataType::LargeList(item)) => Ok(item.data_type().clone()),
-        _ => Err(invalid(format!(
-            "{} is not a list",
-            std::iter::once(column)
-                .chain(list.iter().map(String::as_str))
-                .collect::<Vec<_>>()
-                .join(".")
-        ))),
-    }
+/// A list or map that items are added to or removed from.
+enum Container {
+    List,
+    /// A map, and its key type.
+    Map(DataType),
+    /// A fixed-size list: items can only be set.
+    Fixed,
 }
 
-/// The key and value types of the map at `map` in `column`.
-fn map_types(doc: &Document, column: &str, map: &[String]) -> Result<(DataType, DataType)> {
-    let data_type = column_type(doc, column)?;
-    match field_type(&data_type, map) {
-        Some(DataType::Map(entries, _)) => match entries.data_type() {
-            DataType::Struct(kv) if kv.len() == 2 => {
-                Ok((kv[0].data_type().clone(), kv[1].data_type().clone()))
+/// The list or map at `path` in `column`.
+fn container(doc: &Document, column: &str, path: &[PathPart]) -> Result<Container> {
+    let column_type = column_type(doc, column)?;
+    match type_at(&column_type, path) {
+        Some(DataType::List(_) | DataType::LargeList(_)) => Ok(Container::List),
+        Some(DataType::FixedSizeList(..)) => Ok(Container::Fixed),
+        Some(t @ DataType::Map(..)) => Ok(Container::Map(
+            map_key_type(t).cloned().unwrap_or(DataType::Utf8),
+        )),
+        _ => Err(invalid(format!(
+            "{column}{} is not a list or map",
+            if path.is_empty() {
+                String::new()
+            } else {
+                format!(" at {}", describe(path))
             }
-            _ => Err(invalid("that map has no keys and values".into())),
-        },
-        _ => Err(invalid(format!(
-            "{} is not a map",
-            std::iter::once(column)
-                .chain(map.iter().map(String::as_str))
-                .collect::<Vec<_>>()
-                .join(".")
         ))),
     }
 }
 
-fn pointer(path: &[String]) -> Vec<PathPart> {
-    path.iter().cloned().map(PathPart::Field).collect()
+/// A path as text, e.g. `orders[0].options{1}` (`{1}`: entry 1 of a map).
+fn describe(path: &[PathPart]) -> String {
+    let mut out = String::new();
+    for part in path {
+        match part {
+            PathPart::Field(name) if out.is_empty() => out.push_str(name),
+            PathPart::Field(name) => out.push_str(&format!(".{name}")),
+            PathPart::Index(i) => out.push_str(&format!("[{i}]")),
+            PathPart::Entry(i) => out.push_str(&format!("{{{i}}}")),
+        }
+    }
+    out
 }
 
 /// Sets the cell at `row`, `column` to its JSON changed by `change`, as

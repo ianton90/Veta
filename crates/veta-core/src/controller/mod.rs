@@ -76,14 +76,10 @@ fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
         command @ (C::SetCell { .. } | C::PasteCells { .. } | C::PasteFields { .. }) => {
             cells::plan(doc, command)
         }
-        command @ (C::SetField { .. }
-        | C::SetListItem { .. }
-        | C::InsertListItem { .. }
-        | C::RemoveListItem { .. }
-        | C::SetMapValue { .. }
-        | C::SetMapKey { .. }
-        | C::InsertMapEntry { .. }
-        | C::RemoveMapEntry { .. }) => nested::plan(doc, command),
+        command @ (C::SetValue { .. }
+        | C::InsertItem { .. }
+        | C::RemoveItem { .. }
+        | C::SetKey { .. }) => nested::plan(doc, command),
         command @ (C::InsertRows { .. } | C::DeleteRows { .. }) => rows::plan(command),
         command @ (C::AddColumn { .. }
         | C::RemoveColumns { .. }
