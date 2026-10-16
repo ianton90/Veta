@@ -14,6 +14,7 @@ fn main() {
     fixtures::all_types(&dir.join("all_types.parquet"));
     fixtures::mixed_settings(&dir.join("mixed_settings.parquet"));
     fixtures::nested(&dir.join("nested.parquet"));
+    fixtures::deep_nested(&dir.join("deep_nested.parquet"), 500);
     fixtures::large(&dir.join("large.parquet"), 5_000_000, 500_000);
     println!("Wrote fixtures to {}", dir.display());
 }

@@ -6,6 +6,7 @@
 //! | [`mixed_settings`] | several row groups, per-column compression, encoding, dictionary and statistics settings, key/value metadata |
 //! | [`large`] | many rows and row groups, for paging tests |
 //! | [`nested`] | struct, list, list of structs, map and struct-in-struct columns |
+//! | [`deep_nested`] | many rows of structs, lists and maps nested inside each other, with nulls and empties |
 
 use std::fs::File;
 use std::path::Path;
@@ -370,6 +371,351 @@ pub fn nested(path: &Path) {
     write(path, &[batch], WriterProperties::builder().build());
 }
 
+/// A map type named as Arrow names maps.
+fn map_of(key: DataType, value: DataType) -> DataType {
+    let entries = DataType::Struct(
+        vec![
+            Field::new("keys", key, false),
+            Field::new("values", value, true),
+        ]
+        .into(),
+    );
+    DataType::Map(Arc::new(Field::new("entries", entries, false)), false)
+}
+
+fn list_of(item: DataType) -> DataType {
+    DataType::new_list(item, true)
+}
+
+fn struct_of(fields: Vec<(&str, DataType)>) -> DataType {
+    DataType::Struct(
+        fields
+            .into_iter()
+            .map(|(name, t)| Field::new(name, t, true))
+            .collect::<Vec<_>>()
+            .into(),
+    )
+}
+
+/// Schema of [`deep_nested`]. `keys` says whether map keys are text; the
+/// `history` map has whole-number keys, written through text keys first.
+fn deep_nested_schema_with(int_keys: bool) -> Arc<Schema> {
+    let geo = struct_of(vec![("lat", DataType::Float64), ("lon", DataType::Float64)]);
+    let address = struct_of(vec![
+        ("street", DataType::Utf8),
+        ("city", DataType::Utf8),
+        ("geo", geo),
+    ]);
+    let order = struct_of(vec![
+        ("sku", DataType::Utf8),
+        ("qty", DataType::Int64),
+        ("price", DataType::Float64),
+        ("options", map_of(DataType::Utf8, DataType::Utf8)),
+    ]);
+    let event = struct_of(vec![
+        ("status", DataType::Utf8),
+        ("notes", list_of(DataType::Utf8)),
+    ]);
+    let history_key = if int_keys {
+        DataType::Int64
+    } else {
+        DataType::Utf8
+    };
+    let child = struct_of(vec![("name", DataType::Utf8), ("age", DataType::Int64)]);
+    let profile = struct_of(vec![
+        ("prefs", map_of(DataType::Utf8, DataType::Boolean)),
+        ("emails", list_of(DataType::Utf8)),
+        ("children", list_of(child)),
+    ]);
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+        Field::new("address", address, true),
+        Field::new("tags", list_of(DataType::Utf8), true),
+        Field::new("scores", map_of(DataType::Utf8, DataType::Int64), true),
+        Field::new("matrix", list_of(list_of(DataType::Int64)), true),
+        Field::new("orders", list_of(order), true),
+        Field::new(
+            "attrs",
+            map_of(DataType::Utf8, list_of(DataType::Utf8)),
+            true,
+        ),
+        Field::new("history", map_of(history_key, event), true),
+        Field::new("profile", profile, true),
+    ]))
+}
+
+/// Schema of [`deep_nested`]: structs in structs, lists of lists, lists of
+/// structs holding maps, maps of lists, a whole-number-keyed map of structs
+/// holding lists, and a struct of a map, a list and a list of structs.
+pub fn deep_nested_schema() -> Arc<Schema> {
+    deep_nested_schema_with(true)
+}
+
+/// Writes `rows` rows of [`deep_nested_schema`] in row groups of 100, made
+/// up deterministically. Some values are null and some lists and maps empty,
+/// in every nested column and at every level.
+pub fn deep_nested(path: &Path, rows: usize) {
+    // splitmix64: the same file on every run.
+    let state = std::cell::Cell::new(42_u64);
+    let next = |n: u64| {
+        let x = state.get().wrapping_add(0x9e37_79b9_7f4a_7c15);
+        state.set(x);
+        let mut z = x;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        (z ^ (z >> 31)) % n.max(1)
+    };
+    const NAMES: [&str; 12] = [
+        "Ana", "Bo", "Chen", "Dara", "Eli", "Fatou", "Goran", "Hana", "Ivo", "Jun", "Kemal", "Lea",
+    ];
+    const CITIES: [&str; 8] = [
+        "Lisbon", "Oslo", "Lima", "Kyoto", "Accra", "Quito", "Riga", "Perth",
+    ];
+    const STREETS: [&str; 6] = [
+        "Main St",
+        "Oak Ave",
+        "Rue Verte",
+        "Calle Sol",
+        "Ring 3",
+        "Hill Rd",
+    ];
+    const TAGS: [&str; 8] = ["new", "vip", "late", "gift", "eu", "promo", "bulk", "test"];
+    const SUBJECTS: [&str; 6] = ["math", "art", "music", "pe", "history", "code"];
+    const STATUSES: [&str; 4] = ["created", "paid", "shipped", "returned"];
+    const COLORS: [&str; 5] = ["red", "blue", "green", "black", "white"];
+    let quote = |s: &str| format!("\"{s}\"");
+    let join = |items: Vec<String>| items.join(", ");
+    let mut lines = Vec::with_capacity(rows);
+    for id in 0..rows {
+        // Mostly values; sometimes null (0) or empty (1).
+        let kind = || next(12);
+        let name = match kind() {
+            0 => "null".into(),
+            _ => quote(NAMES[next(12) as usize]),
+        };
+        let address = match kind() {
+            0 => "null".into(),
+            _ => {
+                let geo = match next(5) {
+                    0 => "null".into(),
+                    _ => format!(
+                        "{{\"lat\": {:.4}, \"lon\": {:.4}}}",
+                        next(18_000) as f64 / 100.0 - 90.0,
+                        next(36_000) as f64 / 100.0 - 180.0
+                    ),
+                };
+                let street = match next(6) {
+                    0 => "null".into(),
+                    _ => quote(&format!("{} {}", next(200) + 1, STREETS[next(6) as usize])),
+                };
+                format!(
+                    "{{\"street\": {street}, \"city\": {}, \"geo\": {geo}}}",
+                    quote(CITIES[next(8) as usize])
+                )
+            }
+        };
+        let list = |n: u64, item: &mut dyn FnMut() -> String| -> String {
+            format!("[{}]", join((0..n).map(|_| item()).collect()))
+        };
+        let tags = match kind() {
+            0 => "null".into(),
+            1 => "[]".into(),
+            _ => {
+                let n = next(4) + 1;
+                list(n, &mut || match next(10) {
+                    0 => "null".into(),
+                    _ => quote(TAGS[next(8) as usize]),
+                })
+            }
+        };
+        let scores = match kind() {
+            0 => "null".into(),
+            1 => "{}".into(),
+            _ => {
+                let mut used: Vec<&str> = SUBJECTS.to_vec();
+                let n = next(4) + 1;
+                let entries = (0..n)
+                    .map(|_| {
+                        let key = used.remove(next(used.len() as u64) as usize);
+                        let value = match next(8) {
+                            0 => "null".into(),
+                            _ => (next(10) + 1).to_string(),
+                        };
+                        format!("\"{key}\": {value}")
+                    })
+                    .collect();
+                format!("{{{}}}", join(entries))
+            }
+        };
+        let matrix = match kind() {
+            0 => "null".into(),
+            1 => "[]".into(),
+            _ => {
+                let rows_n = next(3) + 1;
+                let cols = next(4);
+                let inner: Vec<String> = (0..rows_n)
+                    .map(|_| match next(8) {
+                        0 => "null".into(),
+                        _ => format!(
+                            "[{}]",
+                            join(
+                                (0..cols)
+                                    .map(|_| (next(100) as i64 - 20).to_string())
+                                    .collect()
+                            )
+                        ),
+                    })
+                    .collect();
+                format!("[{}]", join(inner))
+            }
+        };
+        let orders = match kind() {
+            0 => "null".into(),
+            1 => "[]".into(),
+            _ => {
+                let n = next(3) + 1;
+                let items: Vec<String> = (0..n)
+                    .map(|_| {
+                        let options = match next(4) {
+                            0 => "null".into(),
+                            1 => "{}".into(),
+                            _ => format!(
+                                "{{\"color\": \"{}\", \"size\": \"{}\"}}",
+                                COLORS[next(5) as usize],
+                                ["S", "M", "L", "XL"][next(4) as usize]
+                            ),
+                        };
+                        format!(
+                            "{{\"sku\": \"SKU-{:04}\", \"qty\": {}, \"price\": {:.2}, \"options\": {options}}}",
+                            next(10_000),
+                            next(5) + 1,
+                            next(20_000) as f64 / 100.0
+                        )
+                    })
+                    .collect();
+                format!("[{}]", join(items))
+            }
+        };
+        let attrs = match kind() {
+            0 => "null".into(),
+            1 => "{}".into(),
+            _ => {
+                let mut keys = vec!["colors", "sizes", "labels"];
+                let n = next(3) + 1;
+                let entries: Vec<String> = (0..n)
+                    .map(|_| {
+                        let key = keys.remove(next(keys.len() as u64) as usize);
+                        let value = match next(6) {
+                            0 => "null".into(),
+                            1 => "[]".into(),
+                            _ => {
+                                let m = next(3) + 1;
+                                format!(
+                                    "[{}]",
+                                    join((0..m).map(|_| quote(COLORS[next(5) as usize])).collect())
+                                )
+                            }
+                        };
+                        format!("\"{key}\": {value}")
+                    })
+                    .collect();
+                format!("{{{}}}", join(entries))
+            }
+        };
+        let history = match kind() {
+            0 => "null".into(),
+            1 => "{}".into(),
+            _ => {
+                let n = next(3) + 1;
+                let start = 20_240_000 + next(10_000);
+                let entries: Vec<String> = (0..n)
+                    .map(|i| {
+                        let notes = match next(4) {
+                            0 => "null".into(),
+                            1 => "[]".into(),
+                            _ => format!("[\"note {}\"]", next(100)),
+                        };
+                        let event = match next(10) {
+                            0 => "null".into(),
+                            _ => format!(
+                                "{{\"status\": \"{}\", \"notes\": {notes}}}",
+                                STATUSES[(i as usize + next(2) as usize) % 4]
+                            ),
+                        };
+                        format!("\"{}\": {event}", start + i * 7)
+                    })
+                    .collect();
+                format!("{{{}}}", join(entries))
+            }
+        };
+        let profile = match kind() {
+            0 => "null".into(),
+            _ => {
+                let prefs = match next(5) {
+                    0 => "null".into(),
+                    1 => "{}".into(),
+                    _ => format!(
+                        "{{\"newsletter\": {}, \"dark_mode\": {}}}",
+                        next(2) == 0,
+                        next(2) == 0
+                    ),
+                };
+                let first = NAMES[id % 12].to_lowercase();
+                let emails = match next(5) {
+                    0 => "null".into(),
+                    1 => "[]".into(),
+                    _ => format!("[\"{first}@example.com\", \"{first}{id}@mail.test\"]"),
+                };
+                let children = match next(4) {
+                    0 => "null".into(),
+                    1 => "[]".into(),
+                    _ => {
+                        let n = next(3) + 1;
+                        let kids: Vec<String> = (0..n)
+                            .map(|_| {
+                                format!(
+                                    "{{\"name\": \"{}\", \"age\": {}}}",
+                                    NAMES[next(12) as usize],
+                                    next(18)
+                                )
+                            })
+                            .collect();
+                        format!("[{}]", join(kids))
+                    }
+                };
+                format!("{{\"prefs\": {prefs}, \"emails\": {emails}, \"children\": {children}}}")
+            }
+        };
+        lines.push(format!(
+            "{{\"id\": {id}, \"name\": {name}, \"address\": {address}, \"tags\": {tags}, \
+             \"scores\": {scores}, \"matrix\": {matrix}, \"orders\": {orders}, \
+             \"attrs\": {attrs}, \"history\": {history}, \"profile\": {profile}}}"
+        ));
+    }
+    // Arrow's JSON reader takes only text map keys: read `history` with
+    // text keys, then cast them to whole numbers.
+    let text_keys = deep_nested_schema_with(false);
+    let schema = deep_nested_schema();
+    let reader = arrow::json::ReaderBuilder::new(text_keys)
+        .with_batch_size(100)
+        .build(std::io::Cursor::new(lines.join("\n")))
+        .unwrap();
+    let batches: Vec<RecordBatch> = reader
+        .map(|batch| {
+            let batch = batch.unwrap();
+            let columns: Vec<ArrayRef> = batch
+                .columns()
+                .iter()
+                .zip(schema.fields())
+                .map(|(c, f)| arrow::compute::cast(c, f.data_type()).unwrap())
+                .collect();
+            RecordBatch::try_new(schema.clone(), columns).unwrap()
+        })
+        .collect();
+    write(path, &batches, WriterProperties::builder().build());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,5 +804,34 @@ mod tests {
         assert!(path.is_dir());
         drop(dir);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn deep_nested_round_trips() {
+        let dir = TempDir::new();
+        let path = dir.join("deep.parquet");
+        deep_nested(&path, 500);
+        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(&path).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
+        let batches: Vec<_> = reader.map(Result::unwrap).collect();
+        assert_eq!(
+            batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+            500
+        );
+        let schema = batches[0].schema();
+        for (field, expected) in schema.fields().iter().zip(deep_nested_schema().fields()) {
+            assert_eq!(field.name(), expected.name());
+        }
+        assert!(matches!(
+            schema.field_with_name("history").unwrap().data_type(),
+            DataType::Map(..)
+        ));
+        // Every nested column has some nulls, but mostly values.
+        for i in 2..schema.fields().len() {
+            let nulls: usize = batches.iter().map(|b| b.column(i).null_count()).sum();
+            assert!(nulls > 0 && nulls < 100, "{}", schema.field(i).name());
+        }
     }
 }
