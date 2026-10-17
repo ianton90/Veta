@@ -22,7 +22,6 @@ use std::sync::Arc;
 use arrow::array::{Array, ArrayRef, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
-use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ParquetRecordBatchReaderBuilder};
 
 use crate::error::{Error, Result};
@@ -200,11 +199,7 @@ fn store(
     memory_budget: usize,
 ) -> Result<Arc<dyn DataSource>> {
     let file = TempFile::new()?;
-    let mut writer = ArrowWriter::try_new(File::create(file.path())?, schema.clone(), None)?;
-    for batch in batches {
-        writer.write(&batch?)?;
-    }
-    writer.close()?;
+    crate::steps::checkpoint::write_parquet(&file, schema, batches)?;
     let handle = File::open(file.path())?;
     let metadata = ArrowReaderMetadata::load(&handle, Default::default())?;
     let size: i64 = metadata

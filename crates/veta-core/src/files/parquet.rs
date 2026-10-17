@@ -5,10 +5,10 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use parquet::arrow::ArrowSchemaConverter;
 use parquet::arrow::arrow_reader::{
     ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
 };
-use parquet::arrow::{ArrowSchemaConverter, ArrowWriter};
 use parquet::basic::{
     BrotliLevel, Compression as PqCompression, Encoding as PqEncoding, GzipLevel, Type as Physical,
     ZstdLevel,
@@ -322,7 +322,7 @@ pub fn write_parquet(
     let schema = with_column_metadata(&pipeline.schema(), metadata);
     let props = writer_properties(&schema, metadata, settings)?;
     let file = File::create(path)?;
-    let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props))?;
+    let mut writer = crate::files::writer::ParallelWriter::new(file, schema.clone(), props)?;
     let rows = pipeline.num_rows();
     let mut start = 0;
     while start < rows {

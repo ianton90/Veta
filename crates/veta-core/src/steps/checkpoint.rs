@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
-use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 
 use crate::error::Result;
@@ -172,7 +171,11 @@ pub(crate) fn write_parquet(
         .set_statistics_enabled(parquet::file::properties::EnabledStatistics::None)
         .set_compression(parquet::basic::Compression::LZ4_RAW)
         .build();
-    let mut writer = ArrowWriter::try_new(File::create(file.path())?, schema.clone(), Some(props))?;
+    let mut writer = crate::files::writer::ParallelWriter::new(
+        File::create(file.path())?,
+        schema.clone(),
+        props,
+    )?;
     for batch in batches {
         let batch = batch?;
         // Concatenated batches may carry different schema metadata.
