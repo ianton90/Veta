@@ -2,7 +2,9 @@
 """Compares veta-cli with pandas and polars on the same operations (#105).
 
 Each operation runs in its own process; the script records the wall time and
-the peak memory (resident set size, polled) of that process. Veta is measured
+the peak memory of that process. The input file is read once before each run,
+so every tool starts with it in the operating system's file cache, and the
+order of the tools rotates from one operation to the next. Veta is measured
 through veta-cli: the desktop app runs the same veta-core code in the
 background and only shows a few rows.
 
@@ -208,6 +210,15 @@ def python_op(tool: str, op: str, src: str, out: str) -> None:
 # --- Measuring ----------------------------------------------------------------
 
 
+def warm(path: Path) -> None:
+    """Reads `path` once so it is in the operating system's file cache: every
+    tool then starts from the same warm cache, whatever ran before it (pandas
+    can use enough memory to push the file out)."""
+    with open(path, "rb") as f:
+        while f.read(16 << 20):
+            pass
+
+
 def measure(command: list[str]) -> tuple[float, float, int]:
     """Runs `command`; returns wall seconds, peak memory in MB and the exit
     code. The peak is the operating system's count where it has one (Linux,
@@ -253,9 +264,11 @@ def run(args: argparse.Namespace) -> None:
     results: dict[str, dict[str, tuple[float, float, int]]] = {}
     csv_inputs: dict[str, Path] = {}
     try:
-        for op in ops:
+        for n, op in enumerate(ops):
             results[op] = {}
-            for tool in tools:
+            # Rotate the order so no tool always runs first or last.
+            order = tools[n % len(tools):] + tools[: n % len(tools)]
+            for tool in order:
                 ext = ".csv" if op == "to_csv" else ".parquet"
                 out = work / f"{op}-{tool}{ext}"
                 input_file = src
@@ -269,6 +282,7 @@ def run(args: argparse.Namespace) -> None:
                     command = veta_command(args.veta, op, input_file, out, work)
                 else:
                     command = [sys.executable, __file__, "op", tool, op, str(input_file), str(out)]
+                warm(Path(input_file))
                 seconds, mb, code = measure(command)
                 results[op][tool] = (seconds, mb, code)
                 status = "" if code == 0 else f"  (failed, exit {code})"
