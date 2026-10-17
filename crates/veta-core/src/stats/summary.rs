@@ -14,7 +14,7 @@ use arrow::row::{RowConverter, SortField};
 use arrow::util::display::array_value_to_string;
 use serde::Serialize;
 use std::collections::HashSet;
-use std::hash::{DefaultHasher, Hasher};
+use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::display::type_name;
 use crate::error::{Error, Result};
@@ -91,14 +91,7 @@ impl Accumulator {
         self.count += array.len() as u64;
         self.nulls += array.logical_null_count() as u64;
         if let (Some(converter), Some(distinct)) = (&self.converter, &mut self.distinct) {
-            let rows = converter.convert_columns(std::slice::from_ref(array))?;
-            for i in 0..array.len() {
-                if array.is_valid(i) {
-                    let mut hasher = DefaultHasher::new();
-                    hasher.write(rows.row(i).as_ref());
-                    distinct.insert(hasher.finish());
-                }
-            }
+            insert_hashes(array, converter, distinct)?;
         }
         if self.orderable && self.update_extremes(array).is_err() {
             self.orderable = false;
@@ -123,6 +116,25 @@ impl Accumulator {
 
     fn update_extremes(&mut self, array: &ArrayRef) -> Result<()> {
         let options = SortOptions::default();
+        // Text and numbers: Arrow's kernels find the batch's extremes; other
+        // types compare value by value.
+        if let Some((low, high)) = batch_extremes(array) {
+            let keep = |current: &Option<ArrayRef>, candidate: ArrayRef, want_less: bool| {
+                let Some(current) = current else {
+                    return Ok::<_, Error>(Some(candidate));
+                };
+                let order = make_comparator(candidate.as_ref(), current.as_ref(), options)?(0, 0);
+                let better = if want_less {
+                    order.is_lt()
+                } else {
+                    order.is_gt()
+                };
+                Ok(Some(if better { candidate } else { current.clone() }))
+            };
+            self.min = keep(&self.min, low, true)?;
+            self.max = keep(&self.max, high, false)?;
+            return Ok(());
+        }
         let compare = make_comparator(array.as_ref(), array.as_ref(), options)?;
         let mut low: Option<usize> = None;
         let mut high: Option<usize> = None;
@@ -180,6 +192,136 @@ impl Accumulator {
     }
 }
 
+/// The smallest and largest valid values of `array` as one-value arrays,
+/// for text and number arrays; `None` for other types (or no valid values).
+fn batch_extremes(array: &ArrayRef) -> Option<(ArrayRef, ArrayRef)> {
+    use arrow::array::{AsArray, StringArray};
+    use arrow::compute::{max, max_string, min, min_string};
+    macro_rules! primitive {
+        ($t:ty) => {{
+            let values = array.as_primitive::<$t>();
+            let (low, high) = (min(values)?, max(values)?);
+            let one = |v| -> ArrayRef {
+                std::sync::Arc::new(
+                    arrow::array::PrimitiveArray::<$t>::from(vec![v])
+                        .with_data_type(array.data_type().clone()),
+                )
+            };
+            Some((one(low), one(high)))
+        }};
+    }
+    use arrow::datatypes::*;
+    match array.data_type() {
+        DataType::Utf8 => {
+            let values = array.as_string::<i32>();
+            let (low, high) = (min_string(values)?, max_string(values)?);
+            Some((
+                std::sync::Arc::new(StringArray::from(vec![low])),
+                std::sync::Arc::new(StringArray::from(vec![high])),
+            ))
+        }
+        DataType::Int8 => primitive!(Int8Type),
+        DataType::Int16 => primitive!(Int16Type),
+        DataType::Int32 => primitive!(Int32Type),
+        DataType::Int64 => primitive!(Int64Type),
+        DataType::UInt8 => primitive!(UInt8Type),
+        DataType::UInt16 => primitive!(UInt16Type),
+        DataType::UInt32 => primitive!(UInt32Type),
+        DataType::UInt64 => primitive!(UInt64Type),
+        DataType::Date32 => primitive!(Date32Type),
+        DataType::Date64 => primitive!(Date64Type),
+        DataType::Timestamp(TimeUnit::Second, _) => primitive!(TimestampSecondType),
+        DataType::Timestamp(TimeUnit::Millisecond, _) => primitive!(TimestampMillisecondType),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => primitive!(TimestampMicrosecondType),
+        DataType::Timestamp(TimeUnit::Nanosecond, _) => primitive!(TimestampNanosecondType),
+        _ => None,
+    }
+}
+
+/// Adds the hashes of `array`'s valid values to `distinct`. Text and fixed
+/// width values are hashed as they are; other types through the row format.
+fn insert_hashes(
+    array: &ArrayRef,
+    converter: &RowConverter,
+    distinct: &mut Distinct,
+) -> Result<()> {
+    use arrow::array::AsArray;
+    let valid = |i: usize| array.is_valid(i);
+    match array.data_type() {
+        DataType::Utf8 => {
+            let values = array.as_string::<i32>();
+            for i in (0..array.len()).filter(|&i| valid(i)) {
+                distinct.insert(hash_bytes(values.value(i).as_bytes()));
+            }
+        }
+        DataType::LargeUtf8 => {
+            let values = array.as_string::<i64>();
+            for i in (0..array.len()).filter(|&i| valid(i)) {
+                distinct.insert(hash_bytes(values.value(i).as_bytes()));
+            }
+        }
+        t if t.is_primitive() && t.primitive_width().is_some_and(|w| w <= 16) => {
+            let width = t.primitive_width().unwrap_or(0);
+            let data = array.to_data();
+            let bytes = &data.buffers()[0].as_slice()[data.offset() * width..];
+            for i in (0..array.len()).filter(|&i| valid(i)) {
+                distinct.insert(hash_bytes(&bytes[i * width..(i + 1) * width]));
+            }
+        }
+        DataType::Boolean => {
+            let values = array.as_boolean();
+            for i in (0..array.len()).filter(|&i| valid(i)) {
+                distinct.insert(mix(u64::from(values.value(i))));
+            }
+        }
+        _ => {
+            let rows = converter.convert_columns(std::slice::from_ref(array))?;
+            for i in (0..array.len()).filter(|&i| valid(i)) {
+                distinct.insert(hash_bytes(rows.row(i).data()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A fast 64-bit hash of `bytes`, well mixed in every bit (HyperLogLog uses
+/// the top bits).
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut h = 0x9e37_79b9_7f4a_7c15 ^ bytes.len() as u64;
+    for chunk in bytes.chunks(8) {
+        let mut word = [0u8; 8];
+        word[..chunk.len()].copy_from_slice(chunk);
+        h = (h ^ u64::from_le_bytes(word)).wrapping_mul(0x9fb2_1c65_1e98_df25);
+        h ^= h >> 29;
+    }
+    mix(h)
+}
+
+/// splitmix64's finalizer.
+fn mix(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// A hasher for values that are hashes already.
+#[derive(Default)]
+struct Identity(u64);
+
+impl Hasher for Identity {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.0 = hash_bytes(bytes);
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n;
+    }
+}
+
 fn is_numeric(t: &DataType) -> bool {
     t.is_integer()
         || t.is_floating()
@@ -195,7 +337,7 @@ fn is_numeric(t: &DataType) -> bool {
 /// Distinct hashes: a set while small, HyperLogLog after.
 #[derive(Default)]
 struct Distinct {
-    exact: HashSet<u64>,
+    exact: HashSet<u64, BuildHasherDefault<Identity>>,
     estimate: Option<HyperLogLog>,
 }
 
@@ -317,9 +459,28 @@ impl StatsJob {
         while start < rows {
             let end = (start + BATCH_ROWS).min(rows);
             let batch = self.pipeline.read(start..end)?;
-            for (acc, &i) in accumulators.iter_mut().zip(&indices) {
-                acc.add(batch.column(i))?;
-            }
+            // Columns are independent: spread them over the cores.
+            let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+            let per_thread = accumulators.len().div_ceil(threads).max(1);
+            std::thread::scope(|scope| {
+                let work: Vec<_> = accumulators
+                    .chunks_mut(per_thread)
+                    .zip(indices.chunks(per_thread))
+                    .map(|(accs, cols)| {
+                        let batch = &batch;
+                        scope.spawn(move || {
+                            for (acc, &i) in accs.iter_mut().zip(cols) {
+                                acc.add(batch.column(i))?;
+                            }
+                            Ok::<_, Error>(())
+                        })
+                    })
+                    .collect();
+                work.into_iter().try_for_each(|w| {
+                    w.join()
+                        .unwrap_or_else(|_| Err(Error::InvalidCommand("statistics failed".into())))
+                })
+            })?;
             start = end;
             if !progress(start as f32 / rows as f32) {
                 return Err(Error::Cancelled);
@@ -516,9 +677,7 @@ mod tests {
         let mut d = Distinct::default();
         let n = EXACT_DISTINCT_LIMIT as u64 * 2;
         for i in 0..n {
-            let mut h = DefaultHasher::new();
-            h.write_u64(i);
-            d.insert(h.finish());
+            d.insert(mix(i));
         }
         assert!(d.estimated());
         let error = (d.count() as f64 - n as f64).abs() / n as f64;
