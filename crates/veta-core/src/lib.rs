@@ -6,6 +6,7 @@ pub mod error;
 pub mod files;
 pub mod formulas;
 pub mod model;
+mod parallel;
 pub mod stats;
 pub mod steps;
 pub mod transforms;

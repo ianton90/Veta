@@ -278,21 +278,24 @@ impl SaveJob {
     /// Writes the file: to a temporary file next to the target, then renamed
     /// over it, so a failed save never leaves a half-written file.
     pub fn run(mut self) -> Result<SaveResult> {
-        // Steps still waiting for a full pass are computed here.
-        self.pipeline.compute_all(&mut |_| true)?;
-        let dir = match self.target.parent() {
-            Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
-            _ => PathBuf::from("."),
-        };
-        let name = self
-            .target
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "file".into());
-        let temp = dir.join(format!(".{name}.veta-{}.tmp", std::process::id()));
+        // Steps still waiting for a full pass are computed here; a last
+        // filter or sort writes its output as it produces it.
+        let streamed = self.pipeline.compute_for_save(&mut |_| true)?;
+        let temp = temp_path(&self.target);
 
-        let written = write_parquet(&self.pipeline, &self.metadata, &self.writer, &temp)
-            .and_then(|()| std::fs::rename(&temp, &self.target).map_err(Into::into));
+        let written = match &streamed {
+            Some(job) => job.stream().and_then(|batches| {
+                write_batches(
+                    &self.pipeline.schema(),
+                    batches,
+                    &self.metadata,
+                    &self.writer,
+                    &temp,
+                )
+            }),
+            None => write_parquet(&self.pipeline, &self.metadata, &self.writer, &temp),
+        }
+        .and_then(|()| std::fs::rename(&temp, &self.target).map_err(Into::into));
         if let Err(e) = written {
             let _ = std::fs::remove_file(&temp);
             return Err(e);
@@ -308,6 +311,41 @@ impl SaveJob {
     }
 }
 
+/// A temporary file next to `target`, to write before renaming it into place.
+fn temp_path(target: &Path) -> PathBuf {
+    let dir = match target.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    dir.join(format!(".{name}.veta-{}.tmp", std::process::id()))
+}
+
+/// Writes `batches` to a new Parquet file at `target`, with the settings
+/// of a new document, through a temporary file renamed into place.
+pub(crate) fn write_new_file(
+    schema: &SchemaRef,
+    batches: impl Iterator<Item = Result<RecordBatch>>,
+    target: &Path,
+) -> Result<()> {
+    let temp = temp_path(target);
+    let written = write_batches(
+        schema,
+        batches,
+        &FileMetadata::default(),
+        &WriterSettings::default(),
+        &temp,
+    )
+    .and_then(|()| std::fs::rename(&temp, target).map_err(Into::into));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
+
 /// Streams the pipeline's output into a Parquet file at `path`.
 pub fn write_parquet(
     pipeline: &Pipeline,
@@ -315,20 +353,33 @@ pub fn write_parquet(
     settings: &WriterSettings,
     path: &Path,
 ) -> Result<()> {
-    let schema = with_column_metadata(&pipeline.schema(), metadata);
+    let rows = pipeline.num_rows();
+    let batches = (0..rows)
+        .step_by(WRITE_BATCH_ROWS)
+        .map(|start| pipeline.read(start..(start + WRITE_BATCH_ROWS).min(rows)));
+    write_batches(&pipeline.schema(), batches, metadata, settings, path)
+}
+
+/// Writes `batches` (with the columns of `schema`) into a Parquet file at
+/// `path`. The next batch is produced while the last one is encoded.
+fn write_batches(
+    schema: &SchemaRef,
+    batches: impl Iterator<Item = Result<RecordBatch>>,
+    metadata: &FileMetadata,
+    settings: &WriterSettings,
+    path: &Path,
+) -> Result<()> {
+    let schema = with_column_metadata(schema, metadata);
     let props = writer_properties(&schema, metadata, settings)?;
     let file = File::create(path)?;
     let mut writer = crate::files::writer::ParallelWriter::new(file, schema.clone(), props)?;
-    let rows = pipeline.num_rows();
-    let mut start = 0;
-    while start < rows {
-        let end = (start + WRITE_BATCH_ROWS).min(rows);
-        let batch = pipeline.read(start..end)?;
-        writer.write(&RecordBatch::try_new(
+    for batch in batches {
+        let batch = batch?;
+        writer.write(&RecordBatch::try_new_with_options(
             schema.clone(),
             batch.columns().to_vec(),
+            &arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
         )?)?;
-        start = end;
     }
     writer.close()?;
     Ok(())

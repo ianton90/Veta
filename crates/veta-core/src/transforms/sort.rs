@@ -1,19 +1,20 @@
 //! Sorting rows by one or more columns.
 //!
 //! Small (in-memory) inputs are sorted in memory. Paged inputs are sorted
-//! externally: sorted runs are written to temporary Parquet files and merged
-//! into a checkpoint file that later steps read on demand.
+//! externally: sorted runs are written to temporary Parquet files and merged,
+//! into a checkpoint file that later steps read on demand, or straight into
+//! the saved file.
 
 use std::fs::File;
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, sync_channel};
 
-use arrow::array::{ArrayRef, UInt32Array};
-use arrow::compute::kernels::interleave::interleave_record_batch;
-use arrow::compute::{SortOptions, concat_batches, take_record_batch};
+use arrow::array::{Array, ArrayRef, UInt32Array};
+use arrow::compute::{SortOptions, concat_batches, interleave, take};
 use arrow::datatypes::{Schema, SchemaRef};
-use arrow::record_batch::RecordBatch;
+use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use arrow::row::{RowConverter, Rows, SortField};
-use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use crate::error::{Error, Result};
 use crate::steps::checkpoint::{Checkpoint, TempFile, write_parquet};
@@ -35,8 +36,10 @@ pub struct SortKey {
 
 /// Approximate decoded size of one sorted run.
 const RUN_BYTES: usize = 256 * 1024 * 1024;
-/// Rows per batch written to the checkpoint file.
-const OUTPUT_ROWS: usize = 16 * 1024;
+/// Rows per merged batch.
+const OUTPUT_ROWS: usize = 64 * 1024;
+/// Rows per slice when converting sort keys on several cores.
+const SLICE_ROWS: usize = 64 * 1024;
 
 impl Sort {
     pub fn describe(&self) -> String {
@@ -118,38 +121,61 @@ impl Sorter {
         Ok(self.converter.convert_columns(&keys)?)
     }
 
-    /// Sorts one batch (stable).
+    /// The order of the rows of `batches`, numbered across them, that
+    /// sorts them (stable). Keys are converted on all cores.
+    fn order(&self, batches: &[RecordBatch]) -> Result<Vec<u32>> {
+        let parts = crate::parallel::map(batches.len(), |i| self.rows(&batches[i]))?;
+        Ok(sorted_order(&parts))
+    }
+
+    /// Sorts one batch (stable). Keys are converted in slices and columns
+    /// reordered at the same time, on all cores.
     fn sort(&self, batch: &RecordBatch) -> Result<RecordBatch> {
-        let rows = self.rows(batch)?;
-        Ok(take_record_batch(
-            batch,
-            &UInt32Array::from(sorted_order(&rows)),
+        let n = batch.num_rows();
+        let slices: Vec<RecordBatch> = (0..n)
+            .step_by(SLICE_ROWS)
+            .map(|start| batch.slice(start, SLICE_ROWS.min(n - start)))
+            .collect();
+        let order = UInt32Array::from(self.order(&slices)?);
+        let columns = crate::parallel::map(batch.num_columns(), |c| {
+            Ok(take(batch.column(c), &order, None)?)
+        })?;
+        let options = RecordBatchOptions::new().with_row_count(Some(n));
+        Ok(RecordBatch::try_new_with_options(
+            batch.schema(),
+            columns,
+            &options,
         )?)
     }
 }
 
-/// The order of `rows` (row-format sort keys) that sorts them, stable.
+/// The order of the rows in `parts` (row-format sort keys of consecutive
+/// slices) that sorts them, stable.
 ///
 /// Ties are broken by the row's position, so an unstable sort (faster) is
 /// stable. Keys of at most 16 bytes each (e.g. one number or date column)
 /// are sorted as packed integers: row-format keys compare as bytes, and
 /// equal-length byte strings compare like the big-endian numbers they spell.
-fn sorted_order(rows: &Rows) -> Vec<u32> {
-    let n = rows.num_rows();
-    let width = (n > 0).then(|| rows.row(0).data().len());
-    let fixed = width.filter(|&w| w <= 16 && (0..n).all(|i| rows.row(i).data().len() == w));
+fn sorted_order(parts: &[Rows]) -> Vec<u32> {
+    let rows = || parts.iter().flat_map(Rows::iter);
+    let width = rows().next().map(|r| r.data().len());
+    let fixed = width.filter(|&w| w <= 16 && rows().all(|r| r.data().len() == w));
     if let Some(width) = fixed {
-        let mut keys: Vec<(u128, u32)> = (0..n)
-            .map(|i| {
+        let mut keys: Vec<(u128, u32)> = rows()
+            .enumerate()
+            .map(|(i, row)| {
                 let mut bytes = [0u8; 16];
-                bytes[..width].copy_from_slice(rows.row(i).data());
+                bytes[..width].copy_from_slice(row.data());
                 (u128::from_be_bytes(bytes), i as u32)
             })
             .collect();
         keys.sort_unstable();
         return keys.into_iter().map(|(_, i)| i).collect();
     }
-    let mut keys: Vec<(&[u8], u32)> = (0..n).map(|i| (rows.row(i).data(), i as u32)).collect();
+    let mut keys: Vec<(&[u8], u32)> = rows()
+        .enumerate()
+        .map(|(i, row)| (row.data(), i as u32))
+        .collect();
     keys.sort_unstable();
     keys.into_iter().map(|(_, i)| i).collect()
 }
@@ -188,40 +214,14 @@ pub(crate) fn sort_external(
     run_rows: Option<usize>,
     progress: &mut dyn FnMut(f32) -> bool,
 ) -> Result<Checkpoint> {
-    let sorter = Sorter::new(sort, schema)?;
-    let run_rows = match run_rows {
-        Some(rows) => rows.max(1),
-        None => {
-            let sample = read(0..batch_rows.min(num_rows))?;
-            let per_row = sample.get_array_memory_size() / sample.num_rows().max(1);
-            (RUN_BYTES / per_row.max(1)).max(batch_rows)
-        }
-    };
-    let runs_count = num_rows.div_ceil(run_rows).max(1);
+    let mut runs = sort_runs(sort, schema, num_rows, read, batch_rows, run_rows, progress)?;
     // Reading and sorting runs is half the work when there is a merge.
-    let read_share = if runs_count > 1 { 0.5 } else { 0.95 };
-
-    let mut runs = Vec::with_capacity(runs_count);
-    let mut start = 0;
-    loop {
-        let end = (start + run_rows).min(num_rows);
-        let batch = read_all(schema, start..end, read, batch_rows, &mut |done| {
-            progress(read_share * (start + done) as f32 / num_rows.max(1) as f32)
-        })?;
-        let file = TempFile::new()?;
-        write_parquet(&file, schema, std::iter::once(Ok(sorter.sort(&batch)?)))?;
-        runs.push(file);
-        start = end;
-        if start >= num_rows {
-            break;
-        }
-    }
-
-    let output = if runs.len() == 1 {
-        runs.pop().expect("one run")
+    let read_share = if runs.files.len() > 1 { 0.5 } else { 0.95 };
+    let output = if runs.files.len() == 1 {
+        runs.files.pop().expect("one run")
     } else {
         let output = TempFile::new()?;
-        let merged = Merge::new(&sorter, &runs, num_rows)?;
+        let merged = Merge::new(runs)?;
         let mut written = 0;
         write_parquet(
             &output,
@@ -246,6 +246,118 @@ pub(crate) fn sort_external(
     Ok(checkpoint)
 }
 
+/// Sorts the input like [`sort_external`], but returns the merge of the
+/// runs, to be read once in order, instead of writing it to a file.
+pub(crate) fn sort_stream(
+    sort: &Sort,
+    schema: &SchemaRef,
+    num_rows: usize,
+    read: &ReadInput<'_>,
+    batch_rows: usize,
+) -> Result<Merge> {
+    Merge::new(sort_runs(
+        sort,
+        schema,
+        num_rows,
+        read,
+        batch_rows,
+        None,
+        &mut |_| true,
+    )?)
+}
+
+/// Sorted runs of the input, in temporary files.
+struct Runs {
+    sorter: Arc<Sorter>,
+    schema: SchemaRef,
+    files: Vec<TempFile>,
+    num_rows: usize,
+}
+
+/// Reads and sorts the input in runs. Each run is written to its file on
+/// another thread while the next one is read.
+fn sort_runs(
+    sort: &Sort,
+    schema: &SchemaRef,
+    num_rows: usize,
+    read: &ReadInput<'_>,
+    batch_rows: usize,
+    run_rows: Option<usize>,
+    progress: &mut dyn FnMut(f32) -> bool,
+) -> Result<Runs> {
+    let sorter = Arc::new(Sorter::new(sort, schema)?);
+    let run_rows = match run_rows {
+        Some(rows) => rows.max(1),
+        None => {
+            let sample = read(0..batch_rows.min(num_rows))?;
+            let per_row = sample.get_array_memory_size() / sample.num_rows().max(1);
+            (RUN_BYTES / per_row.max(1)).max(batch_rows)
+        }
+    };
+    let runs_count = num_rows.div_ceil(run_rows).max(1);
+    let read_share = if runs_count > 1 { 0.5 } else { 0.95 };
+
+    let mut files = Vec::with_capacity(runs_count);
+    let mut writing: Option<std::thread::JoinHandle<Result<TempFile>>> = None;
+    let finish = |writing: Option<std::thread::JoinHandle<Result<TempFile>>>| match writing {
+        Some(w) => w
+            .join()
+            .unwrap_or_else(|_| Err(invalid("sorting failed".into())))
+            .map(Some),
+        None => Ok(None),
+    };
+    let mut start = 0;
+    loop {
+        let end = (start + run_rows).min(num_rows);
+        let batches = read_batches(start..end, read, batch_rows, &mut |done| {
+            progress(read_share * (start + done) as f32 / num_rows.max(1) as f32)
+        });
+        let order = batches.and_then(|b| Ok((sorter.order(&b)?, b)));
+        // The previous run is written by now, or the error is reported.
+        let written = finish(writing.take());
+        let (order, batches) = order?;
+        files.extend(written?);
+        let file = TempFile::new()?;
+        let schema = schema.clone();
+        // Sorted rows are gathered a batch at a time as they are written,
+        // never all at once.
+        writing = Some(std::thread::spawn(move || {
+            let starts: Vec<usize> = batches
+                .iter()
+                .scan(0, |next, b| {
+                    let start = *next;
+                    *next += b.num_rows();
+                    Some(start)
+                })
+                .collect();
+            let sorted = order.chunks(OUTPUT_ROWS).map(|chunk| {
+                let picks: Vec<(usize, usize)> = chunk
+                    .iter()
+                    .map(|&row| {
+                        let row = row as usize;
+                        let batch = starts.partition_point(|&s| s <= row) - 1;
+                        (batch, row - starts[batch])
+                    })
+                    .collect();
+                gather(&schema, &batches, &picks)
+            });
+            write_parquet(&file, &schema, sorted)?;
+            Ok(file)
+        }));
+        start = end;
+        if start >= num_rows {
+            break;
+        }
+    }
+    files.extend(finish(writing)?);
+    Ok(Runs {
+        sorter,
+        schema: schema.clone(),
+        files,
+        num_rows,
+    })
+}
+
 /// Reads `range` in batches of `batch_rows` and concatenates them.
 /// `progress` gets the rows read so far and returns `false` to cancel.
 fn read_all(
@@ -255,6 +367,37 @@ fn read_all(
     batch_rows: usize,
     progress: &mut dyn FnMut(usize) -> bool,
 ) -> Result<RecordBatch> {
+    let batches = read_batches(range, read, batch_rows, progress)?;
+    Ok(concat_batches(schema, &batches)?)
+}
+
+/// Rows `picks` (batch, row) of `batches`, in that order, gathering the
+/// columns at the same time.
+fn gather(
+    schema: &SchemaRef,
+    batches: &[RecordBatch],
+    picks: &[(usize, usize)],
+) -> Result<RecordBatch> {
+    let columns = crate::parallel::map(schema.fields().len(), |c| {
+        let arrays: Vec<&dyn Array> = batches.iter().map(|b| b.column(c).as_ref()).collect();
+        Ok(interleave(&arrays, picks)?)
+    })?;
+    let options = RecordBatchOptions::new().with_row_count(Some(picks.len()));
+    Ok(RecordBatch::try_new_with_options(
+        schema.clone(),
+        columns,
+        &options,
+    )?)
+}
+
+/// Reads `range` in batches of `batch_rows`. `progress` gets the rows read
+/// so far and returns `false` to cancel.
+fn read_batches(
+    range: std::ops::Range<usize>,
+    read: &ReadInput<'_>,
+    batch_rows: usize,
+    progress: &mut dyn FnMut(usize) -> bool,
+) -> Result<Vec<RecordBatch>> {
     let mut batches = Vec::new();
     let mut start = range.start;
     while start < range.end {
@@ -265,55 +408,84 @@ fn read_all(
             return Err(Error::Cancelled);
         }
     }
-    Ok(concat_batches(schema, &batches)?)
+    Ok(batches)
 }
 
 /// A k-way merge of sorted runs, yielding sorted batches.
-struct Merge<'a> {
-    sorter: &'a Sorter,
+pub(crate) struct Merge {
+    schema: SchemaRef,
     runs: Vec<Run>,
     /// Runs with rows left, as a binary heap on each run's next row,
     /// smallest first; ties go to the earlier run, which keeps the sort
     /// stable. Rows are compared where they are, without copies.
     heap: Vec<usize>,
     remaining: usize,
+    /// The run files, deleted with the merge (after `runs`, whose readers
+    /// stop when it is dropped).
+    _files: Vec<TempFile>,
 }
 
 struct Run {
-    reader: ParquetRecordBatchReader,
+    /// The run's batches with their sort keys, decoded on another thread
+    /// one batch ahead.
+    batches: Receiver<Result<(RecordBatch, Rows)>>,
     batch: RecordBatch,
     rows: Rows,
     next: usize,
 }
 
-impl<'a> Merge<'a> {
-    fn new(sorter: &'a Sorter, files: &[TempFile], total: usize) -> Result<Self> {
+impl Merge {
+    fn new(runs: Runs) -> Result<Self> {
+        let Runs {
+            sorter,
+            schema,
+            files,
+            num_rows,
+        } = runs;
         // Keep the batches read from all runs at once within a run's size.
         let row_bytes = 64;
-        let batch_rows = (RUN_BYTES / files.len() / row_bytes).clamp(256, 8192);
+        let batch_rows = (RUN_BYTES / files.len().max(1) / row_bytes).clamp(256, 8192);
         let mut merge = Self {
-            sorter,
+            schema,
             runs: Vec::with_capacity(files.len()),
             heap: Vec::with_capacity(files.len()),
-            remaining: total,
+            remaining: num_rows,
+            _files: Vec::new(),
         };
         for (i, file) in files.iter().enumerate() {
             let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(file.path())?)?
                 .with_batch_size(batch_rows)
                 .build()?;
+            let (send, batches) = sync_channel(1);
+            let keys = sorter.clone();
+            std::thread::spawn(move || {
+                for batch in reader {
+                    let item = batch.map_err(Error::from).and_then(|batch| {
+                        let rows = keys.rows(&batch)?;
+                        Ok((batch, rows))
+                    });
+                    if item.as_ref().is_ok_and(|(b, _)| b.num_rows() == 0) {
+                        continue;
+                    }
+                    if send.send(item).is_err() {
+                        break;
+                    }
+                }
+            });
             let mut run = Run {
-                reader,
+                batches,
                 batch: RecordBatch::new_empty(Arc::new(Schema::empty())),
                 rows: sorter.converter.empty_rows(0, 0),
                 next: 0,
             };
-            let has_rows = advance(sorter, &mut run)?;
+            let has_rows = advance(&mut run)?;
             merge.runs.push(run);
             if has_rows {
                 merge.heap.push(i);
                 merge.sift_up(merge.heap.len() - 1);
             }
         }
+        merge._files = files;
         Ok(merge)
     }
 
@@ -378,7 +550,7 @@ impl<'a> Merge<'a> {
             run.next += 1;
             let more = if run.next < run.batch.num_rows() {
                 true
-            } else if advance(self.sorter, run)? {
+            } else if advance(run)? {
                 // A new batch: later picks from this run refer to it.
                 source_of_run[i] = None;
                 true
@@ -391,12 +563,11 @@ impl<'a> Merge<'a> {
             self.sift_down(0);
         }
         self.remaining -= picks.len();
-        let refs: Vec<&RecordBatch> = sources.iter().collect();
-        Ok(interleave_record_batch(&refs, &picks)?)
+        gather(&self.schema, &sources, &picks)
     }
 }
 
-impl Iterator for Merge<'_> {
+impl Iterator for Merge {
     type Item = Result<RecordBatch>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -413,18 +584,15 @@ impl Iterator for Merge<'_> {
 }
 
 /// Loads the run's next batch. Returns `false` when it is exhausted.
-fn advance(sorter: &Sorter, run: &mut Run) -> Result<bool> {
-    for batch in run.reader.by_ref() {
-        let batch = batch?;
-        if batch.num_rows() == 0 {
-            continue;
+fn advance(run: &mut Run) -> Result<bool> {
+    match run.batches.recv() {
+        Ok(next) => {
+            (run.batch, run.rows) = next?;
+            run.next = 0;
+            Ok(true)
         }
-        run.rows = sorter.rows(&batch)?;
-        run.batch = batch;
-        run.next = 0;
-        return Ok(true);
+        Err(_) => Ok(false),
     }
-    Ok(false)
 }
 
 #[cfg(test)]

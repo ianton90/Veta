@@ -50,6 +50,7 @@ starts with a `//!` comment saying what it is for.
 veta-core/src/
   lib.rs                 module list; short paths (io, command, rows, …)
   error.rs
+  parallel.rs            independent work on all cores
   model/                 Document, Workbook, metadata, undo history
   controller/            the only way to change a Document
     command.rs           the Command enum

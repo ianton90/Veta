@@ -126,3 +126,38 @@ fn collect_across_chunks() {
         assert_eq!(seen, ROWS);
     }
 }
+
+#[test]
+fn a_last_filter_or_sort_streams_into_the_saved_file() {
+    let dir = TempDir::new();
+    let sort = Command::Sort(Sort {
+        keys: vec![SortKey {
+            column: "value".into(),
+            descending: true,
+            nulls_first: false,
+        }],
+    });
+    let filter = Command::Filter(Filter {
+        conditions: vec![Condition {
+            column: "label".into(),
+            op: FilterOp::EndsWith,
+            value: "7".into(),
+            case_sensitive: true,
+        }],
+        match_all: true,
+        exclude: false,
+    });
+    for (k, command) in [sort, filter].into_iter().enumerate() {
+        for (m, mut doc) in open_large(&dir).into_iter().enumerate() {
+            // Saved while the step still needs its pass: written as it runs.
+            execute(&mut doc, command.clone()).unwrap();
+            let saved = dir.join(&format!("saved-{k}-{m}.parquet"));
+            doc.save(Some(saved.clone())).unwrap();
+            doc.compute_all().unwrap();
+            let rows = doc.num_rows();
+            let reopened = Document::open(&saved, OpenOptions::default()).unwrap();
+            assert_eq!(reopened.num_rows(), rows);
+            assert_eq!(reopened.read(0..rows).unwrap(), doc.read(0..rows).unwrap());
+        }
+    }
+}

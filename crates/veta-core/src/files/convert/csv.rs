@@ -270,10 +270,15 @@ pub fn import_csv(
     let mut rows = 0usize;
     let mut input = Input::open(path, options.encoding, Some(progress))?;
     let source = {
-        let reader = arrow::csv::ReaderBuilder::new(text_schema(&schema))
-            .with_format(csv_format(options))
-            .with_batch_size(BATCH_ROWS)
-            .build(&mut input)?;
+        // Parsed on all cores, converted in order.
+        let reader = super::chunks::ParallelCsv::new(
+            &mut input,
+            text_schema(&schema),
+            csv_format(options),
+            options.header,
+            options.quote,
+            BATCH_ROWS,
+        );
         let batches = reader.map(|text| {
             let text = text?;
             let batch = import_batch(&text, &schema, &layout, options, rows, &mut failures)?;
@@ -308,6 +313,62 @@ pub fn import_csv(
         on_error: Some(options.on_error),
     };
     Ok((Document::imported(file_name(path), source), report))
+}
+
+/// Converts a CSV file straight into a new Parquet file at `target`, as
+/// importing and then saving it would, without the temporary copy in
+/// between. Returns `None`, leaving `target` alone, when values don't fit
+/// their column's type and go to error columns: which error columns to keep
+/// is only known at the end, so import the file instead.
+pub fn convert_csv(
+    path: &Path,
+    options: &CsvOptions,
+    target: &Path,
+    progress: &mut dyn FnMut(f32) -> bool,
+) -> Result<Option<ImportReport>> {
+    let schema = csv_schema(path, options)?;
+    // No error columns: with them, the first failure stops the conversion.
+    let layout = import_layout(&schema, OnError::Null);
+    let mut failures = vec![0u64; schema.fields().len()];
+    let mut rows = 0usize;
+    let mut needs_errors = false;
+    let mut input = Input::open(path, options.encoding, Some(progress))?;
+    let written = {
+        let reader = super::chunks::ParallelCsv::new(
+            &mut input,
+            text_schema(&schema),
+            csv_format(options),
+            options.header,
+            options.quote,
+            BATCH_ROWS,
+        );
+        let batches = reader.map(|text| {
+            let text = text?;
+            let batch = import_batch(&text, &schema, &layout, options, rows, &mut failures)?;
+            if options.on_error == OnError::ErrorColumn && failures.iter().any(|&n| n > 0) {
+                needs_errors = true;
+                return Err(invalid("values need error columns"));
+            }
+            rows += text.num_rows();
+            Ok(batch)
+        });
+        crate::files::parquet::write_new_file(&layout.0, batches, target)
+    };
+    if needs_errors {
+        return Ok(None);
+    }
+    cancelled(written, input.cancelled)?;
+    Ok(Some(ImportReport {
+        rows: rows as u64,
+        failures: schema
+            .fields()
+            .iter()
+            .zip(&failures)
+            .filter(|(_, n)| **n > 0)
+            .map(|(f, n)| (f.name().clone(), *n))
+            .collect(),
+        on_error: Some(options.on_error),
+    }))
 }
 
 /// Some of a source's columns.

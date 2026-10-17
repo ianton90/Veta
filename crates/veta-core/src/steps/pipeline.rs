@@ -259,7 +259,27 @@ impl Pipeline {
 
     /// Runs every pending full pass on this thread.
     pub fn compute_all(&mut self, progress: &mut dyn FnMut(f32) -> bool) -> Result<()> {
+        self.compute_until(false, progress).map(|_| ())
+    }
+
+    /// Runs the pending full passes before saving, except a last one that
+    /// [`streams`](ComputeJob::streams) into the file: that one is returned.
+    pub(crate) fn compute_for_save(
+        &mut self,
+        progress: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<Option<ComputeJob>> {
+        self.compute_until(true, progress)
+    }
+
+    fn compute_until(
+        &mut self,
+        stop_at_stream: bool,
+        progress: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<Option<ComputeJob>> {
         while let Some(job) = self.compute_job() {
+            if stop_at_stream && job.streams() {
+                return Ok(Some(job));
+            }
             let key = job.ids.clone();
             match job.run(progress) {
                 Ok(computed) => {
@@ -274,7 +294,7 @@ impl Pipeline {
                 }
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     /// The last step's cell edits, if the last step edits cells. Callers must

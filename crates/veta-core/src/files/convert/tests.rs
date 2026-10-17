@@ -133,6 +133,58 @@ fn invalid_values_are_reported() {
 }
 
 #[test]
+fn csv_converts_straight_to_parquet() {
+    let dir = TempDir::new();
+    let path = dir.join("people.csv");
+    let mut text = String::from("id,name,score\n");
+    for i in 0..3000 {
+        text.push_str(&format!("{i},\"n\n{i}\",{}.5\n", i % 7));
+    }
+    std::fs::write(&path, &text).unwrap();
+    let target = dir.join("direct.parquet");
+    let report = convert_csv(&path, &CsvOptions::default(), &target, &mut |_| true)
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.rows, 3000);
+    // The same file as importing and saving.
+    let (mut doc, _) = import_csv(&path, &CsvOptions::default(), 1 << 30, &mut |_| true).unwrap();
+    let saved = dir.join("saved.parquet");
+    doc.save(Some(saved.clone())).unwrap();
+    let read = |p: &Path| {
+        let doc = Document::open(p, crate::OpenOptions::default()).unwrap();
+        (doc.schema(), doc.read(0..doc.num_rows()).unwrap())
+    };
+    assert_eq!(read(&target), read(&saved));
+
+    // Values that need error columns: nothing written, import instead.
+    std::fs::write(&path, "n\n1\nx\n").unwrap();
+    let options = CsvOptions {
+        types: Some(vec![DataType::Int64]),
+        ..CsvOptions::default()
+    };
+    let other = dir.join("other.parquet");
+    assert!(
+        convert_csv(&path, &options, &other, &mut |_| true)
+            .unwrap()
+            .is_none()
+    );
+    assert!(!other.exists());
+    assert_eq!(
+        dir.path().read_dir().unwrap().count(),
+        3,
+        "no temporary files"
+    );
+    let nulls = CsvOptions {
+        on_error: OnError::Null,
+        ..options
+    };
+    let report = convert_csv(&path, &nulls, &other, &mut |_| true)
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.failures, [("n".to_owned(), 1)]);
+}
+
+#[test]
 fn quote_characters() {
     let dir = TempDir::new();
     let path = dir.join("q.csv");

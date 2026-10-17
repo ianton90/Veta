@@ -13,7 +13,7 @@ use super::{Pipeline, Step, invalid};
 use crate::error::{Error, Result};
 use crate::source::{DataSource, MemorySource, SourceMode};
 use crate::transforms::fill::{Fill, carry_out, fill};
-use crate::transforms::sort::{sort_external, sort_in_memory};
+use crate::transforms::sort::{sort_external, sort_in_memory, sort_stream};
 
 /// Rows read per batch during a full pass.
 pub(super) const PASS_ROWS: usize = 64 * 1024;
@@ -116,6 +116,51 @@ impl ComputeJob {
     /// See [`Pipeline::compute_key`].
     pub fn key(&self) -> &[u64] {
         &self.ids
+    }
+
+    /// Whether the step can instead produce its output once, in order,
+    /// while it is saved ([`ComputeJob::stream`]): a last step that filters,
+    /// or sorts a paged file. Saving it then skips the separate pass over
+    /// the file, or the sorted copy.
+    pub fn streams(&self) -> bool {
+        let last = self.step + 1 == self.pipeline.steps().len();
+        last && match &self.pipeline.steps()[self.step] {
+            Step::Filter(_) => true,
+            Step::Sort(_) => self.pipeline.source().mode() == SourceMode::Paged,
+            _ => false,
+        }
+    }
+
+    /// The step's output, in order, without keeping it. Only for steps
+    /// that [`stream`](ComputeJob::streams).
+    pub(crate) fn stream(
+        &self,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordBatch>> + Send + '_>> {
+        let input_rows = self
+            .pipeline
+            .num_rows_at(self.step)
+            .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+        match &self.pipeline.steps()[self.step] {
+            Step::Filter(filter) => Ok(Box::new((0..input_rows).step_by(PASS_ROWS).map(
+                move |start| {
+                    let end = (start + PASS_ROWS).min(input_rows);
+                    let batch = self.pipeline.read_at(self.step, start..end)?;
+                    let mask = filter.evaluate(&batch)?;
+                    Ok(arrow::compute::filter_record_batch(&batch, &mask)?)
+                },
+            ))),
+            Step::Sort(sort) if self.streams() => {
+                let schema = self
+                    .pipeline
+                    .schema_at(self.step)
+                    .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+                let read = |range| self.pipeline.read_at(self.step, range);
+                Ok(Box::new(sort_stream(
+                    sort, &schema, input_rows, &read, PASS_ROWS,
+                )?))
+            }
+            _ => Err(invalid("this step can't be streamed".into())),
+        }
     }
 
     /// Runs the pass. `progress` gets the fraction done (0–1) and returns

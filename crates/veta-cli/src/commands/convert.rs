@@ -86,7 +86,8 @@ pub struct ConvertArgs {
 /// Converts a file between formats.
 pub fn convert(args: ConvertArgs, out: &mut impl Write) -> Result<(), Error> {
     use veta_core::convert::{
-        CsvExportOptions, CsvOptions, ExportFormat, TextEncoding, export, import_csv, import_json,
+        CsvExportOptions, CsvOptions, ExportFormat, TextEncoding, convert_csv, export, import_csv,
+        import_json,
     };
     let format_of = |given: Option<FileFormat>, path: &Path| {
         given
@@ -126,31 +127,38 @@ pub fn convert(args: ConvertArgs, out: &mut impl Write) -> Result<(), Error> {
     let mut doc = match from {
         FileFormat::Parquet => crate::open(&args.input)?,
         FileFormat::Csv => {
-            let (doc, report) = import_csv(
-                &args.input,
-                &CsvOptions {
-                    delimiter: delimiter(&args.input)?,
-                    quote,
-                    header: !args.no_header,
-                    encoding: match args.encoding {
-                        InputEncoding::Utf8 => TextEncoding::Utf8,
-                        InputEncoding::Latin1 => TextEncoding::Latin1,
-                        InputEncoding::Windows1252 => TextEncoding::Windows1252,
-                        InputEncoding::Utf16le => TextEncoding::Utf16Le,
-                        InputEncoding::Utf16be => TextEncoding::Utf16Be,
-                    },
-                    decimal: args.decimal,
-                    date_format: args.date_format.clone(),
-                    on_error: match args.on_error {
-                        OnErrorArg::Column => veta_core::steps::OnError::ErrorColumn,
-                        OnErrorArg::Null => veta_core::steps::OnError::Null,
-                        OnErrorArg::Fail => veta_core::steps::OnError::Fail,
-                    },
-                    ..CsvOptions::default()
+            let options = CsvOptions {
+                delimiter: delimiter(&args.input)?,
+                quote,
+                header: !args.no_header,
+                encoding: match args.encoding {
+                    InputEncoding::Utf8 => TextEncoding::Utf8,
+                    InputEncoding::Latin1 => TextEncoding::Latin1,
+                    InputEncoding::Windows1252 => TextEncoding::Windows1252,
+                    InputEncoding::Utf16le => TextEncoding::Utf16Le,
+                    InputEncoding::Utf16be => TextEncoding::Utf16Be,
                 },
-                budget,
-                &mut |_| true,
-            )?;
+                decimal: args.decimal,
+                date_format: args.date_format.clone(),
+                on_error: match args.on_error {
+                    OnErrorArg::Column => veta_core::steps::OnError::ErrorColumn,
+                    OnErrorArg::Null => veta_core::steps::OnError::Null,
+                    OnErrorArg::Fail => veta_core::steps::OnError::Fail,
+                },
+                ..CsvOptions::default()
+            };
+            // Straight into a Parquet file unless values need error columns.
+            if to == FileFormat::Parquet
+                && let Some(report) =
+                    convert_csv(&args.input, &options, &args.output, &mut |_| true)?
+            {
+                if let Some(summary) = report.summary() {
+                    writeln!(out, "{summary}")?;
+                }
+                writeln!(out, "Saved {}", args.output.display())?;
+                return Ok(());
+            }
+            let (doc, report) = import_csv(&args.input, &options, budget, &mut |_| true)?;
             if let Some(summary) = report.summary() {
                 writeln!(out, "{summary}")?;
             }

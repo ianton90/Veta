@@ -7,6 +7,7 @@
 //! evaluated output (after all steps) to a temporary file next to the
 //! target, renamed into place when complete.
 
+mod chunks;
 mod csv;
 mod encoding;
 mod export;
@@ -30,7 +31,7 @@ use crate::source::{DataSource, MemorySource};
 use crate::steps::checkpoint::{Checkpoint, TempFile};
 use crate::steps::{Cast, CastOptions, OnError, Pipeline};
 
-pub use csv::{error_column_name, import_csv, preview_csv};
+pub use csv::{convert_csv, error_column_name, import_csv, preview_csv};
 pub use encoding::TextEncoding;
 use encoding::*;
 pub use export::export;

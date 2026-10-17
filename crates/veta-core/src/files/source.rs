@@ -8,6 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::fs::File;
 use std::ops::Range;
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
 use arrow::compute::concat_batches;
@@ -167,38 +168,38 @@ pub struct PagedSource {
 
 /// Row group readers positioned at chunk `next`, for these columns. The
 /// columns are split into groups of about the same size on disk, one per
-/// core, each with its own reader, so a chunk's columns decode at the same
-/// time.
+/// core, each with its own reader on its own thread, so a chunk's columns
+/// decode at the same time, and each reader decodes the next chunk while
+/// the last one is used.
 struct Cursor {
     next: usize,
     columns: Option<Vec<usize>>,
-    /// The columns each reader decodes (in the schema's order), and the
-    /// reader.
-    readers: Vec<(
-        Vec<usize>,
-        parquet::arrow::arrow_reader::ParquetRecordBatchReader,
-    )>,
+    /// The columns each reader decodes (in the schema's order), and its
+    /// decoded chunks.
+    readers: Vec<(Vec<usize>, Receiver<arrow::error::Result<RecordBatch>>)>,
     /// The columns of a chunk, in the schema's order, and its schema.
     order: Vec<usize>,
     schema: SchemaRef,
+    /// The reader thread when it reads the source's own handle, joined
+    /// when the cursor is dropped.
+    threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Cursor {
+    fn drop(&mut self) {
+        // Stops the readers: their next send fails.
+        self.readers.clear();
+        for thread in self.threads.drain(..) {
+            let _ = thread.join();
+        }
+    }
 }
 
 impl Cursor {
     /// The next chunk, every reader decoding its columns at the same time;
     /// `None` at the end of the row group.
     fn next_batch(&mut self) -> Option<Result<RecordBatch>> {
-        let parts: Vec<_> = if self.readers.len() == 1 {
-            vec![self.readers[0].1.next()]
-        } else {
-            std::thread::scope(|scope| {
-                let work: Vec<_> = self
-                    .readers
-                    .iter_mut()
-                    .map(|(_, reader)| scope.spawn(move || reader.next()))
-                    .collect();
-                work.into_iter().map(|w| w.join().unwrap_or(None)).collect()
-            })
-        };
+        let parts: Vec<_> = self.readers.iter().map(|(_, r)| r.recv().ok()).collect();
         let mut columns: HashMap<usize, arrow::array::ArrayRef> = HashMap::new();
         let mut rows = 0;
         for ((group, _), part) in self.readers.iter().zip(parts) {
@@ -379,21 +380,20 @@ impl PagedSource {
             None => (0..self.schema.fields().len()).collect(),
         };
         let descr = self.metadata.metadata().file_metadata().schema_descr();
-        // One handle each: handles share nothing, so readers can't disturb
-        // each other's position. Without extra handles, one reader.
+        // One handle each: handles share nothing, so readers (also those of
+        // a cursor being replaced, still finishing a chunk) can't disturb
+        // each other's position. Without extra handles, one reader on the
+        // source's own handle, which must stop before another starts.
         let mut groups = self.column_groups(span.row_group, &order);
-        let mut handles = vec![self.file.try_clone()?];
-        for _ in 1..groups.len() {
-            match self.reopen() {
-                Some(handle) => handles.push(handle),
-                None => {
-                    groups = vec![order.clone()];
-                    handles.truncate(1);
-                    break;
-                }
-            }
+        let mut handles: Vec<File> = (0..groups.len()).map_while(|_| self.reopen()).collect();
+        let shared = handles.len() < groups.len();
+        if shared {
+            drop(cursor.take());
+            groups = vec![order.clone()];
+            handles = vec![self.file.try_clone()?];
         }
         let mut readers = Vec::new();
+        let mut threads = Vec::new();
         for (group, handle) in groups.into_iter().zip(handles) {
             let mask = parquet::arrow::ProjectionMask::roots(descr, group.iter().copied());
             let reader =
@@ -403,7 +403,19 @@ impl PagedSource {
                     .with_batch_size(CHUNK_ROWS)
                     .with_projection(mask)
                     .build()?;
-            readers.push((group, reader));
+            // Decodes one chunk ahead; stops when the cursor is dropped.
+            let (send, receive) = std::sync::mpsc::sync_channel(0);
+            let thread = std::thread::spawn(move || {
+                for batch in reader {
+                    if send.send(batch).is_err() {
+                        break;
+                    }
+                }
+            });
+            readers.push((group, receive));
+            if shared {
+                threads.push(thread);
+            }
         }
         let schema = match columns {
             Some(columns) => Arc::new(self.schema.project(columns)?),
@@ -415,6 +427,7 @@ impl PagedSource {
             readers,
             order,
             schema: schema.clone(),
+            threads,
         };
         let batch = match next.next_batch() {
             Some(batch) => batch?,
