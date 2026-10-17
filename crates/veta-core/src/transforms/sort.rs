@@ -4,8 +4,6 @@
 //! externally: sorted runs are written to temporary Parquet files and merged
 //! into a checkpoint file that later steps read on demand.
 
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
 use std::fs::File;
 use std::sync::Arc;
 
@@ -14,7 +12,7 @@ use arrow::compute::kernels::interleave::interleave_record_batch;
 use arrow::compute::{SortOptions, concat_batches, take_record_batch};
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
-use arrow::row::{OwnedRow, RowConverter, Rows, SortField};
+use arrow::row::{RowConverter, Rows, SortField};
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 
 use crate::error::{Error, Result};
@@ -123,10 +121,37 @@ impl Sorter {
     /// Sorts one batch (stable).
     fn sort(&self, batch: &RecordBatch) -> Result<RecordBatch> {
         let rows = self.rows(batch)?;
-        let mut indices: Vec<u32> = (0..batch.num_rows() as u32).collect();
-        indices.sort_by(|&a, &b| rows.row(a as usize).cmp(&rows.row(b as usize)));
-        Ok(take_record_batch(batch, &UInt32Array::from(indices))?)
+        Ok(take_record_batch(
+            batch,
+            &UInt32Array::from(sorted_order(&rows)),
+        )?)
     }
+}
+
+/// The order of `rows` (row-format sort keys) that sorts them, stable.
+///
+/// Ties are broken by the row's position, so an unstable sort (faster) is
+/// stable. Keys of at most 16 bytes each (e.g. one number or date column)
+/// are sorted as packed integers: row-format keys compare as bytes, and
+/// equal-length byte strings compare like the big-endian numbers they spell.
+fn sorted_order(rows: &Rows) -> Vec<u32> {
+    let n = rows.num_rows();
+    let width = (n > 0).then(|| rows.row(0).data().len());
+    let fixed = width.filter(|&w| w <= 16 && (0..n).all(|i| rows.row(i).data().len() == w));
+    if let Some(width) = fixed {
+        let mut keys: Vec<(u128, u32)> = (0..n)
+            .map(|i| {
+                let mut bytes = [0u8; 16];
+                bytes[..width].copy_from_slice(rows.row(i).data());
+                (u128::from_be_bytes(bytes), i as u32)
+            })
+            .collect();
+        keys.sort_unstable();
+        return keys.into_iter().map(|(_, i)| i).collect();
+    }
+    let mut keys: Vec<(&[u8], u32)> = (0..n).map(|i| (rows.row(i).data(), i as u32)).collect();
+    keys.sort_unstable();
+    keys.into_iter().map(|(_, i)| i).collect()
 }
 
 /// Reads input rows in `range` of the step being sorted.
@@ -247,9 +272,10 @@ fn read_all(
 struct Merge<'a> {
     sorter: &'a Sorter,
     runs: Vec<Run>,
-    /// Next row of each non-exhausted run, smallest first; ties go to the
-    /// earlier run, which keeps the sort stable.
-    heap: BinaryHeap<Reverse<(OwnedRow, usize)>>,
+    /// Runs with rows left, as a binary heap on each run's next row,
+    /// smallest first; ties go to the earlier run, which keeps the sort
+    /// stable. Rows are compared where they are, without copies.
+    heap: Vec<usize>,
     remaining: usize,
 }
 
@@ -268,7 +294,7 @@ impl<'a> Merge<'a> {
         let mut merge = Self {
             sorter,
             runs: Vec::with_capacity(files.len()),
-            heap: BinaryHeap::with_capacity(files.len()),
+            heap: Vec::with_capacity(files.len()),
             remaining: total,
         };
         for (i, file) in files.iter().enumerate() {
@@ -281,12 +307,53 @@ impl<'a> Merge<'a> {
                 rows: sorter.converter.empty_rows(0, 0),
                 next: 0,
             };
-            if advance(sorter, &mut run)? {
-                merge.heap.push(Reverse((run.rows.row(0).owned(), i)));
-            }
+            let has_rows = advance(sorter, &mut run)?;
             merge.runs.push(run);
+            if has_rows {
+                merge.heap.push(i);
+                merge.sift_up(merge.heap.len() - 1);
+            }
         }
         Ok(merge)
+    }
+
+    /// Whether run `a`'s next row comes before run `b`'s.
+    fn before(&self, a: usize, b: usize) -> bool {
+        let (ra, rb) = (&self.runs[a], &self.runs[b]);
+        match ra.rows.row(ra.next).cmp(&rb.rows.row(rb.next)) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Equal => a < b,
+        }
+    }
+
+    fn sift_up(&mut self, mut i: usize) {
+        while i > 0 {
+            let parent = (i - 1) / 2;
+            if !self.before(self.heap[i], self.heap[parent]) {
+                break;
+            }
+            self.heap.swap(i, parent);
+            i = parent;
+        }
+    }
+
+    fn sift_down(&mut self, mut i: usize) {
+        loop {
+            let (left, right) = (2 * i + 1, 2 * i + 2);
+            let mut smallest = i;
+            if left < self.heap.len() && self.before(self.heap[left], self.heap[smallest]) {
+                smallest = left;
+            }
+            if right < self.heap.len() && self.before(self.heap[right], self.heap[smallest]) {
+                smallest = right;
+            }
+            if smallest == i {
+                break;
+            }
+            self.heap.swap(i, smallest);
+            i = smallest;
+        }
     }
 
     fn next_batch(&mut self) -> Result<RecordBatch> {
@@ -295,7 +362,7 @@ impl<'a> Merge<'a> {
         let mut source_of_run: Vec<Option<usize>> = vec![None; self.runs.len()];
         let mut picks: Vec<(usize, usize)> = Vec::with_capacity(OUTPUT_ROWS);
         while picks.len() < OUTPUT_ROWS {
-            let Some(Reverse((_, i))) = self.heap.pop() else {
+            let Some(&i) = self.heap.first() else {
                 break;
             };
             let source = match source_of_run[i] {
@@ -318,9 +385,10 @@ impl<'a> Merge<'a> {
             } else {
                 false
             };
-            if more {
-                self.heap.push(Reverse((run.rows.row(run.next).owned(), i)));
+            if !more {
+                self.heap.swap_remove(0);
             }
+            self.sift_down(0);
         }
         self.remaining -= picks.len();
         let refs: Vec<&RecordBatch> = sources.iter().collect();

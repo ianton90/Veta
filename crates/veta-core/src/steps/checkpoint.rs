@@ -160,13 +160,19 @@ impl DataSource for Checkpoint {
     }
 }
 
-/// Writes `batches` (with the columns of `schema`) to `file`.
+/// Writes `batches` (with the columns of `schema`) to `file`. Temporary
+/// files are read back once or a few times: no statistics, and fast LZ4
+/// compression (cheaper than writing and reading more bytes on slow disks).
 pub(crate) fn write_parquet(
     file: &TempFile,
     schema: &SchemaRef,
     batches: impl Iterator<Item = Result<RecordBatch>>,
 ) -> Result<()> {
-    let mut writer = ArrowWriter::try_new(File::create(file.path())?, schema.clone(), None)?;
+    let props = parquet::file::properties::WriterProperties::builder()
+        .set_statistics_enabled(parquet::file::properties::EnabledStatistics::None)
+        .set_compression(parquet::basic::Compression::LZ4_RAW)
+        .build();
+    let mut writer = ArrowWriter::try_new(File::create(file.path())?, schema.clone(), Some(props))?;
     for batch in batches {
         let batch = batch?;
         // Concatenated batches may carry different schema metadata.
