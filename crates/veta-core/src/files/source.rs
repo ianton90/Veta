@@ -36,6 +36,25 @@ pub trait DataSource: fmt::Debug + Send + Sync {
 
     /// Reads rows in `range` (clamped to the number of rows) as one batch.
     fn read(&self, range: Range<usize>) -> Result<RecordBatch>;
+
+    /// Like [`Self::read`], with only the columns named in `names` (in the
+    /// schema's order). Sources that store columns apart read only those.
+    fn read_columns(&self, range: Range<usize>, names: &[String]) -> Result<RecordBatch> {
+        project(&self.read(range)?, names)
+    }
+}
+
+/// The columns of `batch` named in `names`, in the batch's order.
+pub(crate) fn project(batch: &RecordBatch, names: &[String]) -> Result<RecordBatch> {
+    let indices: Vec<usize> = batch
+        .schema()
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| names.contains(f.name()))
+        .map(|(i, _)| i)
+        .collect();
+    Ok(batch.project(&indices)?)
 }
 
 /// A source holding all its rows in memory.
@@ -136,6 +155,18 @@ pub struct PagedSource {
     num_rows: usize,
     budget: usize,
     cache: Mutex<ChunkCache>,
+    /// The reader of the last chunk decoded, kept to decode the next chunk
+    /// of the same row group: reading chunks in order (a full pass, saving)
+    /// then decompresses each page and dictionary once instead of once per
+    /// chunk.
+    cursor: Mutex<Option<Cursor>>,
+}
+
+/// A row group reader positioned at chunk `next`, for these columns.
+struct Cursor {
+    next: usize,
+    columns: Option<Vec<usize>>,
+    reader: parquet::arrow::arrow_reader::ParquetRecordBatchReader,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -184,6 +215,7 @@ impl PagedSource {
             num_rows: start,
             budget,
             cache: Mutex::new(ChunkCache::default()),
+            cursor: Mutex::new(None),
         }
     }
 
@@ -208,7 +240,7 @@ impl PagedSource {
             }
         }
 
-        let batch = self.load_chunk(self.chunks[index])?;
+        let batch = self.load_chunk(index)?;
 
         let mut cache = self.lock_cache();
         let size = batch.get_array_memory_size();
@@ -227,7 +259,29 @@ impl PagedSource {
         Ok(batch)
     }
 
-    fn load_chunk(&self, span: ChunkSpan) -> Result<RecordBatch> {
+    fn load_chunk(&self, index: usize) -> Result<RecordBatch> {
+        self.load_chunk_columns(index, None)
+    }
+
+    /// Decodes chunk `index`, only the top-level columns `columns` if given
+    /// (in the schema's order). Continues the last chunk's reader when this
+    /// chunk follows it in the same row group.
+    fn load_chunk_columns(&self, index: usize, columns: Option<&[usize]>) -> Result<RecordBatch> {
+        let span = self.chunks[index];
+        let mut cursor = self.cursor.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(c) = cursor.as_mut()
+            && c.next == index
+            && c.columns.as_deref() == columns
+            && let Some(batch) = c.reader.next()
+        {
+            let batch = batch?;
+            if batch.num_rows() == span.len {
+                c.next = index + 1;
+                return Ok(batch);
+            }
+        }
+        // A new reader from this chunk to the end of its row group, giving
+        // one chunk per batch.
         let group_rows = usize::try_from(
             self.metadata
                 .metadata()
@@ -239,22 +293,37 @@ impl PagedSource {
         if span.offset_in_group > 0 {
             selectors.push(RowSelector::skip(span.offset_in_group));
         }
-        selectors.push(RowSelector::select(span.len));
-        let rest = group_rows - span.offset_in_group - span.len;
-        if rest > 0 {
-            selectors.push(RowSelector::skip(rest));
-        }
+        selectors.push(RowSelector::select(group_rows - span.offset_in_group));
 
-        let reader = ParquetRecordBatchReaderBuilder::new_with_metadata(
+        let mut builder = ParquetRecordBatchReaderBuilder::new_with_metadata(
             self.file.try_clone()?,
             self.metadata.clone(),
         )
         .with_row_groups(vec![span.row_group])
         .with_row_selection(RowSelection::from(selectors))
-        .with_batch_size(span.len)
-        .build()?;
-        let batches = reader.collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(concat_batches(&self.schema, &batches)?)
+        .with_batch_size(CHUNK_ROWS);
+        let schema = match columns {
+            Some(columns) => {
+                let mask = parquet::arrow::ProjectionMask::roots(
+                    self.metadata.metadata().file_metadata().schema_descr(),
+                    columns.iter().copied(),
+                );
+                builder = builder.with_projection(mask);
+                Arc::new(self.schema.project(columns)?)
+            }
+            None => self.schema.clone(),
+        };
+        let mut reader = builder.build()?;
+        let batch = match reader.next() {
+            Some(batch) => batch?,
+            None => RecordBatch::new_empty(schema),
+        };
+        *cursor = Some(Cursor {
+            next: index + 1,
+            columns: columns.map(<[usize]>::to_vec),
+            reader,
+        });
+        Ok(batch)
     }
 }
 
@@ -297,6 +366,39 @@ impl DataSource for PagedSource {
             parts.push(batch.slice(from, to - from));
         }
         Ok(concat_batches(&self.schema, &parts)?)
+    }
+
+    fn read_columns(&self, range: Range<usize>, names: &[String]) -> Result<RecordBatch> {
+        let range = clamp(range, self.num_rows);
+        let columns: Vec<usize> = self
+            .schema
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| names.contains(f.name()))
+            .map(|(i, _)| i)
+            .collect();
+        let schema = Arc::new(self.schema.project(&columns)?);
+        let first = self
+            .chunks
+            .partition_point(|c| c.start + c.len <= range.start);
+        let mut parts = Vec::new();
+        for (index, span) in self.chunks.iter().enumerate().skip(first) {
+            if span.start >= range.end {
+                break;
+            }
+            // A chunk already decoded in full is used; others are decoded
+            // with only these columns, and not kept.
+            let cached = self.lock_cache().batches.get(&index).cloned();
+            let batch = match cached {
+                Some(batch) => batch.project(&columns)?,
+                None => self.load_chunk_columns(index, Some(&columns))?,
+            };
+            let from = range.start.max(span.start) - span.start;
+            let to = range.end.min(span.start + span.len) - span.start;
+            parts.push(batch.slice(from, to - from));
+        }
+        Ok(concat_batches(&schema, &parts)?)
     }
 }
 
@@ -378,6 +480,48 @@ mod tests {
 
         let batch = source.read(249_999..300_000).unwrap();
         assert_eq!(ids(&batch), [249_999]);
+    }
+
+    #[test]
+    fn paged_reads_the_same_in_any_order() {
+        let dir = TempDir::new();
+        let path = dir.join("large.parquet");
+        // Row groups of 300k rows: several chunks per group.
+        fixtures::large(&path, 700_000, 300_000);
+        let whole: Vec<i64> = (0..700_000).collect();
+        // In order (one reader continued per row group), in reverse, and
+        // jumping back and forth, with no cache to fall back on.
+        let source = paged(&path, 0);
+        let step = 50_000;
+        let mut forward = Vec::new();
+        for start in (0..700_000).step_by(step) {
+            forward.extend(ids(&source.read(start..start + step).unwrap()));
+        }
+        assert_eq!(forward, whole);
+        let source = paged(&path, 0);
+        let mut backward = Vec::new();
+        for start in (0..700_000).step_by(step).rev() {
+            let mut part = ids(&source.read(start..start + step).unwrap());
+            part.extend(backward);
+            backward = part;
+        }
+        assert_eq!(backward, whole);
+        let source = paged(&path, 0);
+        for start in [400_000, 10, 650_000, 70_000, 400_000] {
+            let expected: Vec<i64> = (start as i64..start as i64 + 1000).collect();
+            assert_eq!(ids(&source.read(start..start + 1000).unwrap()), expected);
+        }
+        // Only some columns: the same values.
+        let names = ["label".to_string(), "id".to_string()];
+        let projected = source.read_columns(299_000..301_000, &names).unwrap();
+        let full = source.read(299_000..301_000).unwrap();
+        assert_eq!(projected.num_columns(), 2);
+        assert_eq!(
+            projected.schema().field(0).name(),
+            "id",
+            "in the schema's order"
+        );
+        assert_eq!(projected, project(&full, &names).unwrap());
     }
 
     #[test]

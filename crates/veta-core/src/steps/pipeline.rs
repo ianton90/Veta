@@ -305,6 +305,31 @@ impl Pipeline {
         self.read_level(steps, range.start.min(end)..end)
     }
 
+    /// Like [`Self::read_at`], with only the columns named in `names` (in
+    /// the level's order). Reads only those columns from the file where it
+    /// can (straight from the source, or from a computed step's data).
+    pub fn read_columns_at(
+        &self,
+        steps: usize,
+        range: Range<usize>,
+        names: &[String],
+    ) -> Result<RecordBatch> {
+        let Some(level) = self.levels.get(steps) else {
+            return Err(invalid(format!("step {steps} is not evaluated")));
+        };
+        let end = range.end.min(level.num_rows);
+        let range = range.start.min(end)..end;
+        if steps == 0 {
+            return self.source.read_columns(range, names);
+        }
+        if let Some(cache) = &self.caches[steps - 1]
+            && let Cache::Data(source) = cache.as_ref()
+        {
+            return source.read_columns(range, names);
+        }
+        crate::source::project(&self.read_level(steps, range)?, names)
+    }
+
     /// Reads rows of level `level`; `range` must be within it.
     fn read_level(&self, level: usize, range: Range<usize>) -> Result<RecordBatch> {
         if level == 0 {
@@ -317,10 +342,26 @@ impl Pipeline {
         {
             return match cache.as_ref() {
                 Cache::Rows(rows) => {
-                    let parts = rows
-                        .map(range)
+                    // Kept rows close together are read as one span and
+                    // picked out with a mask: a filter keeping scattered rows
+                    // has millions of short runs, too many to read one by one.
+                    let parts = span_groups(&rows.map(range))
                         .into_iter()
-                        .map(|r| self.read_level(previous, r))
+                        .map(|(span, runs)| {
+                            let batch = self.read_level(previous, span.clone())?;
+                            if runs.len() == 1 && runs[0] == span {
+                                return Ok(batch);
+                            }
+                            let mut mask = arrow::array::BooleanBufferBuilder::new(span.len());
+                            mask.append_n(span.len(), false);
+                            for run in runs {
+                                for i in run.start - span.start..run.end - span.start {
+                                    mask.set_bit(i, true);
+                                }
+                            }
+                            let mask = arrow::array::BooleanArray::new(mask.finish(), None);
+                            Ok(arrow::compute::filter_record_batch(&batch, &mask)?)
+                        })
                         .collect::<Result<Vec<_>>>()?;
                     concat(&schema, parts)
                 }
@@ -445,6 +486,26 @@ impl Pipeline {
     }
 }
 
+/// Rows skipped between runs that are still read as one span (see
+/// [`span_groups`]).
+const SPAN_GAP: usize = 4096;
+
+/// Groups input row runs (in order) into spans to read at once: runs less
+/// than [`SPAN_GAP`] rows apart share a span. Returns each span with its runs.
+fn span_groups(runs: &[Range<usize>]) -> Vec<(Range<usize>, Vec<Range<usize>>)> {
+    let mut groups: Vec<(Range<usize>, Vec<Range<usize>>)> = Vec::new();
+    for run in runs {
+        match groups.last_mut() {
+            Some((span, members)) if run.start <= span.end + SPAN_GAP => {
+                span.end = run.end;
+                members.push(run.clone());
+            }
+            _ => groups.push((run.clone(), vec![run.clone()])),
+        }
+    }
+    groups
+}
+
 /// A batch of `rows` rows with every value null.
 fn empty_rows(schema: &SchemaRef, rows: usize) -> Result<RecordBatch> {
     let columns = schema
@@ -473,4 +534,19 @@ fn concat(schema: &SchemaRef, parts: Vec<RecordBatch>) -> Result<RecordBatch> {
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(concat_batches(schema, &parts)?)
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+
+    #[test]
+    fn runs_close_together_share_a_span() {
+        let runs = [0..2, 5..6, 4000..4001, 20_000..20_010, 20_011..20_012];
+        let groups = span_groups(&runs);
+        let spans: Vec<_> = groups.iter().map(|(s, _)| s.clone()).collect();
+        assert_eq!(spans, [0..4001, 20_000..20_012]);
+        assert_eq!(groups[0].1, [0..2, 5..6, 4000..4001]);
+        assert!(span_groups(&[]).is_empty());
+    }
 }

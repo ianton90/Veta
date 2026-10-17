@@ -127,11 +127,17 @@ impl ComputeJob {
             .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
         let cache = match &self.pipeline.steps()[self.step] {
             Step::Filter(filter) => {
+                // Only the columns the conditions test are read.
+                let mut names: Vec<String> =
+                    filter.conditions.iter().map(|c| c.column.clone()).collect();
+                names.dedup();
                 let mut rows = RowMap::default();
                 let mut start = 0;
                 while start < input_rows {
                     let end = (start + PASS_ROWS).min(input_rows);
-                    let batch = self.pipeline.read_at(self.step, start..end)?;
+                    let batch = self
+                        .pipeline
+                        .read_columns_at(self.step, start..end, &names)?;
                     let mask = filter.evaluate(&batch)?;
                     for (from, to) in mask.values().set_slices() {
                         rows.push(start + from..start + to);
