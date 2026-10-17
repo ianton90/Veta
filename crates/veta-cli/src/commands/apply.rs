@@ -29,9 +29,15 @@ pub fn apply(
             doc.steps()[step].describe()
         ))
     };
-    // Run full passes here so a failing step is reported by number.
+    // Run full passes here so a failing step is reported by number. A last
+    // filter or sort runs while saving, writing its output as it goes.
+    let mut streamed = None;
     while let Some(job) = doc.compute_job() {
         let step = job.step();
+        if job.streams() {
+            streamed = Some(step);
+            break;
+        }
         match job.run(&mut |_| true) {
             Ok(computed) => {
                 doc.install(computed);
@@ -42,7 +48,12 @@ pub fn apply(
     if let veta_core::steps::Status::Broken { step, error } = doc.status() {
         return Err(stop(&doc, *step, error));
     }
-    doc.save(output.output.clone())?;
+    if let Err(e) = doc.save(output.output.clone()) {
+        return Err(match streamed {
+            Some(step) => stop(&doc, step, &e),
+            None => e.into(),
+        });
+    }
     let target = output.output.as_deref().unwrap_or(file);
     writeln!(out, "Applied {count} steps; saved {}", target.display())?;
     Ok(())

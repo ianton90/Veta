@@ -243,6 +243,32 @@ fn apply_runs_a_recipe() {
     let head = run_args(&["veta", "head", out.to_str().unwrap(), "-n", "1"]).unwrap();
     assert!(head.contains("995") && head.contains("1990"), "{head}");
 
+    // A last sort is written as it merges.
+    let text = std::fs::read_to_string(&recipe).unwrap();
+    let start = text.find("{ \"order\": 3").unwrap();
+    let end = text.rfind(']').unwrap();
+    std::fs::write(
+        &recipe,
+        format!(
+            "{}{}",
+            text[..start].trim_end().trim_end_matches(','),
+            &text[end..]
+        ),
+    )
+    .unwrap();
+    let message = run_args(&[
+        "veta",
+        "apply",
+        recipe.to_str().unwrap(),
+        file.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ])
+    .unwrap();
+    assert!(message.starts_with("Applied 2 steps"), "{message}");
+    let head = run_args(&["veta", "head", out.to_str().unwrap(), "-n", "1"]).unwrap();
+    assert!(head.contains("995") && !head.contains("1990"), "{head}");
+
     let one_step =
         |step: &str| format!(r#"{{"format": "veta-recipe", "version": 1, "steps": [{step}]}}"#);
     // A step that doesn't apply stops before saving.
