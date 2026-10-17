@@ -27,6 +27,38 @@ pub fn export(
     result
 }
 
+/// `batch` split into one slice per core, each turned into bytes by
+/// `format` (given the slice and its number) at the same time; the bytes
+/// come back in order.
+fn format_parallel(
+    batch: &RecordBatch,
+    format: impl Fn(&RecordBatch, usize) -> Result<Vec<u8>> + Sync,
+) -> Result<Vec<Vec<u8>>> {
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let per_slice = batch.num_rows().div_ceil(threads).max(1);
+    let slices: Vec<RecordBatch> = (0..batch.num_rows().max(1))
+        .step_by(per_slice)
+        .map(|start| batch.slice(start, per_slice.min(batch.num_rows() - start)))
+        .collect();
+    if slices.len() == 1 {
+        return Ok(vec![format(&slices[0], 0)?]);
+    }
+    std::thread::scope(|scope| {
+        let format = &format;
+        let work: Vec<_> = slices
+            .iter()
+            .enumerate()
+            .map(|(part, slice)| scope.spawn(move || format(slice, part)))
+            .collect();
+        work.into_iter()
+            .map(|w| {
+                w.join()
+                    .unwrap_or_else(|_| Err(Error::InvalidCommand("export failed".into())))
+            })
+            .collect()
+    })
+}
+
 pub(super) fn write_export(
     output: &Pipeline,
     path: &Path,
@@ -50,32 +82,53 @@ pub(super) fn write_export(
     };
     match format {
         ExportFormat::Csv(options) => {
-            let mut builder = arrow::csv::WriterBuilder::new()
-                .with_header(options.header)
-                .with_delimiter(options.delimiter);
-            builder = match options.quote {
-                Some(quote) => builder.with_quote(quote),
-                None => builder.with_quote_style(arrow::csv::QuoteStyle::Never),
+            let builder = |header: bool| {
+                let builder = arrow::csv::WriterBuilder::new()
+                    .with_header(header)
+                    .with_delimiter(options.delimiter);
+                match options.quote {
+                    Some(quote) => builder.with_quote(quote),
+                    None => builder.with_quote_style(arrow::csv::QuoteStyle::Never),
+                }
             };
-            let mut writer = builder.build(file);
+            let mut file = file;
+            let mut first = true;
             for batch in batches.by_ref() {
                 let batch = decimal_text(&batch?, options.decimal)?;
-                writer.write(&batch)?;
+                // Formatting is the slow part: slices of the batch are
+                // formatted on all cores, then written in order.
+                let header = options.header && first;
+                for text in format_parallel(&batch, |slice, part| {
+                    let mut out = Vec::new();
+                    let mut writer = builder(header && part == 0).build(&mut out);
+                    writer.write(slice)?;
+                    drop(writer);
+                    Ok(out)
+                })? {
+                    file.write_all(&text)?;
+                }
+                first = false;
                 tick(batch.num_rows())?;
             }
-            writer.into_inner().flush()?;
+            file.flush()?;
         }
         ExportFormat::JsonLines => {
-            let mut writer = arrow::json::WriterBuilder::new()
-                .with_explicit_nulls(true)
-                .build::<_, arrow::json::writer::LineDelimited>(file);
+            let mut file = file;
             for batch in batches.by_ref() {
                 let batch = batch?;
-                writer.write(&batch)?;
+                for text in format_parallel(&batch, |slice, _| {
+                    let mut writer = arrow::json::WriterBuilder::new()
+                        .with_explicit_nulls(true)
+                        .build::<_, arrow::json::writer::LineDelimited>(Vec::new());
+                    writer.write(slice)?;
+                    writer.finish()?;
+                    Ok(writer.into_inner())
+                })? {
+                    file.write_all(&text)?;
+                }
                 tick(batch.num_rows())?;
             }
-            writer.finish()?;
-            writer.into_inner().flush()?;
+            file.flush()?;
         }
         ExportFormat::JsonArray => {
             let mut writer = arrow::json::WriterBuilder::new()

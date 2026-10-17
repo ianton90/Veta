@@ -21,36 +21,53 @@ pub(super) fn convert_columns(
     schema: &SchemaRef,
     options: &CsvOptions,
 ) -> Result<Vec<(ArrayRef, Vec<usize>)>> {
-    batch
-        .columns()
-        .iter()
-        .zip(schema.fields())
-        .map(|(column, field)| {
-            if field.data_type() == &DataType::Utf8 {
-                return Ok((column.clone(), Vec::new()));
-            }
-            let converted = Cast {
-                column: field.name().clone(),
-                to: field.data_type().clone(),
-                options: CastOptions {
-                    decimal: options.decimal,
-                    thousands: None,
-                    format: options.date_format.clone().filter(|_| {
-                        matches!(
-                            field.data_type(),
-                            DataType::Date32 | DataType::Timestamp(..)
-                        )
-                    }),
-                    on_error: OnError::Null,
-                },
-            }
-            .convert(column)?;
-            let failed = (0..column.len())
-                .filter(|&i| column.is_valid(i) && converted.is_null(i))
-                .collect();
-            Ok((converted, failed))
-        })
-        .collect()
+    // Columns convert independently: all at the same time.
+    std::thread::scope(|scope| {
+        let work: Vec<_> = batch
+            .columns()
+            .iter()
+            .zip(schema.fields())
+            .map(|(column, field)| scope.spawn(move || convert_column(column, field, options)))
+            .collect();
+        work.into_iter()
+            .map(|w| {
+                w.join()
+                    .unwrap_or_else(|_| Err(Error::InvalidCommand("import failed".into())))
+            })
+            .collect()
+    })
+}
+
+/// One CSV column read as text, converted to `field`'s type, with the rows
+/// whose text didn't convert.
+fn convert_column(
+    column: &ArrayRef,
+    field: &arrow::datatypes::FieldRef,
+    options: &CsvOptions,
+) -> Result<(ArrayRef, Vec<usize>)> {
+    if field.data_type() == &DataType::Utf8 {
+        return Ok((column.clone(), Vec::new()));
+    }
+    let converted = Cast {
+        column: field.name().clone(),
+        to: field.data_type().clone(),
+        options: CastOptions {
+            decimal: options.decimal,
+            thousands: None,
+            format: options.date_format.clone().filter(|_| {
+                matches!(
+                    field.data_type(),
+                    DataType::Date32 | DataType::Timestamp(..)
+                )
+            }),
+            on_error: OnError::Null,
+        },
+    }
+    .convert(column)?;
+    let failed = (0..column.len())
+        .filter(|&i| column.is_valid(i) && converted.is_null(i))
+        .collect();
+    Ok((converted, failed))
 }
 
 /// Name of the column holding a column's invalid values.
