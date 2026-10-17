@@ -95,11 +95,7 @@ pub fn open_parquet(path: &Path, options: OpenOptions) -> Result<OpenedFile> {
         let batches = reader.collect::<std::result::Result<Vec<_>, _>>()?;
         Arc::new(MemorySource::new(schema, batches)?)
     } else {
-        Arc::new(PagedSource::new(
-            file,
-            arrow_metadata,
-            options.memory_budget,
-        ))
+        Arc::new(PagedSource::new(file, arrow_metadata, options.memory_budget).with_path(path))
     };
 
     Ok(OpenedFile {

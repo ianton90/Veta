@@ -155,6 +155,9 @@ pub struct PagedSource {
     num_rows: usize,
     budget: usize,
     cache: Mutex<ChunkCache>,
+    /// The file's path, with its size and modification time when opened:
+    /// extra handles on it let several readers decode at the same time.
+    path: Option<(std::path::PathBuf, u64, Option<std::time::SystemTime>)>,
     /// The reader of the last chunk decoded, kept to decode the next chunk
     /// of the same row group: reading chunks in order (a full pass, saving)
     /// then decompresses each page and dictionary once instead of once per
@@ -162,11 +165,63 @@ pub struct PagedSource {
     cursor: Mutex<Option<Cursor>>,
 }
 
-/// A row group reader positioned at chunk `next`, for these columns.
+/// Row group readers positioned at chunk `next`, for these columns. The
+/// columns are split into groups of about the same size on disk, one per
+/// core, each with its own reader, so a chunk's columns decode at the same
+/// time.
 struct Cursor {
     next: usize,
     columns: Option<Vec<usize>>,
-    reader: parquet::arrow::arrow_reader::ParquetRecordBatchReader,
+    /// The columns each reader decodes (in the schema's order), and the
+    /// reader.
+    readers: Vec<(
+        Vec<usize>,
+        parquet::arrow::arrow_reader::ParquetRecordBatchReader,
+    )>,
+    /// The columns of a chunk, in the schema's order, and its schema.
+    order: Vec<usize>,
+    schema: SchemaRef,
+}
+
+impl Cursor {
+    /// The next chunk, every reader decoding its columns at the same time;
+    /// `None` at the end of the row group.
+    fn next_batch(&mut self) -> Option<Result<RecordBatch>> {
+        let parts: Vec<_> = if self.readers.len() == 1 {
+            vec![self.readers[0].1.next()]
+        } else {
+            std::thread::scope(|scope| {
+                let work: Vec<_> = self
+                    .readers
+                    .iter_mut()
+                    .map(|(_, reader)| scope.spawn(move || reader.next()))
+                    .collect();
+                work.into_iter().map(|w| w.join().unwrap_or(None)).collect()
+            })
+        };
+        let mut columns: HashMap<usize, arrow::array::ArrayRef> = HashMap::new();
+        let mut rows = 0;
+        for ((group, _), part) in self.readers.iter().zip(parts) {
+            let batch = match part? {
+                Ok(batch) => batch,
+                Err(e) => return Some(Err(e.into())),
+            };
+            rows = batch.num_rows();
+            for (k, &c) in group.iter().enumerate() {
+                columns.insert(c, batch.column(k).clone());
+            }
+        }
+        let arrays = self
+            .order
+            .iter()
+            .map(|c| columns.remove(c).expect("every column is read"))
+            .collect();
+        let options = arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(rows));
+        Some(
+            RecordBatch::try_new_with_options(self.schema.clone(), arrays, &options)
+                .map_err(Error::from),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -216,7 +271,26 @@ impl PagedSource {
             budget,
             cache: Mutex::new(ChunkCache::default()),
             cursor: Mutex::new(None),
+            path: None,
         }
+    }
+
+    /// Lets the source open more handles on the file at `path` (the file it
+    /// was given), to decode columns on several cores. A file changed since
+    /// is read through the one handle.
+    pub fn with_path(mut self, path: &std::path::Path) -> Self {
+        if let Ok(meta) = self.file.metadata() {
+            self.path = Some((path.to_path_buf(), meta.len(), meta.modified().ok()));
+        }
+        self
+    }
+
+    /// A new handle on the file, if it can be opened and is unchanged.
+    fn reopen(&self) -> Option<File> {
+        let (path, len, modified) = self.path.as_ref()?;
+        let file = File::open(path).ok()?;
+        let meta = file.metadata().ok()?;
+        (meta.len() == *len && meta.modified().ok() == *modified).then_some(file)
     }
 
     /// Decoded bytes currently held in the cache.
@@ -268,11 +342,17 @@ impl PagedSource {
     /// chunk follows it in the same row group.
     fn load_chunk_columns(&self, index: usize, columns: Option<&[usize]>) -> Result<RecordBatch> {
         let span = self.chunks[index];
+        if columns.is_some_and(<[usize]>::is_empty) {
+            let options =
+                arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(span.len));
+            let schema = Arc::new(Schema::empty());
+            return Ok(RecordBatch::try_new_with_options(schema, vec![], &options)?);
+        }
         let mut cursor = self.cursor.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(c) = cursor.as_mut()
             && c.next == index
             && c.columns.as_deref() == columns
-            && let Some(batch) = c.reader.next()
+            && let Some(batch) = c.next_batch()
         {
             let batch = batch?;
             if batch.num_rows() == span.len {
@@ -280,7 +360,7 @@ impl PagedSource {
                 return Ok(batch);
             }
         }
-        // A new reader from this chunk to the end of its row group, giving
+        // New readers from this chunk to the end of its row group, giving
         // one chunk per batch.
         let group_rows = usize::try_from(
             self.metadata
@@ -289,41 +369,95 @@ impl PagedSource {
                 .num_rows(),
         )
         .unwrap_or(0);
-        let mut selectors = Vec::with_capacity(3);
+        let mut selectors = Vec::with_capacity(2);
         if span.offset_in_group > 0 {
             selectors.push(RowSelector::skip(span.offset_in_group));
         }
         selectors.push(RowSelector::select(group_rows - span.offset_in_group));
-
-        let mut builder = ParquetRecordBatchReaderBuilder::new_with_metadata(
-            self.file.try_clone()?,
-            self.metadata.clone(),
-        )
-        .with_row_groups(vec![span.row_group])
-        .with_row_selection(RowSelection::from(selectors))
-        .with_batch_size(CHUNK_ROWS);
-        let schema = match columns {
-            Some(columns) => {
-                let mask = parquet::arrow::ProjectionMask::roots(
-                    self.metadata.metadata().file_metadata().schema_descr(),
-                    columns.iter().copied(),
-                );
-                builder = builder.with_projection(mask);
-                Arc::new(self.schema.project(columns)?)
+        let order: Vec<usize> = match columns {
+            Some(columns) => columns.to_vec(),
+            None => (0..self.schema.fields().len()).collect(),
+        };
+        let descr = self.metadata.metadata().file_metadata().schema_descr();
+        // One handle each: handles share nothing, so readers can't disturb
+        // each other's position. Without extra handles, one reader.
+        let mut groups = self.column_groups(span.row_group, &order);
+        let mut handles = vec![self.file.try_clone()?];
+        for _ in 1..groups.len() {
+            match self.reopen() {
+                Some(handle) => handles.push(handle),
+                None => {
+                    groups = vec![order.clone()];
+                    handles.truncate(1);
+                    break;
+                }
             }
+        }
+        let mut readers = Vec::new();
+        for (group, handle) in groups.into_iter().zip(handles) {
+            let mask = parquet::arrow::ProjectionMask::roots(descr, group.iter().copied());
+            let reader =
+                ParquetRecordBatchReaderBuilder::new_with_metadata(handle, self.metadata.clone())
+                    .with_row_groups(vec![span.row_group])
+                    .with_row_selection(RowSelection::from(selectors.clone()))
+                    .with_batch_size(CHUNK_ROWS)
+                    .with_projection(mask)
+                    .build()?;
+            readers.push((group, reader));
+        }
+        let schema = match columns {
+            Some(columns) => Arc::new(self.schema.project(columns)?),
             None => self.schema.clone(),
         };
-        let mut reader = builder.build()?;
-        let batch = match reader.next() {
+        let mut next = Cursor {
+            next: index + 1,
+            columns: columns.map(<[usize]>::to_vec),
+            readers,
+            order,
+            schema: schema.clone(),
+        };
+        let batch = match next.next_batch() {
             Some(batch) => batch?,
             None => RecordBatch::new_empty(schema),
         };
-        *cursor = Some(Cursor {
-            next: index + 1,
-            columns: columns.map(<[usize]>::to_vec),
-            reader,
-        });
+        *cursor = Some(next);
         Ok(batch)
+    }
+
+    /// `columns` (top-level, in the schema's order) split into one group per
+    /// core, of about the same compressed size in row group `row_group`.
+    fn column_groups(&self, row_group: usize, columns: &[usize]) -> Vec<Vec<usize>> {
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let count = threads.min(columns.len()).max(1);
+        let metadata = self.metadata.metadata();
+        let descr = metadata.file_metadata().schema_descr();
+        let group = metadata.row_group(row_group);
+        let mut sizes = vec![0i64; self.schema.fields().len()];
+        for (leaf, chunk) in group.columns().iter().enumerate() {
+            if let Some(size) = sizes.get_mut(descr.get_column_root_idx(leaf)) {
+                *size += chunk.compressed_size();
+            }
+        }
+        // Largest first, each to the lightest group.
+        let mut by_size = columns.to_vec();
+        by_size.sort_by_key(|&c| std::cmp::Reverse(sizes.get(c).copied().unwrap_or(0)));
+        let mut groups: Vec<(i64, Vec<usize>)> = vec![(0, Vec::new()); count];
+        for c in by_size {
+            let lightest = groups
+                .iter_mut()
+                .min_by_key(|(load, _)| *load)
+                .expect("at least one group");
+            lightest.0 += sizes.get(c).copied().unwrap_or(0);
+            lightest.1.push(c);
+        }
+        groups
+            .into_iter()
+            .filter(|(_, g)| !g.is_empty())
+            .map(|(_, mut g)| {
+                g.sort_unstable();
+                g
+            })
+            .collect()
     }
 }
 
@@ -459,7 +593,7 @@ mod tests {
         let options = ArrowReaderOptions::new()
             .with_page_index_policy(parquet::file::metadata::PageIndexPolicy::Optional);
         let metadata = ArrowReaderMetadata::load(&file, options).unwrap();
-        PagedSource::new(file, metadata, budget)
+        PagedSource::new(file, metadata, budget).with_path(path)
     }
 
     #[test]
@@ -511,6 +645,15 @@ mod tests {
             let expected: Vec<i64> = (start as i64..start as i64 + 1000).collect();
             assert_eq!(ids(&source.read(start..start + 1000).unwrap()), expected);
         }
+        // Without the path (one handle, one reader): the same rows.
+        let file = File::open(&path).unwrap();
+        let metadata = ArrowReaderMetadata::load(&file, ArrowReaderOptions::new()).unwrap();
+        let single = PagedSource::new(file, metadata, 0);
+        let mut rows = Vec::new();
+        for start in (0..700_000).step_by(step) {
+            rows.extend(ids(&single.read(start..start + step).unwrap()));
+        }
+        assert_eq!(rows, whole);
         // Only some columns: the same values.
         let names = ["label".to_string(), "id".to_string()];
         let projected = source.read_columns(299_000..301_000, &names).unwrap();

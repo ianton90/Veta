@@ -125,7 +125,7 @@ impl Checkpoint {
         let metadata = ArrowReaderMetadata::load(&handle, ArrowReaderOptions::new())?;
         Ok(Self {
             schema,
-            source: PagedSource::new(handle, metadata, CHECKPOINT_BUDGET),
+            source: PagedSource::new(handle, metadata, CHECKPOINT_BUDGET).with_path(file.path()),
             _file: file,
         })
     }
