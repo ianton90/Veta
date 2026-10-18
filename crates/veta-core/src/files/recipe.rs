@@ -6,7 +6,7 @@
 //!   "version": 1,
 //!   "name": "sales",
 //!   "description": "",
-//!   "created_with": "veta 0.2.0",
+//!   "created_with": "veta 0.3.0",
 //!   "source_file": "sales.parquet",
 //!   "steps": [
 //!     {

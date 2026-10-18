@@ -4,9 +4,9 @@ Versions follow [Semantic Versioning](https://semver.org): `MAJOR.MINOR.PATCH`.
 Each build also carries a build number (shown in About and `--version`).
 While the major version is 0, minor versions may change behaviour.
 
-## 0.2.0 — first release
+## 0.3.0 — first release
 
-0.1.0 was never released; its work ships in 0.2.0.
+0.1.0 and 0.2.0 were never released; their work ships in 0.3.0.
 
 **Desktop app (`veta`)**
 - Open several Parquet files as tabs, including files larger than memory
@@ -23,7 +23,10 @@ While the major version is 0, minor versions may change behaviour.
   sort), replace, fill, trim and case, split and merge columns, computed
   columns, keep/remove rows and columns. Steps can be saved and loaded as
   JSON recipes.
-- Column statistics pane.
+- Column statistics pane (min and max only for numbers, dates, times and
+  durations).
+- The steps pane lists the cells an edit-cells step changed (its arrow);
+  a value that doesn't fit its column makes the cell flash red.
 - CSV and JSON import and export, with delimiter, quote, decimal and
   encoding options; values that don't fit a column's type are kept in an
   error column instead of being dropped.
@@ -54,6 +57,12 @@ While the major version is 0, minor versions may change behaviour.
 - `.parquet` files open in Veta: set up by the Windows installer and by
   `Veta.AppImage --integrate` on Linux. On macOS, opening from Finder needs
   #84.
+
+**Performance**
+- Large files are read, filtered, sorted, converted and saved on all
+  cores, with memory bounded; a last filter or sort writes straight into
+  the saved file. `scripts/bench/compare.py` compares `veta-cli` with
+  pandas and polars.
 
 **Known limits**
 - macOS packages must be built on a Mac and are unsigned.
