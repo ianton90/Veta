@@ -39,6 +39,18 @@ fn parses_subcommands() {
 }
 
 #[test]
+fn memory_option_reads_sizes_and_shares() {
+    let memory = |value: &str| {
+        Cli::try_parse_from(["veta-cli", "info", "a.parquet", "--memory", value]).map(|c| c.memory)
+    };
+    assert_eq!(memory("512M").unwrap(), Some(512 * 1024 * 1024));
+    assert!(memory("25%").unwrap().is_some());
+    assert!(memory("lots").is_err());
+    let none = Cli::try_parse_from(["veta-cli", "info", "a.parquet"]).unwrap();
+    assert_eq!(none.memory, None);
+}
+
+#[test]
 fn info_shows_layout_settings_and_metadata() {
     let dir = TempDir::new();
     let file = dir.join("mixed.parquet");

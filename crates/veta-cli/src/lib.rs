@@ -19,8 +19,16 @@ use veta_core::{Document, OpenOptions};
 #[derive(Debug, Parser)]
 #[command(name = "veta-cli", version = veta_core::version::LONG)]
 struct Cli {
+    /// Memory Veta may use for data, e.g. 4G, 512M or 25% (default: half
+    /// of RAM).
+    #[arg(long, global = true, value_name = "SIZE", value_parser = parse_memory)]
+    memory: Option<usize>,
     #[command(subcommand)]
     command: Command,
+}
+
+fn parse_memory(text: &str) -> Result<usize, String> {
+    veta_core::memory::parse_budget(text).map_err(|e| e.to_string())
 }
 
 /// A headless command.
@@ -167,7 +175,9 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    Cli::parse_from(args).command
+    let cli = Cli::parse_from(args);
+    veta_core::memory::set_budget(cli.memory);
+    cli.command
 }
 
 pub fn run(command: Command) -> ExitCode {

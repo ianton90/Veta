@@ -22,6 +22,8 @@ pub struct Draft {
     font_family: String,
     font_size: String,
     memory_mib: String,
+    /// Shown when `memory_mib` is empty: the default budget.
+    memory_placeholder: String,
     /// Defaults for new files; `row_group` is the text being typed.
     new_files: WriterSettings,
     row_group: String,
@@ -63,7 +65,15 @@ impl Draft {
             dark_theme: a.dark_theme.clone(),
             font_family: a.font_family.clone().unwrap_or_default(),
             font_size: a.font_size.map(|s| s.to_string()).unwrap_or_default(),
-            memory_mib: config.data.memory_budget_mib.to_string(),
+            memory_placeholder: format!(
+                "Automatic ({} MiB)",
+                veta_core::memory::default_budget() / (1024 * 1024)
+            ),
+            memory_mib: config
+                .data
+                .memory_budget_mib
+                .map(|mib| mib.to_string())
+                .unwrap_or_default(),
             new_files: config.new_files.settings(),
             row_group: config.new_files.settings().max_row_group_rows.to_string(),
             error: None,
@@ -116,13 +126,19 @@ impl Draft {
                 Some(size)
             }
         };
-        let memory: u64 =
-            self.memory_mib.trim().parse().map_err(|_| {
-                format!("Memory budget {:?} is not a whole number.", self.memory_mib)
-            })?;
-        if memory < 16 {
-            return Err("Memory budget must be at least 16 MiB.".into());
-        }
+        // Empty: the default, half of RAM.
+        let memory = match self.memory_mib.trim() {
+            "" => None,
+            text => {
+                let mib: u64 = text.parse().map_err(|_| {
+                    format!("Memory budget {:?} is not a whole number.", self.memory_mib)
+                })?;
+                if mib < 64 {
+                    return Err("Memory budget must be at least 64 MiB.".into());
+                }
+                Some(mib)
+            }
+        };
         let row_group: usize = match self.row_group.trim().parse() {
             Ok(rows) if rows > 0 => rows,
             _ => return Err("Rows per row group must be a whole number above 0.".into()),
@@ -217,14 +233,15 @@ pub fn view<'a>(
         section("Data"),
         field_row(
             "Memory budget (MiB)",
-            text_input("1024", &draft.memory_mib)
+            text_input(&draft.memory_placeholder, &draft.memory_mib)
                 .on_input(SettingsMessage::Memory)
                 .width(220)
                 .into()
         ),
         note(
-            "Files up to this size open in memory; larger files are read from disk \
-             as needed. Applies to files opened from now on."
+            "Memory Veta may use for data: files up to this size open in memory, \
+             larger ones are read from disk as needed. Empty: half of this \
+             machine's RAM. Open files keep the budget they were opened with."
                 .into()
         ),
     ]
@@ -360,7 +377,7 @@ mod tests {
         assert_eq!(saved.appearance.font_size, Some(16.0));
         assert_eq!(saved.appearance.font_family, None);
         assert_eq!(saved.appearance.mode, ModePreference::Dark);
-        assert_eq!(saved.data.memory_budget_mib, 512);
+        assert_eq!(saved.data.memory_budget_mib, Some(512));
     }
 
     #[test]

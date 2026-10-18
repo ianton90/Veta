@@ -30,15 +30,12 @@ use crate::source::{DataSource, MemorySource, PagedSource};
 use crate::steps::Pipeline;
 pub use crate::steps::checkpoint::remove_stale_temp_files;
 
-/// Default memory budget for loading a file: 1 GiB.
-pub const DEFAULT_MEMORY_BUDGET: usize = 1024 * 1024 * 1024;
-
 /// How to open a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpenOptions {
     /// Files whose uncompressed size fits in this many bytes are loaded fully
-    /// into memory; larger files are paged, with the page cache bounded by
-    /// the same budget.
+    /// into memory; larger files are paged, with a page cache of a quarter
+    /// of it. Defaults to [`crate::memory::budget`].
     pub memory_budget: usize,
     /// Always page, regardless of size. Useful when only a few rows are
     /// needed (e.g. `veta-cli head`).
@@ -48,17 +45,18 @@ pub struct OpenOptions {
 impl Default for OpenOptions {
     fn default() -> Self {
         Self {
-            memory_budget: DEFAULT_MEMORY_BUDGET,
+            memory_budget: crate::memory::budget(),
             force_paged: false,
         }
     }
 }
 
 impl OpenOptions {
-    /// Paged with a small cache: for reading only a few rows.
+    /// Always paged, with a small cache: for reading only some rows, or each
+    /// row once.
     pub fn paged() -> Self {
         Self {
-            memory_budget: 64 * 1024 * 1024,
+            memory_budget: crate::memory::MIN_BUDGET,
             force_paged: true,
         }
     }
@@ -95,7 +93,8 @@ pub fn open_parquet(path: &Path, options: OpenOptions) -> Result<OpenedFile> {
         let batches = reader.collect::<std::result::Result<Vec<_>, _>>()?;
         Arc::new(MemorySource::new(schema, batches)?)
     } else {
-        Arc::new(PagedSource::new(file, arrow_metadata, options.memory_budget).with_path(path))
+        let cache = crate::memory::page_cache(options.memory_budget);
+        Arc::new(PagedSource::new(file, arrow_metadata, cache).with_path(path))
     };
 
     Ok(OpenedFile {

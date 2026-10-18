@@ -12,9 +12,6 @@ use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 use crate::error::Result;
 use crate::source::{DataSource, PagedSource, SourceMode};
 
-/// Memory budget for reading a checkpoint back.
-const CHECKPOINT_BUDGET: usize = 256 * 1024 * 1024;
-
 /// A file in the temp directory, deleted when dropped.
 #[derive(Debug)]
 pub(crate) struct TempFile {
@@ -125,7 +122,12 @@ impl Checkpoint {
         let metadata = ArrowReaderMetadata::load(&handle, ArrowReaderOptions::new())?;
         Ok(Self {
             schema,
-            source: PagedSource::new(handle, metadata, CHECKPOINT_BUDGET).with_path(file.path()),
+            source: PagedSource::new(
+                handle,
+                metadata,
+                crate::memory::page_cache(crate::memory::budget()),
+            )
+            .with_path(file.path()),
             _file: file,
         })
     }

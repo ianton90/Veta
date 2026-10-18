@@ -242,6 +242,7 @@ impl App {
             next_transfer: 0,
             notice: None,
         };
+        app.config.apply_memory_budget();
         let open = app.open(files);
         let system = iced::system::theme().map(Message::SystemMode);
         (app, Task::batch([open, system]))
@@ -555,6 +556,7 @@ impl App {
                         Outcome::Cancelled => self.dialog = None,
                         Outcome::Saved(config) => {
                             self.config = *config;
+                            self.config.apply_memory_budget();
                             self.save_config();
                             self.dialog = None;
                         }

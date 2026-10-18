@@ -5,6 +5,7 @@ pub mod controller;
 pub mod error;
 pub mod files;
 pub mod formulas;
+pub mod memory;
 pub mod model;
 mod parallel;
 pub mod stats;

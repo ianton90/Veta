@@ -123,7 +123,7 @@ pub fn convert(args: ConvertArgs, out: &mut impl Write) -> Result<(), Error> {
             )));
         }
     };
-    let budget = veta_core::io::DEFAULT_MEMORY_BUDGET;
+    let budget = veta_core::memory::budget();
     let mut doc = match from {
         FileFormat::Parquet => crate::open(&args.input)?,
         FileFormat::Csv => {

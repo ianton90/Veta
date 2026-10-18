@@ -6,7 +6,6 @@ use veta_core::convert::{
     CsvExportOptions, CsvOptions, ExportFormat, export, import_csv, import_json,
 };
 use veta_core::display::{format_batch, type_name};
-use veta_core::io::DEFAULT_MEMORY_BUDGET;
 use veta_core::{Document, OpenOptions};
 use veta_testkit::{TempDir, fixtures};
 
@@ -36,7 +35,7 @@ fn csv_import_guesses_types_and_round_trips() {
     let (doc, report) = import_csv(
         &path,
         &CsvOptions::default(),
-        DEFAULT_MEMORY_BUDGET,
+        veta_core::memory::budget(),
         &mut go,
     )
     .unwrap();
@@ -63,7 +62,7 @@ fn csv_with_semicolons_and_decimal_commas() {
         decimal: ',',
         ..CsvOptions::default()
     };
-    let (doc, _) = import_csv(&path, &options, DEFAULT_MEMORY_BUDGET, &mut go).unwrap();
+    let (doc, _) = import_csv(&path, &options, veta_core::memory::budget(), &mut go).unwrap();
     assert_eq!(types(&doc), ["float64", "string"]);
     assert_eq!(all(&doc)[1][0].as_deref(), Some("-2.25"));
     let out = dir.join("eu-out.csv");
@@ -88,7 +87,7 @@ fn csv_values_that_do_not_fit_are_reported() {
         types: Some(vec![veta_core::arrow::datatypes::DataType::Int64]),
         ..CsvOptions::default()
     };
-    let (doc, report) = import_csv(&path, &options, DEFAULT_MEMORY_BUDGET, &mut go).unwrap();
+    let (doc, report) = import_csv(&path, &options, veta_core::memory::budget(), &mut go).unwrap();
     assert_eq!(report.failures, [("n".to_owned(), 1)]);
     assert!(report.summary().is_some());
     // The value is kept in an error column next to its column.
@@ -108,7 +107,7 @@ fn json_round_trips_through_parquet() {
     ] {
         let out = dir.join(name);
         export(&doc.reader(), &out, &format, &mut go).unwrap();
-        let mut imported = import_json(&out, DEFAULT_MEMORY_BUDGET, &mut go).unwrap();
+        let mut imported = import_json(&out, veta_core::memory::budget(), &mut go).unwrap();
         assert_eq!(imported.num_rows(), doc.num_rows());
         assert_eq!(all(&imported), all(&doc), "{name}");
 
@@ -132,6 +131,6 @@ fn nested_values_export_as_json() {
     let first: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
     assert_eq!(first["point"]["x"], 1);
     assert_eq!(first["tags"][1], "b");
-    let imported = import_json(&out, DEFAULT_MEMORY_BUDGET, &mut go).unwrap();
+    let imported = import_json(&out, veta_core::memory::budget(), &mut go).unwrap();
     assert_eq!(imported.num_rows(), doc.num_rows());
 }

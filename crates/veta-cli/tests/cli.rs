@@ -77,7 +77,7 @@ fn cell(path: &Path, row: usize, column: usize) -> Option<String> {
 #[test]
 fn version_help_and_usage_errors() {
     assert!(ok(&["--version"]).starts_with("veta-cli "));
-    assert!(ok(&["--help"]).contains("Usage: veta-cli <COMMAND>"));
+    assert!(ok(&["--help"]).contains("Usage: veta-cli [OPTIONS] <COMMAND>"));
     let run = veta(&["nonsense"]);
     assert_eq!(run.code, 2);
     assert!(run.stderr.contains("unrecognized subcommand 'nonsense'"));

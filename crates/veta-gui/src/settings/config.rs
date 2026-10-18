@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use veta_core::WriterSettings;
-use veta_core::io::DEFAULT_MEMORY_BUDGET;
 
 use crate::settings::theme::{self, Mode};
 
@@ -118,12 +117,12 @@ impl std::fmt::Display for ModePreference {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Data {
-    /// Files up to this uncompressed size load into memory; larger files are
-    /// paged with a cache of this size.
-    pub memory_budget_mib: u64,
+    /// Memory Veta may use for data (see `veta_core::memory`); `None` is the
+    /// default, half of the machine's RAM.
+    pub memory_budget_mib: Option<u64>,
 }
 
 impl Default for Appearance {
@@ -138,17 +137,17 @@ impl Default for Appearance {
     }
 }
 
-impl Default for Data {
-    fn default() -> Self {
-        Self {
-            memory_budget_mib: DEFAULT_MEMORY_BUDGET as u64 / MIB,
-        }
-    }
-}
-
 impl Config {
-    pub fn memory_budget(&self) -> usize {
-        usize::try_from(self.data.memory_budget_mib.saturating_mul(MIB)).unwrap_or(usize::MAX)
+    /// The memory budget set, in bytes; `None` for the default.
+    pub fn memory_budget(&self) -> Option<usize> {
+        self.data
+            .memory_budget_mib
+            .map(|mib| usize::try_from(mib.saturating_mul(MIB)).unwrap_or(usize::MAX))
+    }
+
+    /// Makes the memory budget the one Veta uses.
+    pub fn apply_memory_budget(&self) {
+        veta_core::memory::set_budget(self.memory_budget());
     }
 
     /// Moves `path` to the front of the recent files list.
@@ -221,14 +220,15 @@ mod tests {
         let mut config = Config::default();
         config.appearance.mode = ModePreference::Dark;
         config.appearance.font_size = Some(16.0);
-        config.data.memory_budget_mib = 256;
+        config.data.memory_budget_mib = Some(256);
         config.recent_files.push(PathBuf::from("/data/a.parquet"));
         config.save(&path).unwrap();
 
         let (loaded, error) = Config::load(&path);
         assert_eq!(error, None);
         assert_eq!(loaded, config);
-        assert_eq!(loaded.memory_budget(), 256 * 1024 * 1024);
+        assert_eq!(loaded.memory_budget(), Some(256 * 1024 * 1024));
+        assert_eq!(Config::default().memory_budget(), None, "half of RAM");
     }
 
     #[test]

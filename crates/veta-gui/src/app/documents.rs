@@ -139,7 +139,7 @@ impl App {
                     if let Some(options) = dialog.update(message) {
                         let path = dialog.path.clone();
                         self.dialog = None;
-                        let budget = self.config.memory_budget();
+                        let budget = veta_core::memory::budget();
                         self.opening.push(path.clone());
                         let worker_path = path.clone();
                         return self.start_transfer(
@@ -604,10 +604,7 @@ impl App {
     /// focused instead.
     pub(crate) fn open(&mut self, files: Vec<PathBuf>) -> Task<Message> {
         let mut tasks = Vec::new();
-        let options = OpenOptions {
-            memory_budget: self.config.memory_budget(),
-            force_paged: false,
-        };
+        let options = OpenOptions::default();
         for path in files {
             if let Some(id) = self.find_open(&path) {
                 self.active = Some(id);

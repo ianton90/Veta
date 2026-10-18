@@ -51,6 +51,7 @@ veta-core/src/
   lib.rs                 module list; short paths (io, command, rows, …)
   error.rs
   parallel.rs            independent work on all cores
+  memory.rs              the memory budget (half of RAM by default)
   model/                 Document, Workbook, metadata, undo history
   controller/            the only way to change a Document
     command.rs           the Command enum
@@ -171,7 +172,10 @@ Document
 ### DataSource
 - `InMemory(Vec<RecordBatch>)` when the file fits the memory budget.
 - `Paged { reader, cache }` otherwise: reads row groups on demand into an LRU
-  cache bounded by the memory budget.
+  cache of a quarter of the budget.
+- The memory budget (`memory.rs`) defaults to half of RAM; Settings and the
+  CLI's `--memory` change it. Sorts don't use it yet: runs stay at 256 MB
+  (larger runs and fully in-memory sorts measured slower, #129).
 - Both expose the same trait: schema, row count, `read(range) -> RecordBatch`.
 
 ### Steps

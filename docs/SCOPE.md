@@ -9,7 +9,7 @@ interface that exposes the same editing capabilities.
 ### Files
 - Open Parquet files of any size. Files that fit in the memory budget are
   loaded entirely; larger files are paged (read on demand, row group by row
-  group). The budget is configurable.
+  group). The budget defaults to half of RAM and is configurable.
 - Multiple open files, each in its own tab. Tabs sit at the bottom of the
   window, like Excel sheets.
 - Save (in place) and Save As.
