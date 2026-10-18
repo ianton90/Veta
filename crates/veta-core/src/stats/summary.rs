@@ -38,7 +38,9 @@ pub struct ColumnStats {
     pub distinct: Option<u64>,
     /// Whether `distinct` is an estimate (too many values to count).
     pub distinct_estimated: bool,
-    /// Smallest and largest non-null values, as text.
+    /// Smallest and largest non-null values, as text; only for numbers,
+    /// dates, times and durations (the order of text or booleans says
+    /// nothing about the data).
     pub min: Option<String>,
     pub max: Option<String>,
     /// Numeric columns only.
@@ -58,6 +60,8 @@ struct Accumulator {
     /// One-element arrays.
     min: Option<ArrayRef>,
     max: Option<ArrayRef>,
+    /// Whether min and max are kept: a type with a meaningful order whose
+    /// values could be compared so far.
     orderable: bool,
     /// Welford's running mean and sum of squared deviations.
     numeric: bool,
@@ -74,7 +78,7 @@ impl Accumulator {
             column,
             distinct: converter.as_ref().map(|_| Distinct::default()),
             converter,
-            orderable: true,
+            orderable: has_range(&data_type),
             min: None,
             max: None,
             numeric,
@@ -189,6 +193,15 @@ impl Accumulator {
             std_dev: (numeric && self.n > 1).then(|| (self.m2 / (self.n - 1) as f64).sqrt()),
             column: self.column,
         }
+    }
+}
+
+/// Whether min and max mean something for this type: numbers, dates,
+/// times and durations.
+fn has_range(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Dictionary(_, values) => has_range(values),
+        t => t.is_numeric() || t.is_temporal(),
     }
 }
 
@@ -525,7 +538,9 @@ pub fn quick_stats(
                 return None;
             }
         }
-        acc.update_extremes(&extremes).ok()?;
+        if acc.orderable {
+            acc.update_extremes(&extremes).ok()?;
+        }
     }
     let mut stats = acc.finish();
     stats.count = groups.iter().map(|g| g.num_rows() as u64).sum();
@@ -624,10 +639,7 @@ mod tests {
         let name = &stats[1];
         assert_eq!(name.nulls, 50_000);
         assert_eq!(name.distinct, Some(3));
-        assert_eq!(
-            (name.min.as_deref(), name.max.as_deref()),
-            (Some("a"), Some("c"))
-        );
+        assert_eq!((&name.min, &name.max), (&None, &None), "text has no range");
         assert_eq!((name.mean, name.std_dev), (None, None));
         assert_eq!(stats[2].nulls, 200_000);
         assert_eq!(stats[2].min, None);
@@ -659,6 +671,8 @@ mod tests {
                 "{column}"
             );
         }
+        assert_eq!(doc.quick_stats("name").unwrap().min, None);
+        assert_eq!(full[3].max, None, "booleans have no range");
         // Written without statistics.
         assert!(doc.quick_stats("score").is_none());
     }
