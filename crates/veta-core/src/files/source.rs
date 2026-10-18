@@ -159,11 +159,17 @@ pub struct PagedSource {
     /// The file's path, with its size and modification time when opened:
     /// extra handles on it let several readers decode at the same time.
     path: Option<(std::path::PathBuf, u64, Option<std::time::SystemTime>)>,
-    /// The reader of the last chunk decoded, kept to decode the next chunk
-    /// of the same row group: reading chunks in order (a full pass, saving)
+    /// Readers of recently decoded chunks, kept to decode the next chunk of
+    /// the same row group: reading chunks in order (a full pass, saving)
     /// then decompresses each page and dictionary once instead of once per
-    /// chunk.
-    cursor: Mutex<Option<Cursor>>,
+    /// chunk. Several threads reading different parts of the file each
+    /// continue their own.
+    cursors: Mutex<Vec<Cursor>>,
+    /// Chunks being decoded right now, to share the cores between them.
+    decoding: std::sync::atomic::AtomicUsize,
+    /// Held while decoding through the source's own handle (no extra
+    /// handles can be opened): its readers share one file position.
+    shared: Mutex<()>,
 }
 
 /// Row group readers positioned at chunk `next`, for these columns. The
@@ -271,7 +277,9 @@ impl PagedSource {
             num_rows: start,
             budget,
             cache: Mutex::new(ChunkCache::default()),
-            cursor: Mutex::new(None),
+            cursors: Mutex::new(Vec::new()),
+            decoding: std::sync::atomic::AtomicUsize::new(0),
+            shared: Mutex::new(()),
             path: None,
         }
     }
@@ -349,15 +357,39 @@ impl PagedSource {
             let schema = Arc::new(Schema::empty());
             return Ok(RecordBatch::try_new_with_options(schema, vec![], &options)?);
         }
-        let mut cursor = self.cursor.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(c) = cursor.as_mut()
-            && c.next == index
-            && c.columns.as_deref() == columns
+        use std::sync::atomic::Ordering::Relaxed;
+        self.decoding.fetch_add(1, Relaxed);
+        let result = self.decode_chunk(index, span, columns);
+        self.decoding.fetch_sub(1, Relaxed);
+        result
+    }
+
+    fn decode_chunk(
+        &self,
+        index: usize,
+        span: ChunkSpan,
+        columns: Option<&[usize]>,
+    ) -> Result<RecordBatch> {
+        // Without extra handles every reader shares the source's handle:
+        // one at a time.
+        let _shared = self
+            .path
+            .is_none()
+            .then(|| self.shared.lock().unwrap_or_else(|e| e.into_inner()));
+        let found = {
+            let mut cursors = self.lock_cursors();
+            cursors
+                .iter()
+                .position(|c| c.next == index && c.columns.as_deref() == columns)
+                .map(|i| cursors.remove(i))
+        };
+        if let Some(mut c) = found
             && let Some(batch) = c.next_batch()
         {
             let batch = batch?;
             if batch.num_rows() == span.len {
                 c.next = index + 1;
+                self.keep(c);
                 return Ok(batch);
             }
         }
@@ -381,14 +413,14 @@ impl PagedSource {
         };
         let descr = self.metadata.metadata().file_metadata().schema_descr();
         // One handle each: handles share nothing, so readers (also those of
-        // a cursor being replaced, still finishing a chunk) can't disturb
-        // each other's position. Without extra handles, one reader on the
-        // source's own handle, which must stop before another starts.
+        // other cursors, still finishing a chunk) can't disturb each other's
+        // position. Without extra handles, one reader on the source's own
+        // handle, after the readers on it have stopped.
         let mut groups = self.column_groups(span.row_group, &order);
         let mut handles: Vec<File> = (0..groups.len()).map_while(|_| self.reopen()).collect();
         let shared = handles.len() < groups.len();
         if shared {
-            drop(cursor.take());
+            self.lock_cursors().clear();
             groups = vec![order.clone()];
             handles = vec![self.file.try_clone()?];
         }
@@ -433,15 +465,39 @@ impl PagedSource {
             Some(batch) => batch?,
             None => RecordBatch::new_empty(schema),
         };
-        *cursor = Some(next);
+        self.keep(next);
         Ok(batch)
+    }
+
+    fn lock_cursors(&self) -> std::sync::MutexGuard<'_, Vec<Cursor>> {
+        self.cursors.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Keeps `cursor` for the next chunk, dropping the oldest beyond two
+    /// per core.
+    fn keep(&self, cursor: Cursor) {
+        let dropped = {
+            let mut cursors = self.lock_cursors();
+            cursors.push(cursor);
+            let limit = 2 * crate::parallel::threads();
+            let extra = cursors.len().saturating_sub(limit);
+            cursors.drain(..extra).collect::<Vec<_>>()
+        };
+        // Outside the lock: dropping may wait for a reader thread.
+        drop(dropped);
     }
 
     /// `columns` (top-level, in the schema's order) split into one group per
     /// core, of about the same compressed size in row group `row_group`.
     fn column_groups(&self, row_group: usize, columns: &[usize]) -> Vec<Vec<usize>> {
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-        let count = threads.min(columns.len()).max(1);
+        // The cores are shared among the chunks being decoded at once.
+        let decoding = self
+            .decoding
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .max(1);
+        let count = (crate::parallel::threads() / decoding)
+            .min(columns.len())
+            .max(1);
         let metadata = self.metadata.metadata();
         let descr = metadata.file_metadata().schema_descr();
         let group = metadata.row_group(row_group);

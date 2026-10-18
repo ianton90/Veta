@@ -8,7 +8,7 @@ use arrow::compute::concat_batches;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 
-use super::compute::{Cache, ComputeJob, Computed};
+use super::compute::{Cache, ComputeJob, Computed, PASS_ROWS};
 use super::edits::CellEdits;
 use super::level::Level;
 use super::rows::kept_ranges;
@@ -16,6 +16,10 @@ use super::{Step, invalid};
 use crate::error::Result;
 use crate::source::DataSource;
 use crate::transforms::text::map_columns;
+
+/// Rows per piece of a full pass read on several threads
+/// ([`Pipeline::read_parallel`]).
+pub(crate) const UNIT_ROWS: usize = 8 * PASS_ROWS;
 
 /// Whether the steps' output can be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,6 +327,36 @@ impl Pipeline {
         };
         let end = range.end.min(level.num_rows);
         self.read_level(steps, range.start.min(end)..end)
+    }
+
+    /// Reads rows `range` after `steps` steps (only the columns `names`, if
+    /// given) in pieces of [`UNIT_ROWS`], several at once on other threads,
+    /// and returns `map(batches, first row)` for each piece, in order. A
+    /// piece's batches are at most [`PASS_ROWS`] rows each.
+    pub(crate) fn read_parallel<T: Send + 'static>(
+        &self,
+        steps: usize,
+        range: Range<usize>,
+        names: Option<Vec<String>>,
+        map: impl Fn(Vec<RecordBatch>, usize) -> Result<T> + Send + Sync + 'static,
+    ) -> crate::parallel::Ordered<T> {
+        let pipeline = self.clone();
+        let pieces = range.len().div_ceil(UNIT_ROWS);
+        crate::parallel::ordered(pieces, crate::parallel::threads(), move |piece| {
+            let first = range.start + piece * UNIT_ROWS;
+            let end = (first + UNIT_ROWS).min(range.end);
+            let batches = (first..end)
+                .step_by(PASS_ROWS)
+                .map(|start| {
+                    let window = start..(start + PASS_ROWS).min(end);
+                    match &names {
+                        Some(names) => pipeline.read_columns_at(steps, window, names),
+                        None => pipeline.read_at(steps, window),
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?;
+            map(batches, first)
+        })
     }
 
     /// Like [`Self::read_at`], with only the columns named in `names` (in
