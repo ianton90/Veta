@@ -2,6 +2,12 @@
 
 use super::*;
 use iced::widget::column;
+use veta_core::steps::{CellEdits, Step};
+
+/// Edits listed under an expanded edit-cells step; the rest are counted.
+const LISTED_EDITS: usize = 200;
+/// Width of the arrow that opens an edit-cells step.
+const TOGGLE_WIDTH: f32 = 18.0;
 
 /// The applied steps list. Selecting a step shows the data after it.
 pub(super) fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element<'a, Message> {
@@ -11,7 +17,10 @@ pub(super) fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element
     let shown = tab.grid.preview().unwrap_or(evaluated).min(evaluated);
     let red = Color::from_rgb8(0xd1, 0x43, 0x43);
 
-    let item = |index: Option<usize>, label: String, note: Option<(String, Color)>| {
+    let item = |index: Option<usize>,
+                label: String,
+                note: Option<(String, Color)>,
+                expanded: Option<bool>| {
         // `index` is the step position; None is the source.
         let level = index.map_or(0, |i| i + 1);
         let selected = level == shown;
@@ -37,7 +46,25 @@ pub(super) fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element
         if available {
             select = select.on_press(Message::PreviewStep(tab.id, level));
         }
-        let mut line = row![select].spacing(2).align_y(Alignment::Center);
+        // Edit-cells steps open to list their edits; other lines keep the
+        // arrow's room so labels line up.
+        let toggle: Element<'a, Message> = match (index, expanded) {
+            (Some(i), Some(open)) => {
+                let glyph = if open {
+                    Icon::ChevronDown
+                } else {
+                    Icon::ChevronRight
+                };
+                button(icon(glyph, ui.small()).color(t.muted_text))
+                    .width(TOGGLE_WIDTH)
+                    .padding([4, 2])
+                    .style(move |_theme: &Theme, status| subtle_button(t, status))
+                    .on_press(Message::ToggleStep(tab.id, i))
+                    .into()
+            }
+            _ => iced::widget::Space::new().width(TOGGLE_WIDTH).into(),
+        };
+        let mut line = row![toggle, select].spacing(2).align_y(Alignment::Center);
         if let Some(i) = index {
             let small = |glyph: Icon, message: Option<Message>, tip: &'static str| {
                 let color = if message.is_some() {
@@ -79,7 +106,7 @@ pub(super) fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element
         line.into()
     };
 
-    let mut list: Vec<Element<'a, Message>> = vec![item(None, "Source".into(), None)];
+    let mut list: Vec<Element<'a, Message>> = vec![item(None, "Source".into(), None, None)];
     for (i, step) in steps.iter().enumerate() {
         let note = match doc.status() {
             Status::Broken { step, error } if *step == i => Some((error.clone(), red)),
@@ -90,11 +117,20 @@ pub(super) fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element
             Status::Computing { step } if i > *step => Some(("Waiting".into(), t.muted_text)),
             _ => None,
         };
+        let edits = match step {
+            Step::EditCells(edits) => Some(edits),
+            _ => None,
+        };
+        let open = edits.is_some() && tab.expanded_steps.contains(&i);
         list.push(item(
             Some(i),
             format!("{}. {}", i + 1, step.describe()),
             note,
+            edits.map(|_| open),
         ));
+        if let Some(edits) = edits.filter(|_| open) {
+            list.push(edit_lines(edits, ui));
+        }
     }
     let mut content = column(list).spacing(2).padding([0, 8]);
     if steps.is_empty() {
@@ -123,4 +159,40 @@ pub(super) fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element
     .spacing(4)
     .padding([4, 8]);
     column![scrollable(content).height(Length::Fill), footer].into()
+}
+
+/// One line per edit of an edit-cells step: column, row and new value.
+fn edit_lines<'a>(edits: &CellEdits, ui: Ui) -> Element<'a, Message> {
+    let t = ui.tokens;
+    let line = |label: String| {
+        text(label)
+            .size(ui.small() - 1.0)
+            .color(t.muted_text)
+            .wrapping(text::Wrapping::None)
+            .into()
+    };
+    let mut lines: Vec<Element<'a, Message>> = edits
+        .iter()
+        .take(LISTED_EDITS)
+        .map(|(column, row, value)| {
+            line(format!(
+                "{column} · row {} → {}",
+                row + 1,
+                abbreviate(&value_text(value), 40)
+            ))
+        })
+        .collect();
+    if edits.len() > LISTED_EDITS {
+        lines.push(line(format!("… and {} more", edits.len() - LISTED_EDITS)));
+    }
+    column(lines).spacing(2).padding([2, 30]).into()
+}
+
+/// A one-value array as cell text ("null" for null).
+fn value_text(value: &veta_core::arrow::array::ArrayRef) -> String {
+    veta_core::arrow::record_batch::RecordBatch::try_from_iter([("value", value.clone())])
+        .ok()
+        .and_then(|batch| veta_core::display::format_batch(&batch).ok())
+        .and_then(|cells| cells.into_iter().next()?.into_iter().next()?)
+        .unwrap_or_else(|| "null".into())
 }

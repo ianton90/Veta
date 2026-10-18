@@ -43,6 +43,8 @@ pub(crate) enum Message {
     SideTab(SideTab),
     /// Show the data after this many steps (past the last: all steps).
     PreviewStep(DocumentId, usize),
+    /// Show or hide the edits of an edit-cells step in the steps pane.
+    ToggleStep(DocumentId, usize),
     RemoveStep(usize),
     MoveStep(usize, usize),
     EditStep(usize),

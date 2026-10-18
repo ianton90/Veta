@@ -408,3 +408,31 @@ fn sort_from_ribbon_and_edit_step() {
     assert_eq!(id_at(&app, 0).as_deref(), Some("1"));
     assert_eq!(id_at(&app, 500).as_deref(), Some("0"));
 }
+
+#[test]
+fn cell_edit_steps_expand_to_list_their_edits() {
+    let dir = TempDir::new();
+    let path = dir.join("m.parquet");
+    fixtures::mixed_settings(&path);
+    let mut app = app_with(&[&path]);
+    let id = app.tabs[0].id;
+    for (row, value) in [(2, "7.25"), (4, "8.5")] {
+        let _ = app.update(Message::Grid(id, GridEvent::Select { row, column: 2 }));
+        let _ = app.update(Message::Grid(
+            id,
+            GridEvent::StartEdit {
+                initial: Some(value.into()),
+            },
+        ));
+        let _ = app.update(Message::CommitEdit);
+    }
+    let doc = app.workbook.get(id).unwrap();
+    assert_eq!(doc.steps().len(), 1, "edits share one step");
+    assert_eq!(doc.steps()[0].describe(), "Edited 2 cells");
+
+    let _ = app.update(Message::ToggleStep(id, 0));
+    assert!(app.tabs[0].expanded_steps.contains(&0));
+    let _ = app.view();
+    let _ = app.update(Message::ToggleStep(id, 0));
+    assert!(app.tabs[0].expanded_steps.is_empty());
+}

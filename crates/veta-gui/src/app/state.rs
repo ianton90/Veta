@@ -204,6 +204,8 @@ pub(crate) enum SideTab {
 pub(crate) struct Tab {
     pub(crate) id: DocumentId,
     pub(crate) grid: GridView,
+    /// Edit-cells steps whose edits are listed in the steps pane, by index.
+    pub(crate) expanded_steps: std::collections::BTreeSet<usize>,
 }
 
 #[derive(Debug)]

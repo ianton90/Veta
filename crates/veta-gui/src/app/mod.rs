@@ -406,6 +406,7 @@ impl App {
             | Message::ComputeDone(..)
             | Message::CancelCompute
             | Message::PreviewStep(..)
+            | Message::ToggleStep(..)
             | Message::RemoveStep(..)
             | Message::MoveStep(..)
             | Message::EditStep(..)

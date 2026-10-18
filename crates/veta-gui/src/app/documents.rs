@@ -672,7 +672,11 @@ impl App {
         // Paged files can be slow to read: scroll without waiting.
         grid.set_background(document.source_mode() == veta_core::source::SourceMode::Paged);
         let id = self.workbook.add(document);
-        self.tabs.push(Tab { id, grid });
+        self.tabs.push(Tab {
+            id,
+            grid,
+            expanded_steps: Default::default(),
+        });
         self.active = Some(id);
     }
 

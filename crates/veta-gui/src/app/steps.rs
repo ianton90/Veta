@@ -118,6 +118,13 @@ impl App {
                     tab.grid.set_preview(preview, doc);
                 }
             }
+            Message::ToggleStep(id, index) => {
+                if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id)
+                    && !tab.expanded_steps.remove(&index)
+                {
+                    tab.expanded_steps.insert(index);
+                }
+            }
             Message::RemoveStep(_) | Message::MoveStep(..) | Message::EditStep(_)
                 if self.active.is_some_and(|id| !self.steps_changeable(id)) =>
             {
