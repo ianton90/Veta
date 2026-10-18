@@ -38,6 +38,18 @@ fn edit_commit_and_undo() {
         app.errors.is_empty(),
         "shown next to the editor, not as a banner"
     );
+    // The editor flashes, then fades.
+    let (start, level) = app.flash.unwrap();
+    assert_eq!(level, 1.0);
+    let _ = app.update(Message::Frame(
+        start + std::time::Duration::from_millis(250),
+    ));
+    let level = app.flash.unwrap().1;
+    assert!(level > 0.0 && level < 1.0, "{level}");
+    let _ = app.update(Message::Frame(
+        start + std::time::Duration::from_millis(600),
+    ));
+    assert!(app.flash.is_none());
     let _ = app.update(Message::Escape);
     assert!(app.edit.is_none());
 

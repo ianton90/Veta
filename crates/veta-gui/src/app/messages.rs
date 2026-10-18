@@ -10,6 +10,8 @@ pub(crate) enum Message {
     /// Files sent by another `veta` launch.
     Remote(Vec<PathBuf>),
     WindowResized(Size),
+    /// A frame is drawn (only while something animates).
+    Frame(std::time::Instant),
     Opened(PathBuf, Result<Loaded, String>),
     /// A CSV import finished, with what it found.
     Imported(PathBuf, Result<Slot<(Document, ImportReport)>, String>),

@@ -66,6 +66,9 @@ pub(crate) const FORMULA_ID: iced::widget::Id = iced::widget::Id::new("formula")
 /// Id of the text input drawn inside the cell being edited.
 pub(crate) const EDITOR_ID: iced::widget::Id = iced::widget::Id::new("cell-editor");
 
+/// How long the cell editor flashes after refused input.
+const FLASH: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Rows dialogs sample (to preview cast failures, suggest split parts).
 pub(crate) const SAMPLE_ROWS: usize = 1000;
 
@@ -228,6 +231,7 @@ impl App {
             system_mode: None,
             text_size,
             edit: None,
+            flash: None,
             menu: None,
             saving: None,
             closing: None,
@@ -300,8 +304,14 @@ impl App {
             }
             _ => None,
         });
+        // Redrawn every frame while the cell editor flashes.
+        let flash = match self.flash {
+            Some(_) => window::frames().map(Message::Frame),
+            None => Subscription::none(),
+        };
         Subscription::batch([
             events,
+            flash,
             window::close_requests().map(|_| Message::CloseRequested),
             iced::system::theme_changes().map(Message::SystemMode),
             Subscription::run(instance::incoming).map(Message::Remote),
@@ -425,6 +435,13 @@ impl App {
                 }
             }
             Message::WindowResized(size) => self.window_size = size,
+            Message::Frame(now) => {
+                self.flash = self.flash.and_then(|(start, _)| {
+                    let elapsed = now.saturating_duration_since(start);
+                    (elapsed < FLASH)
+                        .then(|| (start, 1.0 - elapsed.as_secs_f32() / FLASH.as_secs_f32()))
+                });
+            }
             Message::Grid(id, event)
                 if !self.editable(id)
                     && matches!(

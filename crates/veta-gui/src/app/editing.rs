@@ -648,6 +648,7 @@ impl App {
             Err(e) => {
                 edit.error = Some(e);
                 self.edit = Some(edit);
+                self.flash = Some((std::time::Instant::now(), 1.0));
                 false
             }
         }

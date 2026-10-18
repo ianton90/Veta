@@ -45,6 +45,8 @@ impl App {
                     selected == Some((e.row, Some(e.column.clone())))
                 });
                 let covers_label = editor.is_some_and(|e| e.key);
+                // Refused input: the editor turns red and fades back.
+                let flash = self.flash.map_or(0.0, |(_, level)| level);
                 let editor = editor.map(|e| {
                     iced::widget::text_input("", &e.text)
                         .id(EDITOR_ID)
@@ -52,6 +54,24 @@ impl App {
                         .on_submit(Message::CommitEdit)
                         .size(ui.size - 1.0)
                         .padding([1, 5])
+                        .style(move |theme: &Theme, status| {
+                            let mut style = iced::widget::text_input::default(theme, status);
+                            if flash > 0.0
+                                && let iced::Background::Color(base) = style.background
+                            {
+                                let red = Color::from_rgb8(0xd1, 0x43, 0x43);
+                                let k = 0.5 * flash;
+                                let mix = |a: f32, b: f32| a + (b - a) * k;
+                                style.background = iced::Background::Color(Color {
+                                    r: mix(base.r, red.r),
+                                    g: mix(base.g, red.g),
+                                    b: mix(base.b, red.b),
+                                    a: base.a,
+                                });
+                                style.border.color = red;
+                            }
+                            style
+                        })
                         .into()
                 });
                 let grid = grid::grid(&tab.grid, ui.tokens, move |e| Message::Grid(id, e))

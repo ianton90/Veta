@@ -58,6 +58,9 @@ pub(crate) struct App {
     pub(crate) text_size: f32,
     /// Cell being edited in the formula bar.
     pub(crate) edit: Option<Edit>,
+    /// The cell editor flashes after refused input: when it started, and
+    /// how strong it is now (1 fading to 0).
+    pub(crate) flash: Option<(std::time::Instant, f32)>,
     pub(crate) menu: Option<ContextMenu>,
     /// Document being saved; the window is blocked meanwhile.
     pub(crate) saving: Option<DocumentId>,
