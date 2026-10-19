@@ -15,13 +15,13 @@ use arrow::util::display::array_value_to_string;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::display::type_name;
 use crate::error::{Error, Result};
 use crate::steps::Pipeline;
 
-/// Rows read per batch.
-const BATCH_ROWS: usize = 64 * 1024;
 /// Distinct values counted exactly before switching to an estimate.
 pub const EXACT_DISTINCT_LIMIT: usize = 1_000_000;
 
@@ -88,6 +88,38 @@ impl Accumulator {
             n: 0,
             mean: 0.0,
             m2: 0.0,
+        }
+    }
+
+    /// Adds what `other` (the same column, later rows) counted.
+    fn merge(&mut self, other: Accumulator) {
+        self.count += other.count;
+        self.nulls += other.nulls;
+        if let (Some(mine), Some(theirs)) = (&mut self.distinct, other.distinct) {
+            mine.merge(theirs);
+        }
+        if !other.orderable {
+            self.orderable = false;
+        }
+        if self.orderable {
+            for extreme in [other.min, other.max].into_iter().flatten() {
+                if self.update_extremes(&extreme).is_err() {
+                    self.orderable = false;
+                    break;
+                }
+            }
+        }
+        if !self.orderable {
+            self.min = None;
+            self.max = None;
+        }
+        // Chan et al.'s formula for combining running means and deviations.
+        if other.n > 0 {
+            let n = self.n + other.n;
+            let delta = other.mean - self.mean;
+            self.mean += delta * other.n as f64 / n as f64;
+            self.m2 += other.m2 + delta * delta * (self.n as f64 * other.n as f64) / n as f64;
+            self.n = n;
         }
     }
 
@@ -361,12 +393,39 @@ impl Distinct {
             None => {
                 self.exact.insert(hash);
                 if self.exact.len() > EXACT_DISTINCT_LIMIT {
-                    let mut hll = HyperLogLog::new();
-                    for h in self.exact.drain() {
-                        hll.insert(h);
+                    self.start_estimating();
+                }
+            }
+        }
+    }
+
+    /// Switches to the estimate, with the values seen so far.
+    fn start_estimating(&mut self) {
+        if self.estimate.is_some() {
+            return;
+        }
+        let mut hll = HyperLogLog::new();
+        for h in self.exact.drain() {
+            hll.insert(h);
+        }
+        self.exact.shrink_to_fit();
+        self.estimate = Some(hll);
+    }
+
+    /// Adds the values counted by `other`.
+    fn merge(&mut self, other: Distinct) {
+        match other.estimate {
+            Some(theirs) => {
+                self.start_estimating();
+                if let Some(mine) = &mut self.estimate {
+                    for (a, b) in mine.registers.iter_mut().zip(theirs.registers) {
+                        *a = (*a).max(b);
                     }
-                    self.exact.shrink_to_fit();
-                    self.estimate = Some(hll);
+                }
+            }
+            None => {
+                for hash in other.exact {
+                    self.insert(hash);
                 }
             }
         }
@@ -468,34 +527,64 @@ impl StatsJob {
             .map(|(c, &i)| Accumulator::new(c.clone(), schema.field(i).data_type().clone()))
             .collect();
         let rows = self.pipeline.num_rows();
-        let mut start = 0;
-        while start < rows {
-            let end = (start + BATCH_ROWS).min(rows);
-            let batch = self.pipeline.read(start..end)?;
-            // Columns are independent: spread them over the cores.
-            let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-            let per_thread = accumulators.len().div_ceil(threads).max(1);
+        // Pieces are read and counted on several threads, and the counts
+        // added up in order. Once a column's distinct values are estimated,
+        // later pieces estimate theirs from the start.
+        let fields: Vec<(String, DataType)> = self
+            .columns
+            .iter()
+            .zip(&indices)
+            .map(|(c, &i)| (c.clone(), schema.field(i).data_type().clone()))
+            .collect();
+        let estimating: Arc<Vec<AtomicBool>> =
+            Arc::new(fields.iter().map(|_| AtomicBool::new(false)).collect());
+        let flags = estimating.clone();
+        let pieces = self.pipeline.read_parallel(
+            self.pipeline.evaluated(),
+            0..rows,
+            Some(self.columns.clone()),
+            move |batches, _| {
+                let mut counted = Vec::with_capacity(fields.len());
+                for ((name, data_type), flag) in fields.iter().zip(flags.iter()) {
+                    let mut acc = Accumulator::new(name.clone(), data_type.clone());
+                    if flag.load(Ordering::Relaxed)
+                        && let Some(distinct) = &mut acc.distinct
+                    {
+                        distinct.start_estimating();
+                    }
+                    counted.push(acc);
+                }
+                let mut rows = 0;
+                for batch in &batches {
+                    for acc in &mut counted {
+                        let column = batch
+                            .column_by_name(&acc.column)
+                            .ok_or_else(|| Error::InvalidCommand("statistics failed".into()))?;
+                        acc.add(column)?;
+                    }
+                    rows += batch.num_rows();
+                }
+                Ok((counted, rows))
+            },
+        );
+        let mut done = 0;
+        for piece in pieces {
+            let (counted, n) = piece?;
+            // Columns are added up at the same time.
             std::thread::scope(|scope| {
-                let work: Vec<_> = accumulators
-                    .chunks_mut(per_thread)
-                    .zip(indices.chunks(per_thread))
-                    .map(|(accs, cols)| {
-                        let batch = &batch;
-                        scope.spawn(move || {
-                            for (acc, &i) in accs.iter_mut().zip(cols) {
-                                acc.add(batch.column(i))?;
-                            }
-                            Ok::<_, Error>(())
-                        })
-                    })
-                    .collect();
-                work.into_iter().try_for_each(|w| {
-                    w.join()
-                        .unwrap_or_else(|_| Err(Error::InvalidCommand("statistics failed".into())))
-                })
-            })?;
-            start = end;
-            if !progress(start as f32 / rows as f32) {
+                for ((acc, piece), flag) in
+                    accumulators.iter_mut().zip(counted).zip(estimating.iter())
+                {
+                    scope.spawn(move || {
+                        acc.merge(piece);
+                        if acc.distinct.as_ref().is_some_and(Distinct::estimated) {
+                            flag.store(true, Ordering::Relaxed);
+                        }
+                    });
+                }
+            });
+            done += n;
+            if !progress(done as f32 / rows.max(1) as f32) {
                 return Err(Error::Cancelled);
             }
         }
@@ -625,7 +714,7 @@ mod tests {
                 true
             })
             .unwrap();
-        assert!(seen >= 4);
+        assert!(seen >= 1);
         let id = &stats[0];
         assert_eq!(
             (id.count, id.nulls, id.distinct),

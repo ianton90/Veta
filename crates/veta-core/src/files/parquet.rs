@@ -246,9 +246,6 @@ fn compression(c: PqCompression) -> Compression {
 /// regenerates it, so the document's copy is never written back.
 pub const ARROW_SCHEMA_KEY: &str = "ARROW:schema";
 
-/// Rows read from the document per batch while writing.
-const WRITE_BATCH_ROWS: usize = 64 * 1024;
-
 /// Everything needed to write a document, detached from it so it can run on
 /// another thread.
 #[derive(Debug, Clone)]
@@ -352,10 +349,18 @@ pub fn write_parquet(
     settings: &WriterSettings,
     path: &Path,
 ) -> Result<()> {
-    let rows = pipeline.num_rows();
-    let batches = (0..rows)
-        .step_by(WRITE_BATCH_ROWS)
-        .map(|start| pipeline.read(start..(start + WRITE_BATCH_ROWS).min(rows)));
+    // Pieces of the output are read on several threads, in order.
+    let batches = pipeline
+        .read_parallel(
+            pipeline.evaluated(),
+            0..pipeline.num_rows(),
+            None,
+            |b, _| Ok(b),
+        )
+        .flat_map(|piece| match piece {
+            Ok(batches) => batches.into_iter().map(Ok).collect(),
+            Err(e) => vec![Err(e)],
+        });
     write_batches(&pipeline.schema(), batches, metadata, settings, path)
 }
 

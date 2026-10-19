@@ -186,6 +186,12 @@ Document
   large sort far slower); otherwise they go to temporary part files
   whenever they hold a quarter of the budget.
 - Both expose the same trait: schema, row count, `read(range) -> RecordBatch`.
+- Full passes and saves (save, filter, stats, CSV/JSON export) read the
+  output in pieces of 1M rows, several at once on all cores
+  (`Pipeline::read_parallel`, results in order); the paged source keeps a
+  reader per piece being read and shares the cores between them. The writer
+  moves columns to other workers each row group, so row groups encode at
+  the same time.
 
 ### Steps
 Every data change is a `Step`, Power Query style:

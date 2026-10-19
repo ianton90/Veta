@@ -141,14 +141,28 @@ impl ComputeJob {
             .num_rows_at(self.step)
             .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
         match &self.pipeline.steps()[self.step] {
-            Step::Filter(filter) => Ok(Box::new((0..input_rows).step_by(PASS_ROWS).map(
-                move |start| {
-                    let end = (start + PASS_ROWS).min(input_rows);
-                    let batch = self.pipeline.read_at(self.step, start..end)?;
-                    let mask = filter.evaluate(&batch)?;
-                    Ok(arrow::compute::filter_record_batch(&batch, &mask)?)
-                },
-            ))),
+            Step::Filter(filter) => {
+                // Pieces are read and filtered on several threads.
+                let filter = filter.clone();
+                let pieces = self.pipeline.read_parallel(
+                    self.step,
+                    0..input_rows,
+                    None,
+                    move |batches, _| {
+                        batches
+                            .iter()
+                            .map(|batch| {
+                                let mask = filter.evaluate(batch)?;
+                                Ok(arrow::compute::filter_record_batch(batch, &mask)?)
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    },
+                );
+                Ok(Box::new(pieces.flat_map(|piece| match piece {
+                    Ok(batches) => batches.into_iter().map(Ok).collect(),
+                    Err(e) => vec![Err(e)],
+                })))
+            }
             Step::Sort(sort) if self.streams() => {
                 let schema = self
                     .pipeline
@@ -178,19 +192,33 @@ impl ComputeJob {
                 let mut names: Vec<String> =
                     filter.conditions.iter().map(|c| c.column.clone()).collect();
                 names.dedup();
+                // Pieces are read and tested on several threads; the kept
+                // ranges are joined in order.
+                let tested = filter.clone();
+                let pieces = self.pipeline.read_parallel(
+                    self.step,
+                    0..input_rows,
+                    Some(names),
+                    move |batches, first| {
+                        let mut kept = Vec::new();
+                        let mut start = first;
+                        for batch in &batches {
+                            let mask = tested.evaluate(batch)?;
+                            for (from, to) in mask.values().set_slices() {
+                                kept.push(start + from..start + to);
+                            }
+                            start += batch.num_rows();
+                        }
+                        Ok((kept, start))
+                    },
+                );
                 let mut rows = RowMap::default();
-                let mut start = 0;
-                while start < input_rows {
-                    let end = (start + PASS_ROWS).min(input_rows);
-                    let batch = self
-                        .pipeline
-                        .read_columns_at(self.step, start..end, &names)?;
-                    let mask = filter.evaluate(&batch)?;
-                    for (from, to) in mask.values().set_slices() {
-                        rows.push(start + from..start + to);
+                for piece in pieces {
+                    let (kept, end) = piece?;
+                    for range in kept {
+                        rows.push(range);
                     }
-                    start = end;
-                    if !progress(start as f32 / input_rows as f32) {
+                    if !progress(end as f32 / input_rows as f32) {
                         return Err(Error::Cancelled);
                     }
                 }
