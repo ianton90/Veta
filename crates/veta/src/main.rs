@@ -8,6 +8,10 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
+/// The same allocator as `veta-cli` (decision 46).
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Parquet viewer and editor (desktop app). For command-line use, run
 /// `veta-cli`.
 #[derive(Debug, Parser)]

@@ -11,6 +11,7 @@ repository.workspace = true
 veta-core.workspace = true
 veta-gui.workspace = true
 clap.workspace = true
+mimalloc.workspace = true
 
 [build-dependencies]
 embed-resource.workspace = true

@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 veta-core.workspace = true
 clap.workspace = true
+mimalloc.workspace = true
 
 [lints]
 workspace = true
