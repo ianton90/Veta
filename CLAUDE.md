@@ -4,7 +4,7 @@
 - Develop on branch `dv`; push directly. `pr` is the release branch, do not push there.
 - Tasks are GitHub issues in `ianton90/veta` (parent issue per milestone, sub-issues as tasks). Reference the issue in commits (`#N`) and close it when done.
 - No CI on pushes (releases build in GitHub Actions on version tags, see `docs/RELEASING.md`). Before every push run: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
-- Keep dependencies minimal. New crates need an entry in `docs/DECISIONS.md` and the owner's approval.
+- Keep dependencies minimal. New crates need the owner's approval, an entry in `docs/DECISIONS.md` saying why the exception (and what was measured, if it was for speed), and a short comment where the crate is used pointing to that entry.
 - `veta-core` must not depend on `iced` or `clap`. All data changes go through controller `Command`s.
 
 ## Code conventions
