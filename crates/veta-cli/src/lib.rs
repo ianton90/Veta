@@ -187,8 +187,8 @@ pub fn run(command: Command) -> ExitCode {
     let result = execute(command, &mut out);
     // With VETA_PROFILE set: where the time went.
     if let Some(report) = veta_core::profile::report() {
-        eprint!(
-            "{report}  {:<40} {:>9.2} s\n",
+        eprintln!(
+            "{report}  {:<40} {:>9.2} s",
             "total",
             start.elapsed().as_secs_f64()
         );

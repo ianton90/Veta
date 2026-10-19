@@ -6,9 +6,11 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-fn totals() -> Option<&'static Mutex<BTreeMap<&'static str, (Duration, u64)>>> {
-    static TOTALS: OnceLock<Option<Mutex<BTreeMap<&'static str, (Duration, u64)>>>> =
-        OnceLock::new();
+/// Each part's total time and how many times it ran.
+type Totals = Mutex<BTreeMap<&'static str, (Duration, u64)>>;
+
+fn totals() -> Option<&'static Totals> {
+    static TOTALS: OnceLock<Option<Totals>> = OnceLock::new();
     TOTALS
         .get_or_init(|| std::env::var_os("VETA_PROFILE").map(|_| Mutex::new(BTreeMap::new())))
         .as_ref()
