@@ -187,3 +187,30 @@ pub(crate) fn write_parquet(
     writer.close()?;
     Ok(())
 }
+
+/// Writes `batches` (with the columns of `schema`) to `file` on this
+/// thread, with the settings of [`write_parquet`]: for many small files
+/// written at the same time (parts of a sort's buckets).
+pub(crate) fn write_part(
+    file: &TempFile,
+    schema: &SchemaRef,
+    batches: &[RecordBatch],
+) -> Result<()> {
+    let props = parquet::file::properties::WriterProperties::builder()
+        .set_statistics_enabled(parquet::file::properties::EnabledStatistics::None)
+        .set_compression(parquet::basic::Compression::LZ4_RAW)
+        .build();
+    let mut writer = parquet::arrow::ArrowWriter::try_new(
+        File::create(file.path())?,
+        schema.clone(),
+        Some(props),
+    )?;
+    for batch in batches {
+        writer.write(&RecordBatch::try_new(
+            schema.clone(),
+            batch.columns().to_vec(),
+        )?)?;
+    }
+    writer.close()?;
+    Ok(())
+}

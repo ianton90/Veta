@@ -155,8 +155,10 @@ impl ComputeJob {
                     .schema_at(self.step)
                     .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
                 let read = |range| self.pipeline.read_at(self.step, range);
+                let names = sort_key_names(sort);
+                let read_keys = |range| self.pipeline.read_columns_at(self.step, range, &names);
                 Ok(Box::new(sort_stream(
-                    sort, &schema, input_rows, &read, PASS_ROWS,
+                    sort, &schema, input_rows, &read, &read_keys, PASS_ROWS,
                 )?))
             }
             _ => Err(invalid("this step can't be streamed".into())),
@@ -206,9 +208,14 @@ impl ComputeJob {
                             sort_in_memory(sort, &schema, input_rows, &read, PASS_ROWS, progress)?;
                         Arc::new(MemorySource::new(schema, vec![batch])?)
                     }
-                    SourceMode::Paged => Arc::new(sort_external(
-                        sort, &schema, input_rows, &read, PASS_ROWS, None, progress,
-                    )?),
+                    SourceMode::Paged => {
+                        let names = sort_key_names(sort);
+                        let read_keys =
+                            |range| self.pipeline.read_columns_at(self.step, range, &names);
+                        Arc::new(sort_external(
+                            sort, &schema, input_rows, &read, &read_keys, PASS_ROWS, None, progress,
+                        )?)
+                    }
                 };
                 Cache::Data(source)
             }
@@ -451,6 +458,7 @@ impl ComputeJob {
                     &input,
                     input_rows,
                     &read,
+                    &|range| self.pipeline.read_columns_at(self.step, range, keys),
                     PASS_ROWS,
                     None,
                     &mut sort_progress,
@@ -559,6 +567,11 @@ impl ComputeJob {
         };
         self.materialize(schema.clone(), &mut produce)
     }
+}
+
+/// The columns a sort reads to sample its keys.
+fn sort_key_names(sort: &crate::transforms::sort::Sort) -> Vec<String> {
+    sort.keys.iter().map(|k| k.column.clone()).collect()
 }
 
 #[cfg(test)]
