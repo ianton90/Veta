@@ -177,12 +177,6 @@ Document
   CLI's `--memory` change it. Sorts don't use it yet: runs stay at 256 MB
   (larger runs and fully in-memory sorts measured slower, #129).
 - Both expose the same trait: schema, row count, `read(range) -> RecordBatch`.
-- Full passes and saves (save, filter, stats, CSV/JSON export) read the
-  output in pieces of 512K rows, several at once on all cores
-  (`Pipeline::read_parallel`, results in order); the paged source keeps a
-  reader per piece being read and shares the cores between them. The writer
-  moves columns to other workers each row group, so row groups encode at
-  the same time.
 
 ### Steps
 Every data change is a `Step`, Power Query style:

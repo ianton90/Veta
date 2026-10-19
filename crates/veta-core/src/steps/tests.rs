@@ -305,7 +305,7 @@ fn filter_is_computed_then_read_through_its_cache() {
             true
         })
         .unwrap();
-    assert_eq!(seen.last(), Some(&1.0));
+    assert!(seen.len() >= 3 && seen.last() == Some(&1.0));
     assert!(p.install(computed));
     assert_eq!(p.status(), &Status::Ready);
     assert_eq!(p.num_rows(), 50_009);
