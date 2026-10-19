@@ -173,6 +173,9 @@ Document
 - `InMemory(Vec<RecordBatch>)` when the file fits the memory budget.
 - `Paged { reader, cache }` otherwise: reads row groups on demand into an LRU
   cache of a quarter of the budget.
+- Both binaries use `mimalloc` as their allocator (decision 46): with the
+  Windows system heap, the multi-GB allocations of sorts and saves were
+  several times slower. Only visible on Windows.
 - The memory budget (`memory.rs`) defaults to half of RAM; Settings and the
   CLI's `--memory` change it.
 - Paged sorts sort by key range (`transforms/sort/buckets.rs`): sampled

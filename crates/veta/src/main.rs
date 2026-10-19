@@ -8,7 +8,9 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-/// The same allocator as `veta-cli` (decision 46).
+/// mimalloc instead of the system allocator, as in `veta-cli`: the Windows
+/// system heap makes the multi-GB allocations of full passes several times
+/// slower (decision 46).
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
