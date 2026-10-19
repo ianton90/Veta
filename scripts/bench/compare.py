@@ -19,8 +19,9 @@ Make a test file (plain columns, no nested ones), then run the comparison:
     python scripts/bench/compare.py run bench.parquet \\
         --veta target/release/veta-cli --out bench-results.md
 
-`run --only sort,filter` runs some operations; `--tools veta,polars` some
-tools. Outputs are written next to the input file and deleted after each
+`run --only sort,filter` runs some operations. Veta and polars run by
+default; `--tools veta,polars,pandas` adds pandas (slow, and it loads the
+whole file into memory). Outputs are written next to the input file and deleted after each
 step (the first CSV export is kept for the CSV import, which every tool
 runs on that same file).
 """
@@ -38,7 +39,10 @@ import time
 from pathlib import Path
 
 OPERATIONS = ["head", "stats", "filter", "sort", "formula", "edit", "to_csv", "from_csv"]
-TOOLS = ["veta", "polars", "pandas"]
+# pandas only on request (`--tools veta,polars,pandas`): it loads the whole
+# file into memory and takes many minutes on large files.
+TOOLS = ["veta", "polars"]
+ALL_TOOLS = ["veta", "polars", "pandas"]
 
 FILTER = ("amount", 500.0)  # rows with amount > 500 (about half)
 SORT_BY = "amount"
@@ -348,7 +352,10 @@ def main() -> None:
     r.add_argument("file")
     r.add_argument("--veta", default="target/release/veta-cli", help="path to veta-cli")
     r.add_argument("--only", help=f"comma-separated operations ({','.join(OPERATIONS)})")
-    r.add_argument("--tools", help=f"comma-separated tools ({','.join(TOOLS)})")
+    r.add_argument(
+        "--tools",
+        help=f"comma-separated tools ({','.join(ALL_TOOLS)}; default {','.join(TOOLS)})",
+    )
     r.add_argument("--out", help="also write the results table (Markdown) here")
     o = sub.add_parser("op", help=argparse.SUPPRESS)
     o.add_argument("tool")
