@@ -372,15 +372,19 @@ fn write_batches(
     let props = writer_properties(&schema, metadata, settings)?;
     let file = File::create(path)?;
     let mut writer = crate::files::writer::ParallelWriter::new(file, schema.clone(), props)?;
-    for batch in batches {
+    let mut batches = batches;
+    while let Some(batch) = crate::profile::time("save: waiting for rows", || batches.next()) {
         let batch = batch?;
-        writer.write(&RecordBatch::try_new_with_options(
+        let batch = RecordBatch::try_new_with_options(
             schema.clone(),
             batch.columns().to_vec(),
             &arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
-        )?)?;
+        )?;
+        crate::profile::time("save: handing rows to the encoders", || {
+            writer.write(&batch)
+        })?;
     }
-    writer.close()?;
+    crate::profile::time("save: finishing the file", || writer.close())?;
     Ok(())
 }
 

@@ -8,6 +8,7 @@ pub mod formulas;
 pub mod memory;
 pub mod model;
 mod parallel;
+pub mod profile;
 pub mod stats;
 pub mod steps;
 pub mod transforms;

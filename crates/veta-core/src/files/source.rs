@@ -335,7 +335,9 @@ impl PagedSource {
     }
 
     fn load_chunk(&self, index: usize) -> Result<RecordBatch> {
-        self.load_chunk_columns(index, None)
+        crate::profile::time("read: decode chunk", || {
+            self.load_chunk_columns(index, None)
+        })
     }
 
     /// Decodes chunk `index`, only the top-level columns `columns` if given

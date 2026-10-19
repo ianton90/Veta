@@ -183,7 +183,17 @@ where
 pub fn run(command: Command) -> ExitCode {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    match execute(command, &mut out) {
+    let start = std::time::Instant::now();
+    let result = execute(command, &mut out);
+    // With VETA_PROFILE set: where the time went.
+    if let Some(report) = veta_core::profile::report() {
+        eprint!(
+            "{report}  {:<40} {:>9.2} s\n",
+            "total",
+            start.elapsed().as_secs_f64()
+        );
+    }
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         // Broken pipe (e.g. `veta-cli head f | head -1`) is not an error.
         Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,

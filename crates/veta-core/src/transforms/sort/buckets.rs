@@ -91,10 +91,14 @@ pub(crate) fn sort_buckets(
             Plan::for_input(per_row.saturating_mul(num_rows))
         }
     };
-    let cuts = cut_keys(&sorter, num_rows, read_keys, plan.buckets.max(1))?;
-    let buckets = fill_buckets(
-        &sorter, schema, &cuts, num_rows, read, batch_rows, plan, progress,
-    )?;
+    let cuts = crate::profile::time("sort: sample keys", || {
+        cut_keys(&sorter, num_rows, read_keys, plan.buckets.max(1))
+    })?;
+    let buckets = crate::profile::time("sort: filling buckets (wall)", || {
+        fill_buckets(
+            &sorter, schema, &cuts, num_rows, read, batch_rows, plan, progress,
+        )
+    })?;
     Ok(Sorted::start(sorter, schema.clone(), buckets))
 }
 
@@ -214,10 +218,10 @@ fn fill_buckets(
                         return;
                     };
                     let bytes = batch.get_array_memory_size();
-                    if done
-                        .send((i, split(sorter, cuts, count, &batch), bytes))
-                        .is_err()
-                    {
+                    let split = crate::profile::time("sort: split into buckets (threads)", || {
+                        split(sorter, cuts, count, &batch)
+                    });
+                    if done.send((i, split, bytes)).is_err() {
                         return;
                     }
                 }
@@ -238,7 +242,7 @@ fn fill_buckets(
         let mut read_all = || -> Result<()> {
             while start < num_rows {
                 let end = (start + batch_rows).min(num_rows);
-                let batch = read(start..end)?;
+                let batch = crate::profile::time("sort: read input", || read(start..end))?;
                 jobs.as_ref()
                     .and_then(|jobs| jobs.send((sent, batch)).ok())
                     .ok_or_else(|| Error::InvalidCommand("sorting failed".into()))?;
@@ -308,6 +312,10 @@ impl Filler<'_> {
     /// bucket is a few compact batches rather than a slice of every input
     /// batch, and the input batches can be freed.
     fn compact(&mut self) -> Result<()> {
+        crate::profile::time("sort: compact buckets", || self.compact_now())
+    }
+
+    fn compact_now(&mut self) -> Result<()> {
         let work: Vec<(usize, Vec<RecordBatch>)> = self
             .buckets
             .iter_mut()
@@ -328,6 +336,10 @@ impl Filler<'_> {
 
     /// Writes each bucket's rows in memory to a new part file, on all cores.
     fn flush(&mut self) -> Result<()> {
+        crate::profile::time("sort: write bucket parts", || self.flush_now())
+    }
+
+    fn flush_now(&mut self) -> Result<()> {
         let work: Vec<(usize, Vec<RecordBatch>)> = self
             .buckets
             .iter_mut()
@@ -419,6 +431,7 @@ impl Iterator for Sorted {
             if self.next >= self.count {
                 return None;
             }
+            let waiting = std::time::Instant::now();
             let sorted = loop {
                 if let Some(sorted) = self.early.remove(&self.next) {
                     break sorted;
@@ -430,6 +443,7 @@ impl Iterator for Sorted {
                     Err(_) => break Err(Error::InvalidCommand("sorting failed".into())),
                 }
             };
+            crate::profile::add("sort: output waiting for buckets", waiting.elapsed());
             self.next += 1;
             self.gate.take(self.next);
             match sorted {
@@ -479,6 +493,7 @@ impl Gate {
 /// One bucket's rows, sorted, in batches of at most [`OUTPUT_ROWS`].
 fn sort_bucket(sorter: &Sorter, schema: &SchemaRef, bucket: Bucket) -> Result<Vec<RecordBatch>> {
     let mut batches = Vec::new();
+    let reading = std::time::Instant::now();
     for part in &bucket.parts {
         let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(part.path())?)?
             .with_batch_size(OUTPUT_ROWS)
@@ -491,6 +506,7 @@ fn sort_bucket(sorter: &Sorter, schema: &SchemaRef, bucket: Bucket) -> Result<Ve
             )?);
         }
     }
+    crate::profile::add("sort: read bucket parts (threads)", reading.elapsed());
     batches.extend(bucket.memory);
     if bucket.single_key || batches.is_empty() {
         return Ok(batches);
@@ -498,10 +514,15 @@ fn sort_bucket(sorter: &Sorter, schema: &SchemaRef, bucket: Bucket) -> Result<Ve
     // One batch first: a bucket in memory is made of a small slice of
     // every input batch, too many to gather rows from one by one.
     let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
-    let bucket = concat_batches(schema, &batches)?;
+    let bucket = crate::profile::time("sort: join bucket (threads)", || {
+        concat_batches(schema, &batches)
+    })?;
     drop(batches);
-    let order = sorted_order(&[sorter.rows(&bucket)?]);
-    let sorted = take_record_batch(&bucket, &UInt32Array::from(order))?;
+    let keys = crate::profile::time("sort: bucket keys (threads)", || sorter.rows(&bucket))?;
+    let order = crate::profile::time("sort: order bucket (threads)", || sorted_order(&[keys]));
+    let sorted = crate::profile::time("sort: gather bucket (threads)", || {
+        take_record_batch(&bucket, &UInt32Array::from(order))
+    })?;
     drop(bucket);
     Ok((0..rows)
         .step_by(OUTPUT_ROWS)

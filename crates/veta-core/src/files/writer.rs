@@ -211,6 +211,21 @@ impl Drop for Workers {
     }
 }
 
+/// Adds its lifetime to a profile part (see [`crate::profile`]).
+struct Timer(&'static str, std::time::Instant);
+
+impl Timer {
+    fn new(name: &'static str) -> Self {
+        Self(name, std::time::Instant::now())
+    }
+}
+
+impl Drop for Timer {
+    fn drop(&mut self) {
+        crate::profile::add(self.0, self.1.elapsed());
+    }
+}
+
 /// An encoding thread's loop: runs until its sender is dropped.
 fn work(jobs: Receiver<Job>) {
     let mut writers: Vec<ArrowColumnWriter> = Vec::new();
@@ -219,6 +234,7 @@ fn work(jobs: Receiver<Job>) {
         match job {
             Job::Start(new) => writers = new,
             Job::Write(leaves) => {
+                let _timer = Timer::new("save: encoding columns (threads)");
                 if error.is_none() {
                     for (writer, leaf) in writers.iter_mut().zip(&leaves) {
                         if let Err(e) = writer.write(leaf) {

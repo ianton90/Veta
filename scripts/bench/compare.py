@@ -223,7 +223,7 @@ def warm(path: Path) -> None:
             pass
 
 
-def measure(command: list[str]) -> tuple[float, float, int]:
+def measure(command: list[str], profile: bool = False) -> tuple[float, float, int]:
     """Runs `command`; returns wall seconds, peak memory in MB and the exit
     code. The peak is the operating system's count where it has one (Linux,
     macOS), else the resident size polled every 20 ms with psutil."""
@@ -233,6 +233,8 @@ def measure(command: list[str]) -> tuple[float, float, int]:
     # UTF-8 output in child Pythons: polars prints tables with box-drawing
     # characters that Windows' default console encoding can't write.
     env = dict(os.environ, PYTHONUTF8="1")
+    if profile:
+        env["VETA_PROFILE"] = "1"
     proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
     ps = psutil.Process(proc.pid)
     peak = 0
@@ -260,6 +262,11 @@ def measure(command: list[str]) -> tuple[float, float, int]:
     seconds = time.perf_counter() - start
     if code != 0:
         sys.stderr.write(proc.stderr.read().decode(errors="replace")[-2000:])
+    elif profile:
+        # veta-cli's timings (VETA_PROFILE), printed to its stderr.
+        text = proc.stderr.read().decode(errors="replace")
+        report = text[text.find("VETA_PROFILE"):] if "VETA_PROFILE" in text else ""
+        sys.stdout.write(report)
     return seconds, peak / 1e6, code
 
 
@@ -290,7 +297,7 @@ def run(args: argparse.Namespace) -> None:
                 else:
                     command = [sys.executable, __file__, "op", tool, op, str(input_file), str(out)]
                 warm(Path(input_file))
-                seconds, mb, code = measure(command)
+                seconds, mb, code = measure(command, args.profile and tool == "veta")
                 results[op][tool] = (seconds, mb, code)
                 status = "" if code == 0 else f"  (failed, exit {code})"
                 print(f"{op:9} {tool:7} {seconds:8.2f} s {mb:9.0f} MB{status}", flush=True)
@@ -357,6 +364,9 @@ def main() -> None:
         help=f"comma-separated tools ({','.join(ALL_TOOLS)}; default {','.join(TOOLS)})",
     )
     r.add_argument("--out", help="also write the results table (Markdown) here")
+    r.add_argument(
+        "--profile", action="store_true", help="print where veta-cli spent its time"
+    )
     o = sub.add_parser("op", help=argparse.SUPPRESS)
     o.add_argument("tool")
     o.add_argument("op")
