@@ -3,8 +3,9 @@
 //! Rows go to their bucket as they are read; then each bucket is sorted on
 //! its own, on all cores, and the buckets come out in order. Nothing is
 //! merged, and each sort works on a bucket small enough to stay mostly in
-//! the CPU's cache. Buckets are written to temporary files in parts as they
-//! fill up.
+//! the CPU's cache. Buckets stay in memory, compacted as they fill up, when
+//! the input fits half the memory budget; otherwise they are written to
+//! temporary files in parts.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
@@ -25,8 +26,8 @@ use crate::steps::checkpoint::{TempFile, write_part};
 /// Decoded size of a bucket to aim for.
 const BUCKET_BYTES: usize = 48 * 1024 * 1024;
 const MAX_BUCKETS: usize = 4096;
-/// Most bytes held in buckets before they are written to part files.
-const FLUSH_BYTES: usize = 1024 * 1024 * 1024;
+/// Buckets in memory are compacted after this many input batches.
+const COMPACT_EVERY: usize = 64;
 /// Keys are sampled in this many windows of this many rows, spread over
 /// the input.
 const SAMPLE_WINDOWS: usize = 64;
@@ -43,18 +44,15 @@ pub(crate) struct Plan {
 }
 
 impl Plan {
-    /// The plan for an input of about `bytes` decoded bytes. Buckets are
-    /// written to part files at least every [`FLUSH_BYTES`] (less with a
-    /// small memory budget): keeping a large input in memory as bucket
-    /// slices measured much slower (memory spread over thousands of
-    /// buffers, and gigabytes allocated and freed at once), while parts
-    /// are read back as a few large batches.
+    /// The plan for an input of about `bytes` decoded bytes: buckets in
+    /// memory when it fits half the memory budget, otherwise written to
+    /// part files whenever they hold a quarter of it.
     fn for_input(bytes: usize) -> Self {
         let threads = crate::parallel::threads();
         let budget = crate::memory::budget();
         Self {
             buckets: (bytes / BUCKET_BYTES).clamp(2 * threads, MAX_BUCKETS),
-            flush_bytes: Some((budget / 4).clamp(crate::memory::MIN_BUDGET, FLUSH_BYTES)),
+            flush_bytes: (bytes > budget / 2).then(|| (budget / 4).max(crate::memory::MIN_BUDGET)),
         }
     }
 }
@@ -65,6 +63,9 @@ impl Plan {
 struct Bucket {
     parts: Vec<TempFile>,
     memory: Vec<RecordBatch>,
+    /// How many of the first `memory` batches are compacted copies; the
+    /// rest are slices of input batches.
+    compacted: usize,
     /// Holds a single key value (or only nulls): already in order.
     single_key: bool,
 }
@@ -230,6 +231,7 @@ fn fill_buckets(
             early: BTreeMap::new(),
             next: 0,
             held: 0,
+            since_compact: 0,
         };
         let mut sent = 0;
         let mut start = 0;
@@ -276,6 +278,8 @@ struct Filler<'a> {
     next: usize,
     /// Bytes held in memory since the last flush.
     held: usize,
+    /// Input batches added since the buckets were last compacted.
+    since_compact: usize,
 }
 
 impl Filler<'_> {
@@ -290,10 +294,35 @@ impl Filler<'_> {
             }
             self.held += bytes;
             self.next += 1;
+            self.since_compact += 1;
             if self.flush_bytes.is_some_and(|limit| self.held > limit) {
                 self.flush()?;
+            } else if self.since_compact >= COMPACT_EVERY {
+                self.compact()?;
             }
         }
+        Ok(())
+    }
+
+    /// Copies each bucket's new slices into one batch, on all cores, so a
+    /// bucket is a few compact batches rather than a slice of every input
+    /// batch, and the input batches can be freed.
+    fn compact(&mut self) -> Result<()> {
+        let work: Vec<(usize, Vec<RecordBatch>)> = self
+            .buckets
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, b)| b.memory.len() > b.compacted + 1)
+            .map(|(i, b)| (i, b.memory.split_off(b.compacted)))
+            .collect();
+        let batches =
+            crate::parallel::map(work.len(), |k| Ok(concat_batches(self.schema, &work[k].1)?))?;
+        for ((b, _), batch) in work.into_iter().zip(batches) {
+            let bucket = &mut self.buckets[b];
+            bucket.memory.push(batch);
+            bucket.compacted = bucket.memory.len();
+        }
+        self.since_compact = 0;
         Ok(())
     }
 
@@ -304,7 +333,10 @@ impl Filler<'_> {
             .iter_mut()
             .enumerate()
             .filter(|(_, b)| !b.memory.is_empty())
-            .map(|(i, b)| (i, std::mem::take(&mut b.memory)))
+            .map(|(i, b)| {
+                b.compacted = 0;
+                (i, std::mem::take(&mut b.memory))
+            })
             .collect();
         let files = crate::parallel::map(work.len(), |k| {
             let file = TempFile::new()?;
