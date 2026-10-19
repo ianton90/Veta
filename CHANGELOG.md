@@ -4,9 +4,11 @@ Versions follow [Semantic Versioning](https://semver.org): `MAJOR.MINOR.PATCH`.
 Each build also carries a build number (shown in About and `--version`).
 While the major version is 0, minor versions may change behaviour.
 
-## 0.3.0 — first release
+## 0.4.0 — first release
 
-0.1.0 and 0.2.0 were never released; their work ships in 0.3.0.
+0.1.0 to 0.3.0 were never released; their work ships in 0.4.0. 0.4.0 marks
+the switch to the mimalloc allocator, which made large operations several
+times faster on Windows.
 
 **Desktop app (`veta`)**
 - Open several Parquet files as tabs, including files larger than memory
@@ -62,7 +64,11 @@ While the major version is 0, minor versions may change behaviour.
 - Large files are read, filtered, sorted, converted and saved on all
   cores, with memory bounded; a last filter or sort writes straight into
   the saved file. `scripts/bench/compare.py` compares `veta-cli` with
-  pandas and polars.
+  pandas and polars (`--profile` shows where Veta spends its time).
+- Sorts split rows by key range and sort the ranges on all cores.
+- A memory budget (half of RAM by default; Settings, `--memory`).
+- The mimalloc allocator: on Windows the system allocator made large
+  sorts and saves several times slower.
 
 **Known limits**
 - macOS packages must be built on a Mac and are unsigned.
