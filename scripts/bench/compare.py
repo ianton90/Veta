@@ -226,7 +226,10 @@ def measure(command: list[str]) -> tuple[float, float, int]:
     import psutil
 
     start = time.perf_counter()
-    proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    # UTF-8 output in child Pythons: polars prints tables with box-drawing
+    # characters that Windows' default console encoding can't write.
+    env = dict(os.environ, PYTHONUTF8="1")
+    proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
     ps = psutil.Process(proc.pid)
     peak = 0
     code = None
@@ -301,7 +304,7 @@ def run(args: argparse.Namespace) -> None:
     print()
     print(report)
     if args.out:
-        Path(args.out).write_text(report)
+        Path(args.out).write_text(report, encoding="utf-8")
 
 
 def format_report(src: Path, results: dict, tools: list[str]) -> str:
@@ -332,6 +335,10 @@ def format_report(src: Path, results: dict, tools: list[str]) -> str:
 
 
 def main() -> None:
+    # The report uses × and –, which Windows' default console encoding lacks.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     g = sub.add_parser("generate", help="write a test file")
