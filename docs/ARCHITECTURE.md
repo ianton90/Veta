@@ -178,8 +178,9 @@ Document
 - Paged sorts sort by key range (`transforms/sort/buckets.rs`): sampled
   keys cut the range into buckets of ~48 MB, rows go to their bucket as
   they are read, and buckets are sorted on all cores and come out in order
-  (no merge). Buckets stay in memory when the input fits half the budget;
-  otherwise they go to temporary files whenever they hold a quarter of it.
+  (no merge). Buckets go to temporary part files whenever they hold 1 GB
+  (a quarter of the budget when that is less): kept in memory as slices of
+  every input batch, a large input sorted far slower.
 - Both expose the same trait: schema, row count, `read(range) -> RecordBatch`.
 
 ### Steps

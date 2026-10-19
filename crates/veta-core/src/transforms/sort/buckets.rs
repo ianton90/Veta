@@ -3,8 +3,8 @@
 //! Rows go to their bucket as they are read; then each bucket is sorted on
 //! its own, on all cores, and the buckets come out in order. Nothing is
 //! merged, and each sort works on a bucket small enough to stay mostly in
-//! the CPU's cache. Buckets stay in memory when the input fits the memory
-//! budget; otherwise they are written to temporary files in parts.
+//! the CPU's cache. Buckets are written to temporary files in parts as they
+//! fill up.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
@@ -12,11 +12,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, channel, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
 
-use arrow::array::{Array, UInt32Array};
-use arrow::compute::{interleave, take_record_batch};
+use arrow::array::UInt32Array;
+use arrow::compute::{concat_batches, take_record_batch};
 use arrow::datatypes::SchemaRef;
-use arrow::record_batch::{RecordBatch, RecordBatchOptions};
-use arrow::row::Rows;
+use arrow::record_batch::RecordBatch;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use super::{OUTPUT_ROWS, ReadInput, Sort, Sorter, sorted_order};
@@ -26,6 +25,8 @@ use crate::steps::checkpoint::{TempFile, write_part};
 /// Decoded size of a bucket to aim for.
 const BUCKET_BYTES: usize = 48 * 1024 * 1024;
 const MAX_BUCKETS: usize = 4096;
+/// Most bytes held in buckets before they are written to part files.
+const FLUSH_BYTES: usize = 1024 * 1024 * 1024;
 /// Keys are sampled in this many windows of this many rows, spread over
 /// the input.
 const SAMPLE_WINDOWS: usize = 64;
@@ -42,14 +43,18 @@ pub(crate) struct Plan {
 }
 
 impl Plan {
-    /// The plan for an input of about `bytes` decoded bytes: in memory when
-    /// it fits half the memory budget.
+    /// The plan for an input of about `bytes` decoded bytes. Buckets are
+    /// written to part files at least every [`FLUSH_BYTES`] (less with a
+    /// small memory budget): keeping a large input in memory as bucket
+    /// slices measured much slower (memory spread over thousands of
+    /// buffers, and gigabytes allocated and freed at once), while parts
+    /// are read back as a few large batches.
     fn for_input(bytes: usize) -> Self {
         let threads = crate::parallel::threads();
         let budget = crate::memory::budget();
         Self {
             buckets: (bytes / BUCKET_BYTES).clamp(2 * threads, MAX_BUCKETS),
-            flush_bytes: (bytes > budget / 2).then(|| (budget / 4).max(crate::memory::MIN_BUDGET)),
+            flush_bytes: Some((budget / 4).clamp(crate::memory::MIN_BUDGET, FLUSH_BYTES)),
         }
     }
 }
@@ -458,42 +463,16 @@ fn sort_bucket(sorter: &Sorter, schema: &SchemaRef, bucket: Bucket) -> Result<Ve
     if bucket.single_key || batches.is_empty() {
         return Ok(batches);
     }
-    let keys = batches
-        .iter()
-        .map(|b| sorter.rows(b))
-        .collect::<Result<Vec<Rows>>>()?;
-    let order = sorted_order(&keys);
-    drop(keys);
-    let mut starts = Vec::with_capacity(batches.len());
-    let mut next = 0;
-    for b in &batches {
-        starts.push(next);
-        next += b.num_rows();
-    }
-    order
-        .chunks(OUTPUT_ROWS)
-        .map(|chunk| {
-            let picks: Vec<(usize, usize)> = chunk
-                .iter()
-                .map(|&row| {
-                    let row = row as usize;
-                    let batch = starts.partition_point(|&s| s <= row) - 1;
-                    (batch, row - starts[batch])
-                })
-                .collect();
-            let columns = (0..schema.fields().len())
-                .map(|c| {
-                    let arrays: Vec<&dyn Array> =
-                        batches.iter().map(|b| b.column(c).as_ref()).collect();
-                    Ok(interleave(&arrays, &picks)?)
-                })
-                .collect::<Result<Vec<_>>>()?;
-            let options = RecordBatchOptions::new().with_row_count(Some(picks.len()));
-            Ok(RecordBatch::try_new_with_options(
-                schema.clone(),
-                columns,
-                &options,
-            )?)
-        })
-        .collect()
+    // One batch first: a bucket in memory is made of a small slice of
+    // every input batch, too many to gather rows from one by one.
+    let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
+    let bucket = concat_batches(schema, &batches)?;
+    drop(batches);
+    let order = sorted_order(&[sorter.rows(&bucket)?]);
+    let sorted = take_record_batch(&bucket, &UInt32Array::from(order))?;
+    drop(bucket);
+    Ok((0..rows)
+        .step_by(OUTPUT_ROWS)
+        .map(|start| sorted.slice(start, OUTPUT_ROWS.min(rows - start)))
+        .collect())
 }
