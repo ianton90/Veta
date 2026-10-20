@@ -219,6 +219,8 @@ fn collect_columns_into_lists() {
             ]
         )
     );
+    // It names the columns the result leaves out.
+    assert_eq!(dialog.dropped(), ["id", "flag"]);
 }
 
 #[test]

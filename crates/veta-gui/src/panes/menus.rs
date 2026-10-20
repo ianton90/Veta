@@ -276,13 +276,13 @@ pub fn menu_sections(
     if matches!(target, MenuTarget::Column(_)) {
         nested_entries.push(entry(
             Icon::Group,
-            "Combine into struct…",
+            "Columns → struct…",
             "",
             MenuItem::CombineStruct,
         ));
         nested_entries.push(entry(
             Icon::ListCollapse,
-            "Collect into lists…",
+            "Rows → lists…",
             "",
             MenuItem::CollectList,
         ));
@@ -375,32 +375,36 @@ pub fn context_menu<'a>(
         .into()
 }
 
-/// Expand/explode entries for a column of `column_type`.
+/// Flatten and add entries for a column of `column_type` (named like the
+/// Nested tab's commands).
 fn nested_items(
     column_type: Option<&DataType>,
 ) -> Vec<Option<(Icon, String, &'static str, MenuItem)>> {
     match column_type {
         Some(DataType::Struct(fields)) => {
-            let mut items = vec![
-                Some((
-                    Icon::ListTree,
-                    "Expand fields to columns".into(),
-                    "",
-                    MenuItem::ExpandStruct,
-                )),
-                Some((Icon::Plus, "Add field…".into(), "", MenuItem::AddField)),
-            ];
+            let mut items = vec![Some((
+                Icon::ListTree,
+                "Struct → columns".into(),
+                "",
+                MenuItem::ExpandStruct,
+            ))];
             if fields
                 .iter()
                 .any(|f| matches!(f.data_type(), DataType::Struct(_)))
             {
                 items.push(Some((
-                    Icon::ListTree,
-                    "Expand all levels".into(),
+                    Icon::Layers,
+                    "All levels → columns".into(),
                     "",
                     MenuItem::ExpandAll,
                 )));
             }
+            items.push(Some((
+                Icon::Plus,
+                "Add field…".into(),
+                "",
+                MenuItem::AddField,
+            )));
             items
         }
         Some(
@@ -408,22 +412,25 @@ fn nested_items(
             | DataType::LargeList(_)
             | DataType::FixedSizeList(..)
             | DataType::Map(..),
-        ) => vec![
-            (!matches!(column_type, Some(DataType::FixedSizeList(..)))).then(|| {
-                let label = if matches!(column_type, Some(DataType::Map(..))) {
-                    "Add entry at the end"
-                } else {
-                    "Add item at the end"
-                };
-                (Icon::Plus, label.into(), "", MenuItem::AddInside)
-            }),
-            Some((
-                Icon::Rows,
-                "Explode to rows".into(),
-                "",
-                MenuItem::ExplodeList,
-            )),
-        ],
+        ) => {
+            let map = matches!(column_type, Some(DataType::Map(..)));
+            vec![
+                Some((
+                    Icon::Rows,
+                    if map { "Map → rows" } else { "List → rows" }.into(),
+                    "",
+                    MenuItem::ExplodeList,
+                )),
+                (!matches!(column_type, Some(DataType::FixedSizeList(..)))).then(|| {
+                    let label = if map {
+                        "Add entry at the end"
+                    } else {
+                        "Add item at the end"
+                    };
+                    (Icon::Plus, label.into(), "", MenuItem::AddInside)
+                }),
+            ]
+        }
         _ => Vec::new(),
     }
 }

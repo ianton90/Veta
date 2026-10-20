@@ -1,4 +1,4 @@
-//! Collect columns into lists.
+//! Rows → Lists: collect columns into lists, one row per group.
 
 use super::*;
 use iced::widget::column;
@@ -56,6 +56,15 @@ impl CollectDialog {
         None
     }
 
+    /// The columns left out of the result: neither keys nor collected.
+    pub fn dropped(&self) -> Vec<&str> {
+        self.keys
+            .iter()
+            .filter(|(_, on)| !on)
+            .map(|(name, _)| name.as_str())
+            .collect()
+    }
+
     pub fn view(&self, tokens: Tokens) -> Element<'_, CollectMessage> {
         let list = column(self.keys.iter().enumerate().map(|(i, (name, on))| {
             checkbox(*on)
@@ -65,17 +74,29 @@ impl CollectDialog {
         }))
         .spacing(6);
         let mut body = column![
-            text("Collect into lists").size(20),
-            text(self.columns.join(", ")).color(tokens.muted_text),
+            text("Rows → Lists").size(20),
+            text(format!("Collect into lists: {}", self.columns.join(", ")))
+                .color(tokens.muted_text),
             text("Group by"),
             iced::widget::container(scrollable(list)).max_height(220.0),
-            text(
-                "One row per group, ordered by the group columns. \
-                 Other columns are dropped."
-            )
-            .color(tokens.muted_text),
+            text("One row per group of equal values, ordered by the group columns.")
+                .color(tokens.muted_text),
         ]
         .spacing(14);
+        let dropped = self.dropped();
+        if !dropped.is_empty() {
+            body = body.push(
+                row![
+                    text("Dropped:").font(crate::app::bold()),
+                    text(dropped.join(", ")).width(Length::Fill),
+                ]
+                .spacing(6),
+            );
+            body = body.push(
+                text("Columns neither grouped by nor collected are left out.")
+                    .color(tokens.muted_text),
+            );
+        }
         if let Some(error) = &self.error {
             body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
         }

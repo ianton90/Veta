@@ -1,4 +1,4 @@
-//! Combine columns into a struct column.
+//! Columns → Struct: combine columns into a struct column.
 
 use super::*;
 use iced::widget::column;
@@ -46,8 +46,12 @@ impl CombineDialog {
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, CombineMessage> {
         let mut body = column![
-            text("Combine into struct").size(20),
-            text(self.columns.join(", ")).color(tokens.muted_text),
+            text("Columns → Struct").size(20),
+            text(format!(
+                "Combine into a struct: {}",
+                self.columns.join(", ")
+            ))
+            .color(tokens.muted_text),
             row![
                 text("New column").width(90),
                 text_input("Column name", &self.name)

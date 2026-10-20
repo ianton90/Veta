@@ -85,6 +85,59 @@ impl Action {
             _ => None,
         }
     }
+
+    /// A longer tooltip for commands whose label alone doesn't say enough.
+    fn help(self) -> Option<Help> {
+        let help = |text, before, after| {
+            Some(Help {
+                text,
+                before,
+                after,
+            })
+        };
+        match self {
+            Action::ExpandStruct => help(
+                "Replaces a struct column with one column per field. This changes \
+                 the file; to just look at the fields, use the arrow in the column \
+                 header.",
+                "point\n{x: 1, y: 2}",
+                "point.x  point.y\n1        2",
+            ),
+            Action::ExpandAll => help(
+                "Like Struct → Columns, and also flattens the structs inside it, \
+                 down to the last level.",
+                "a\n{x: 1, b: {y: 2}}",
+                "a.x  a.b.y\n1    2",
+            ),
+            Action::ExplodeList => help(
+                "One row per item of a list column (or entry of a map); the other \
+                 columns repeat on each row. Empty and null lists keep one row.",
+                "id  tags\n1   [p, q]",
+                "id  tags\n1   p\n1   q",
+            ),
+            Action::CombineStruct => help(
+                "Puts the selected columns into one new struct column, each as a \
+                 field. Undoes Struct → Columns.",
+                "point.x  point.y\n1        2",
+                "point\n{x: 1, y: 2}",
+            ),
+            Action::CollectList => help(
+                "Groups the rows with equal values in the columns you pick and turns \
+                 the selected columns into lists, one row per group. Other columns \
+                 are dropped. Undoes List → Rows.",
+                "id  tags\n1   p\n1   q",
+                "id  tags\n1   [p, q]",
+            ),
+            _ => None,
+        }
+    }
+}
+
+/// What a command does, with a small example of a table before and after.
+struct Help {
+    text: &'static str,
+    before: &'static str,
+    after: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -313,20 +366,22 @@ fn groups(tab: Tab) -> Vec<Group> {
             // Empty until the function library (#74).
             group("Calculate", vec![]),
         ],
+        // Each command is named by what it turns into what; "Nest" undoes
+        // "Flatten" in the same order.
         Tab::Nested => vec![
             group(
-                "Structs",
+                "Flatten",
                 vec![
-                    large(A::ExpandStruct, "Expand", Icon::ListTree),
-                    large(A::ExpandAll, "Expand All Levels", Icon::Layers),
-                    large(A::CombineStruct, "Combine", Icon::Group),
+                    large(A::ExpandStruct, "Struct → Columns", Icon::ListTree),
+                    large(A::ExplodeList, "List → Rows", Icon::Rows),
+                    large(A::ExpandAll, "All Levels → Columns", Icon::Layers),
                 ],
             ),
             group(
-                "Lists and Maps",
+                "Nest",
                 vec![
-                    large(A::ExplodeList, "Explode to Rows", Icon::Rows),
-                    large(A::CollectList, "Collect into Lists", Icon::ListCollapse),
+                    large(A::CombineStruct, "Columns → Struct", Icon::Group),
+                    large(A::CollectList, "Rows → Lists", Icon::ListCollapse),
                 ],
             ),
         ],
@@ -635,11 +690,46 @@ fn item_button<'a, Message: Clone + 'a>(
         Some(shortcut) => format!("{} ({shortcut})", item.label),
         None => item.label.to_owned(),
     };
-    tooltip(b, tip(tip_text), tooltip::Position::Bottom)
+    let content: Element<'a, Message> = match item.action.help() {
+        Some(help) => help_view(tip_text, help, tokens),
+        None => tip(tip_text).into(),
+    };
+    tooltip(b, content, tooltip::Position::Bottom)
         .gap(4)
         .padding(6)
         .style(move |_theme: &Theme| tooltip_style(tokens))
         .into()
+}
+
+/// A command's title, what it does, and its example: the table before, an
+/// arrow and the table after.
+fn help_view<'a, Message: 'a>(title: String, help: Help, tokens: Tokens) -> Element<'a, Message> {
+    let table = |rows: &'static str| {
+        container(text(rows).size(12).font(iced::Font::MONOSPACE))
+            .padding([4, 8])
+            .style(move |_theme: &Theme| {
+                container::Style::default()
+                    .background(tokens.surface)
+                    .border(Border {
+                        color: tokens.border,
+                        width: 1.0,
+                        radius: 3.0.into(),
+                    })
+            })
+    };
+    column![
+        tip(title).font(crate::app::bold()),
+        tip(help.text).width(300).color(tokens.muted_text),
+        row![
+            table(help.before),
+            tip("→").color(tokens.muted_text),
+            table(help.after),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    ]
+    .spacing(6)
+    .into()
 }
 
 fn tip<'a>(content: impl iced::widget::text::IntoFragment<'a>) -> iced::widget::Text<'a> {
@@ -734,6 +824,15 @@ mod tests {
         ribbon.update(RibbonMessage::SelectTab(Tab::View));
         assert!(!ribbon.collapsed);
         assert_eq!(ribbon.tab, Tab::View);
+    }
+
+    #[test]
+    fn nested_commands_explain_themselves() {
+        for group in groups(Tab::Nested) {
+            for item in group.items {
+                assert!(item.action.help().is_some(), "{} has no help", item.label);
+            }
+        }
     }
 
     #[test]

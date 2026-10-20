@@ -206,12 +206,12 @@ impl Step {
             Step::ExpandStruct {
                 column,
                 all_levels: false,
-            } => format!("Expanded {column}"),
+            } => format!("Flattened {column} into columns"),
             Step::ExpandStruct {
                 column,
                 all_levels: true,
-            } => format!("Expanded {column} (all levels)"),
-            Step::ExplodeList { column } => format!("Exploded {column} into rows"),
+            } => format!("Flattened {column} into columns (all levels)"),
+            Step::ExplodeList { column } => format!("Flattened {column} into rows"),
             Step::AddField {
                 column,
                 path,

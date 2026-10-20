@@ -35,8 +35,9 @@ CSV import and export).
   encoding options; values that don't fit a column's type are kept in an
   error column instead of being dropped.
 - Nested types: structs, lists and maps, nested inside each other to any
-  depth; expand a struct into columns or explode a list into rows; combine
-  columns into a struct or collect them into lists by group; new columns
+  depth. The Nested tab flattens (Struct → Columns, List → Rows, All
+  Levels → Columns) and nests (Columns → Struct, Rows → Lists by group);
+  each command's tooltip explains it with a before/after example. New columns
   and struct fields of any nested type (lists, fixed-size lists, structs,
   maps), built level by level.
   Struct columns open in the grid (header arrow) into editable field
