@@ -2,15 +2,17 @@
 //!
 //! The same files as `parquet::arrow::ArrowWriter` (row groups of at most
 //! the properties' row count, the Arrow schema embedded in the metadata),
-//! but columns are encoded on worker threads that keep running while the
-//! caller produces the next batch, and a row group is still being finished
-//! while the next one starts; the finished column chunks are appended to the
-//! file in order.
+//! but each row group's rows are gathered and then every column chunk is
+//! encoded as a task of its own on a pool of threads. Several row groups
+//! are encoded at once, so the threads stay busy even with few columns or
+//! one column much slower than the rest; the finished chunks are appended
+//! to the file in order.
 
 use std::collections::VecDeque;
 use std::io::Write;
-use std::sync::Arc;
-use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
+use std::panic::AssertUnwindSafe;
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use arrow::datatypes::SchemaRef;
@@ -20,16 +22,10 @@ use parquet::arrow::arrow_writer::{
     compute_leaves,
 };
 use parquet::arrow::{ArrowSchemaConverter, add_encoded_arrow_schema_to_metadata};
-use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 
 use crate::error::{Error, Result};
-
-/// Batches a worker may have queued before `write` waits for it.
-const QUEUED: usize = 2;
-/// Row groups being finished at once before `write` waits for the oldest.
-const FINISHING: usize = 2;
 
 /// Writes record batches to a Parquet file, encoding columns in parallel.
 pub struct ParallelWriter<W: Write + Send> {
@@ -37,14 +33,19 @@ pub struct ParallelWriter<W: Write + Send> {
     factory: ArrowRowGroupWriterFactory,
     schema: SchemaRef,
     max_rows: usize,
-    workers: Workers,
-    leaves: usize,
-    /// Whether the workers hold column writers for the current row group.
-    open: bool,
-    /// Row groups being finished, oldest first: the reply of each worker
-    /// with chunks in it, once received.
-    finishing: VecDeque<Finishing>,
+    pool: Pool,
+    /// The rows of the row group being gathered, and their size in bytes.
+    gathered: Vec<RecordBatch>,
     rows: usize,
+    bytes: usize,
+    /// Row groups being encoded, oldest first.
+    encoding: VecDeque<Encoding>,
+    /// Bytes of the rows of the row groups being encoded.
+    encoding_bytes: usize,
+    /// Most row groups encoded at once, and most bytes of rows they hold
+    /// (more than one row group is let through only within this).
+    max_groups: usize,
+    max_bytes: usize,
     row_groups: usize,
 }
 
@@ -64,43 +65,37 @@ impl<W: Write + Send> ParallelWriter<W> {
             .convert(&schema)?;
         add_encoded_arrow_schema_to_metadata(&schema, &mut props);
         let max_rows = props.max_row_group_row_count().unwrap_or(usize::MAX).max(1);
-        let leaves = parquet_schema.num_columns();
         let writer =
             SerializedFileWriter::new(out, parquet_schema.root_schema_ptr(), Arc::new(props))?;
         let factory = ArrowRowGroupWriterFactory::new(&writer, schema.clone());
-        // More workers than cores: columns cost very different amounts to
-        // encode, and the system balances threads better than a fixed split.
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-        let count = leaves.min(4 * threads);
+        let threads = crate::parallel::threads();
         Ok(Self {
             writer,
             factory,
             schema,
             max_rows,
-            workers: Workers::spawn(count),
-            leaves,
-            open: false,
-            finishing: VecDeque::new(),
+            pool: Pool::spawn(threads.min(parquet_schema.num_columns()).max(1)),
+            gathered: Vec::new(),
             rows: 0,
+            bytes: 0,
+            encoding: VecDeque::new(),
+            encoding_bytes: 0,
+            max_groups: threads.max(2),
+            max_bytes: crate::memory::budget() / 8,
             row_groups: 0,
         })
     }
 
     /// Writes `batch` (with the writer's columns), starting new row groups
-    /// as they fill up. Returns once the columns are queued for encoding.
+    /// as they fill up. Returns once full row groups are queued for
+    /// encoding.
     pub fn write(&mut self, batch: &RecordBatch) -> Result<()> {
+        let size = batch.get_array_memory_size();
         let mut offset = 0;
         while offset < batch.num_rows() {
-            if !self.open {
-                let writers = self.factory.create_column_writers(self.row_groups)?;
-                let mut per_worker = self.workers.split(&self.owner(), writers);
-                for (worker, writers) in per_worker.drain(..).enumerate() {
-                    self.workers.send(worker, Job::Start(writers))?;
-                }
-                self.open = true;
-            }
             let take = (self.max_rows - self.rows).min(batch.num_rows() - offset);
-            self.encode(&batch.slice(offset, take))?;
+            self.gathered.push(batch.slice(offset, take));
+            self.bytes += size * take / batch.num_rows();
             self.rows += take;
             offset += take;
             if self.rows >= self.max_rows {
@@ -110,63 +105,57 @@ impl<W: Write + Send> ParallelWriter<W> {
         Ok(())
     }
 
-    /// Hands `batch`'s leaf columns to their workers.
-    fn encode(&mut self, batch: &RecordBatch) -> Result<()> {
-        let mut leaves: Vec<ArrowLeafColumn> = Vec::with_capacity(self.leaves);
-        for (field, array) in self.schema.fields().iter().zip(batch.columns()) {
-            leaves.extend(compute_leaves(field, array)?);
-        }
-        let mut per_worker = self.workers.split(&self.owner(), leaves);
-        for (worker, leaves) in per_worker.drain(..).enumerate() {
-            self.workers.send(worker, Job::Write(leaves))?;
-        }
-        Ok(())
-    }
-
-    /// Worker encoding each leaf column of the current row group. Each row
-    /// group moves the columns on to other workers, so an expensive column
-    /// of the next row group doesn't wait behind this one's.
-    fn owner(&self) -> Vec<usize> {
-        let count = self.workers.len().max(1);
-        let shift = self.row_groups * self.leaves;
-        (0..self.leaves)
-            .map(|leaf| (leaf + shift) % count)
-            .collect()
-    }
-
-    /// Finishes the current row group, if any: its last pages are encoded
-    /// while the next row group starts, and it is written out once done.
+    /// Queues the gathered row group, if any, one task per leaf column, and
+    /// writes out the row groups finished by then.
     fn flush(&mut self) -> Result<()> {
-        if !self.open {
+        if self.gathered.is_empty() {
             return Ok(());
         }
-        self.open = false;
-        let owner = self.owner();
-        let mut replies = Vec::new();
-        for worker in 0..self.workers.len() {
-            if owner.contains(&worker) {
-                let (reply, receive) = channel();
-                self.workers.send(worker, Job::Close(reply))?;
-                replies.push((worker, receive, None));
+        let writers = self.factory.create_column_writers(self.row_groups)?;
+        let mut leaves: Vec<Vec<ArrowLeafColumn>> = writers.iter().map(|_| Vec::new()).collect();
+        for batch in self.gathered.drain(..) {
+            let mut leaf = 0;
+            for (field, array) in self.schema.fields().iter().zip(batch.columns()) {
+                for column in compute_leaves(field, array)? {
+                    leaves[leaf].push(column);
+                    leaf += 1;
+                }
             }
         }
-        self.finishing.push_back(Finishing { owner, replies });
+        let mut chunks = Vec::with_capacity(writers.len());
+        for (writer, leaves) in writers.into_iter().zip(leaves) {
+            let (reply, receive) = channel();
+            self.pool.send(Task {
+                writer,
+                leaves,
+                reply,
+            })?;
+            chunks.push((receive, None));
+        }
+        self.encoding.push_back(Encoding {
+            bytes: self.bytes,
+            chunks,
+        });
+        self.encoding_bytes += self.bytes;
         self.rows = 0;
+        self.bytes = 0;
         self.row_groups += 1;
-        self.write_finished(FINISHING)
+        self.write_finished(false)
     }
 
-    /// Writes out the finished row groups, oldest first, waiting until at
-    /// most `pending` are left unfinished.
-    fn write_finished(&mut self, pending: usize) -> Result<()> {
+    /// Writes out the finished row groups, oldest first. Waits for the
+    /// oldest while too many are being encoded, or for all of them if
+    /// `all`.
+    fn write_finished(&mut self, all: bool) -> Result<()> {
         loop {
-            let wait = self.finishing.len() > pending;
-            let Some(oldest) = self.finishing.front_mut() else {
+            let wait = all
+                || self.encoding.len() > self.max_groups
+                || (self.encoding.len() > 1 && self.encoding_bytes > self.max_bytes);
+            let Some(oldest) = self.encoding.front_mut() else {
                 return Ok(());
             };
-            let mut done = true;
-            for (_, receive, chunks) in &mut oldest.replies {
-                if chunks.is_some() {
+            for (receive, chunk) in &mut oldest.chunks {
+                if chunk.is_some() {
                     continue;
                 }
                 let reply = if wait {
@@ -174,28 +163,19 @@ impl<W: Write + Send> ParallelWriter<W> {
                 } else {
                     match receive.try_recv() {
                         Ok(reply) => reply,
-                        Err(std::sync::mpsc::TryRecvError::Empty) => {
-                            done = false;
-                            continue;
-                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(()),
                         Err(_) => return Err(failed()),
                     }
                 };
-                *chunks = Some(reply?.into_iter());
+                *chunk = Some(reply?);
             }
-            if !done {
-                return Ok(());
-            }
-            let Finishing { owner, mut replies } =
-                self.finishing.pop_front().expect("the oldest row group");
+            let Encoding { bytes, chunks } = self.encoding.pop_front().expect("the oldest");
+            self.encoding_bytes -= bytes;
             let mut row_group = self.writer.next_row_group()?;
-            for worker in owner {
-                let chunk = replies
-                    .iter_mut()
-                    .find(|(w, _, _)| *w == worker)
-                    .and_then(|(_, _, chunks)| chunks.as_mut()?.next())
-                    .ok_or_else(failed)?;
-                chunk.append_to_row_group(&mut row_group)?;
+            for (_, chunk) in chunks {
+                chunk
+                    .ok_or_else(failed)?
+                    .append_to_row_group(&mut row_group)?;
             }
             row_group.close()?;
         }
@@ -204,80 +184,68 @@ impl<W: Write + Send> ParallelWriter<W> {
     /// Writes the last row group and the file's footer.
     pub fn close(mut self) -> Result<()> {
         self.flush()?;
-        self.write_finished(0)?;
+        self.write_finished(true)?;
         self.writer.close()?;
         Ok(())
     }
 }
 
-/// A row group whose column writers are closing.
-struct Finishing {
-    /// The worker of each leaf column.
-    owner: Vec<usize>,
-    /// Each worker with columns in it, its reply, and its chunks once
-    /// received (in its columns' order).
-    replies: Vec<(
-        usize,
-        Receiver<Reply>,
-        Option<std::vec::IntoIter<ArrowColumnChunk>>,
-    )>,
+/// A row group being encoded.
+struct Encoding {
+    /// Bytes of its rows.
+    bytes: usize,
+    /// Each leaf column's reply, and its chunk once received.
+    chunks: Vec<(Receiver<Reply>, Option<ArrowColumnChunk>)>,
 }
 
-/// A worker's chunks of a row group (or the first error).
-type Reply = parquet::errors::Result<Vec<ArrowColumnChunk>>;
+/// A column chunk (or the error encoding it).
+type Reply = parquet::errors::Result<ArrowColumnChunk>;
 
 fn failed() -> Error {
     Error::InvalidCommand("writing a column failed".into())
 }
 
-/// Work for an encoding thread.
-enum Job {
-    /// The column writers of a new row group.
-    Start(Vec<ArrowColumnWriter>),
-    /// One batch of the worker's columns, in the same order.
-    Write(Vec<ArrowLeafColumn>),
-    /// Closes the writers and sends back their chunks (or the first error).
-    Close(std::sync::mpsc::Sender<Reply>),
+/// Encoding one column chunk: the column's writer and its rows.
+struct Task {
+    writer: ArrowColumnWriter,
+    leaves: Vec<ArrowLeafColumn>,
+    reply: Sender<Reply>,
 }
 
-/// Encoding threads, each owning some of the leaf columns.
-struct Workers {
-    threads: Vec<(SyncSender<Job>, JoinHandle<()>)>,
+/// Encoding threads taking tasks from a shared queue, in order.
+struct Pool {
+    tasks: Option<Sender<Task>>,
+    threads: Vec<JoinHandle<()>>,
 }
 
-impl Workers {
+impl Pool {
     fn spawn(count: usize) -> Self {
+        let (send, receive) = channel::<Task>();
+        let receive = Arc::new(Mutex::new(receive));
         let threads = (0..count)
             .map(|_| {
-                let (send, receive) = sync_channel(QUEUED);
-                (send, std::thread::spawn(move || work(receive)))
+                let receive = receive.clone();
+                std::thread::spawn(move || work(&receive))
             })
             .collect();
-        Self { threads }
-    }
-
-    fn len(&self) -> usize {
-        self.threads.len()
-    }
-
-    /// Distributes `items` (one per leaf) to their owners, keeping order.
-    fn split<T>(&self, owner: &[usize], items: Vec<T>) -> Vec<Vec<T>> {
-        let mut per_worker: Vec<Vec<T>> = (0..self.len()).map(|_| Vec::new()).collect();
-        for (item, &worker) in items.into_iter().zip(owner) {
-            per_worker[worker].push(item);
+        Self {
+            tasks: Some(send),
+            threads,
         }
-        per_worker
     }
 
-    fn send(&self, worker: usize, job: Job) -> Result<()> {
-        self.threads[worker].0.send(job).map_err(|_| failed())
+    fn send(&self, task: Task) -> Result<()> {
+        self.tasks
+            .as_ref()
+            .and_then(|tasks| tasks.send(task).ok())
+            .ok_or_else(failed)
     }
 }
 
-impl Drop for Workers {
+impl Drop for Pool {
     fn drop(&mut self) {
-        for (send, thread) in self.threads.drain(..) {
-            drop(send);
+        drop(self.tasks.take());
+        for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
     }
@@ -298,32 +266,31 @@ impl Drop for Timer {
     }
 }
 
-/// An encoding thread's loop: runs until its sender is dropped.
-fn work(jobs: Receiver<Job>) {
-    let mut writers: Vec<ArrowColumnWriter> = Vec::new();
-    let mut error: Option<ParquetError> = None;
-    for job in jobs {
-        match job {
-            Job::Start(new) => writers = new,
-            Job::Write(leaves) => {
-                let _timer = Timer::new("save: encoding columns (threads)");
-                if error.is_none() {
-                    for (writer, leaf) in writers.iter_mut().zip(&leaves) {
-                        if let Err(e) = writer.write(leaf) {
-                            error = Some(e);
-                            break;
-                        }
-                    }
-                }
+/// An encoding thread's loop: runs until the pool's sender is dropped. A
+/// task that panics drops its reply, which the writer reports as an error.
+fn work(tasks: &Mutex<Receiver<Task>>) {
+    loop {
+        let task = match tasks.lock() {
+            Ok(tasks) => tasks.recv(),
+            Err(_) => return,
+        };
+        let Ok(Task {
+            mut writer,
+            leaves,
+            reply,
+        }) = task
+        else {
+            return;
+        };
+        let _timer = Timer::new("save: encoding columns (threads)");
+        let encoded = std::panic::catch_unwind(AssertUnwindSafe(move || {
+            for leaf in &leaves {
+                writer.write(leaf)?;
             }
-            Job::Close(reply) => {
-                let result = match error.take() {
-                    Some(e) => Err(e),
-                    None => writers.drain(..).map(ArrowColumnWriter::close).collect(),
-                };
-                writers.clear();
-                let _ = reply.send(result);
-            }
+            writer.close()
+        }));
+        if let Ok(result) = encoded {
+            let _ = reply.send(result);
         }
     }
 }

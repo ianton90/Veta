@@ -190,8 +190,9 @@ Document
   output in pieces of 1M rows, several at once on all cores
   (`Pipeline::read_parallel`, results in order); the paged source keeps a
   reader per piece being read and shares the cores between them. The writer
-  moves columns to other workers each row group, so row groups encode at
-  the same time.
+  gathers each row group and encodes every column chunk as a task on a
+  pool of threads, several row groups at once (up to 1/8 of the memory
+  budget), so few or uneven columns still use all cores.
 
 ### Steps
 Every data change is a `Step`, Power Query style:
