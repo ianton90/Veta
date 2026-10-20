@@ -4,11 +4,13 @@ Versions follow [Semantic Versioning](https://semver.org): `MAJOR.MINOR.PATCH`.
 Each build also carries a build number (shown in About and `--version`).
 While the major version is 0, minor versions may change behaviour.
 
-## 0.4.0 — first release
+## 0.5.0 — first release
 
-0.1.0 to 0.3.0 were never released; their work ships in 0.4.0. 0.4.0 marks
-the switch to the mimalloc allocator, which made large operations several
-times faster on Windows.
+0.1.0 to 0.4.0 were never released; their work ships in 0.5.0. 0.4.0
+marked the switch to the mimalloc allocator, which made large operations
+several times faster on Windows; 0.5.0 marks full passes and saves that
+use all cores (on a 10 GB file, faster than polars at sort, formula, edit,
+CSV import and export).
 
 **Desktop app (`veta`)**
 - Open several Parquet files as tabs, including files larger than memory
@@ -66,6 +68,8 @@ times faster on Windows.
   the saved file. `scripts/bench/compare.py` compares `veta-cli` with
   pandas and polars (`--profile` shows where Veta spends its time).
 - Sorts split rows by key range and sort the ranges on all cores.
+- Full passes read several pieces of the file at once, and saves encode
+  the column chunks of several row groups at once.
 - A memory budget (half of RAM by default; Settings, `--memory`).
 - The mimalloc allocator: on Windows the system allocator made large
   sorts and saves several times slower.
