@@ -431,7 +431,7 @@ fn edit_nested_values_and_expand_explode() {
     }
     assert_eq!(cell(&app, 1, "tags").as_deref(), Some("[x, y]"));
 
-    // Column menu: expand the struct, explode the list.
+    // Ribbon: expand the struct, explode the list.
     let _ = app.update(Message::Grid(
         id,
         GridEvent::ContextMenu {
@@ -446,7 +446,7 @@ fn edit_nested_values_and_expand_explode() {
             extend: false,
         },
     ));
-    let _ = app.update(Message::Menu(MenuItem::ExpandStruct));
+    let _ = app.update(Message::Action(Action::ExpandStruct));
     assert_eq!(cell(&app, 0, "point.x").as_deref(), Some("1"));
     let _ = app.update(Message::Grid(
         id,

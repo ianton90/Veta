@@ -129,7 +129,21 @@ fn menu_sections_follow_the_target() {
     );
     assert_eq!(
         titles(MenuTarget::Column(0), Some(&point)),
-        ["Clipboard", "Column", "Data", "Split & Merge", "Nested"]
+        ["Clipboard", "Column", "Data"]
+    );
+    // Adding inside a struct or list stays, in the Column or Cell section.
+    let last = |target, column_type: &DataType| {
+        let sections = panes::menu_sections(target, 1, 1, Some(column_type), None);
+        sections[1].1.last().map(|(_, label, _, _)| label.clone())
+    };
+    let tags = DataType::new_list(DataType::Utf8, true);
+    assert_eq!(
+        last(MenuTarget::Column(0), &point).as_deref(),
+        Some("Add field…")
+    );
+    assert_eq!(
+        last(MenuTarget::Cell, &tags).as_deref(),
+        Some("Add item at the end")
     );
 }
 

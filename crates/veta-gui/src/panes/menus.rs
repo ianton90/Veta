@@ -143,10 +143,11 @@ pub fn menu_sections(
         ],
     ));
     if target == MenuTarget::Cell {
-        let cell = vec![
+        let mut cell = vec![
             entry(Icon::Rename, "Edit cell", "Enter", MenuItem::EditCell),
             entry(Icon::Eraser, "Set to null", "Delete", MenuItem::ClearCell),
         ];
+        cell.extend(add_inside(column_type));
         sections.push(("Cell", cell));
         sections.push((
             "Filter",
@@ -198,48 +199,47 @@ pub fn menu_sections(
         ));
     }
     if let MenuTarget::Column(_) = target {
-        sections.push((
-            "Column",
-            vec![
-                entry(
-                    Icon::Plus,
-                    "Insert column left…",
-                    "",
-                    MenuItem::InsertColumnLeft,
+        let mut column = vec![
+            entry(
+                Icon::Plus,
+                "Insert column left…",
+                "",
+                MenuItem::InsertColumnLeft,
+            ),
+            entry(
+                Icon::Plus,
+                "Insert column right…",
+                "",
+                MenuItem::InsertColumnRight,
+            ),
+            entry(Icon::Rename, "Rename…", "", MenuItem::RenameColumn),
+            entry(Icon::Copy, "Duplicate", "", MenuItem::DuplicateColumn),
+            entry(Icon::ArrowLeft, "Move left", "", MenuItem::MoveColumnLeft),
+            entry(
+                Icon::ArrowRight,
+                "Move right",
+                "",
+                MenuItem::MoveColumnRight,
+            ),
+            (
+                Icon::Columns,
+                count(
+                    columns,
+                    "Keep only this column",
+                    "Keep only these {n} columns",
                 ),
-                entry(
-                    Icon::Plus,
-                    "Insert column right…",
-                    "",
-                    MenuItem::InsertColumnRight,
-                ),
-                entry(Icon::Rename, "Rename…", "", MenuItem::RenameColumn),
-                entry(Icon::Copy, "Duplicate", "", MenuItem::DuplicateColumn),
-                entry(Icon::ArrowLeft, "Move left", "", MenuItem::MoveColumnLeft),
-                entry(
-                    Icon::ArrowRight,
-                    "Move right",
-                    "",
-                    MenuItem::MoveColumnRight,
-                ),
-                (
-                    Icon::Columns,
-                    count(
-                        columns,
-                        "Keep only this column",
-                        "Keep only these {n} columns",
-                    ),
-                    "",
-                    MenuItem::KeepColumns,
-                ),
-                (
-                    Icon::Trash,
-                    count(columns, "Remove column", "Remove {n} columns"),
-                    "",
-                    MenuItem::RemoveColumns,
-                ),
-            ],
-        ));
+                "",
+                MenuItem::KeepColumns,
+            ),
+            (
+                Icon::Trash,
+                count(columns, "Remove column", "Remove {n} columns"),
+                "",
+                MenuItem::RemoveColumns,
+            ),
+        ];
+        column.extend(add_inside(column_type));
+        sections.push(("Column", column));
         sections.push((
             "Data",
             vec![
@@ -263,32 +263,6 @@ pub fn menu_sections(
                 entry(Icon::FillUp, "Fill up", "", MenuItem::FillUp),
             ],
         ));
-        sections.push((
-            "Split & Merge",
-            vec![
-                entry(Icon::Split, "Split column…", "", MenuItem::SplitColumn),
-                entry(Icon::Merge, "Merge columns…", "", MenuItem::MergeColumns),
-            ],
-        ));
-    }
-    let mut nested_entries: Vec<MenuEntry> =
-        nested_items(column_type).into_iter().flatten().collect();
-    if matches!(target, MenuTarget::Column(_)) {
-        nested_entries.push(entry(
-            Icon::Group,
-            "Columns → struct…",
-            "",
-            MenuItem::CombineStruct,
-        ));
-        nested_entries.push(entry(
-            Icon::ListCollapse,
-            "Rows → lists…",
-            "",
-            MenuItem::CollectList,
-        ));
-    }
-    if !nested_entries.is_empty() {
-        sections.push(("Nested", nested_entries));
     }
     sections
 }
@@ -375,62 +349,15 @@ pub fn context_menu<'a>(
         .into()
 }
 
-/// Flatten and add entries for a column of `column_type` (named like the
-/// Nested tab's commands).
-fn nested_items(
-    column_type: Option<&DataType>,
-) -> Vec<Option<(Icon, String, &'static str, MenuItem)>> {
-    match column_type {
-        Some(DataType::Struct(fields)) => {
-            let mut items = vec![Some((
-                Icon::ListTree,
-                "Struct → columns".into(),
-                "",
-                MenuItem::ExpandStruct,
-            ))];
-            if fields
-                .iter()
-                .any(|f| matches!(f.data_type(), DataType::Struct(_)))
-            {
-                items.push(Some((
-                    Icon::Layers,
-                    "All levels → columns".into(),
-                    "",
-                    MenuItem::ExpandAll,
-                )));
-            }
-            items.push(Some((
-                Icon::Plus,
-                "Add field…".into(),
-                "",
-                MenuItem::AddField,
-            )));
-            items
-        }
-        Some(
-            DataType::List(_)
-            | DataType::LargeList(_)
-            | DataType::FixedSizeList(..)
-            | DataType::Map(..),
-        ) => {
-            let map = matches!(column_type, Some(DataType::Map(..)));
-            vec![
-                Some((
-                    Icon::Rows,
-                    if map { "Map → rows" } else { "List → rows" }.into(),
-                    "",
-                    MenuItem::ExplodeList,
-                )),
-                (!matches!(column_type, Some(DataType::FixedSizeList(..)))).then(|| {
-                    let label = if map {
-                        "Add entry at the end"
-                    } else {
-                        "Add item at the end"
-                    };
-                    (Icon::Plus, label.into(), "", MenuItem::AddInside)
-                }),
-            ]
-        }
-        _ => Vec::new(),
-    }
+/// "Add field…" for a struct column, "Add item/entry at the end" for a list
+/// or map column. The rest of the Nested and Split & Merge commands stay on
+/// the ribbon: the menu keeps to the basic, most used ones.
+fn add_inside(column_type: Option<&DataType>) -> Option<MenuEntry> {
+    let (label, item) = match column_type? {
+        DataType::Struct(_) => ("Add field…", MenuItem::AddField),
+        DataType::List(_) | DataType::LargeList(_) => ("Add item at the end", MenuItem::AddInside),
+        DataType::Map(..) => ("Add entry at the end", MenuItem::AddInside),
+        _ => return None,
+    };
+    Some((Icon::Plus, label.to_owned(), "", item))
 }

@@ -38,12 +38,7 @@ pub(crate) enum MenuItem {
     FillDown,
     FillUp,
     FormatText,
-    SplitColumn,
-    MergeColumns,
     DuplicateColumn,
-    ExpandStruct,
-    CombineStruct,
-    CollectList,
     InsertItem,
     InsertItemBelow,
     AddField,
@@ -55,8 +50,6 @@ pub(crate) enum MenuItem {
     /// entry at the end.
     AddInside,
     /// Expand a struct column and the structs inside it.
-    ExpandAll,
-    ExplodeList,
     SortAscending,
     SortDescending,
     /// Filter to rows whose value in this column equals the selected cell's.
@@ -136,17 +129,10 @@ impl App {
                         self.fill_selected(id, item == MenuItem::FillUp);
                     }
                     MenuItem::FormatText => self.open_format_dialog(id),
-                    MenuItem::SplitColumn => return self.open_split_dialog(id, None),
-                    MenuItem::MergeColumns => return self.open_merge_dialog(id, None),
-                    MenuItem::CombineStruct => return self.open_combine_dialog(id, None),
-                    MenuItem::CollectList => self.open_collect_dialog(id, None),
                     MenuItem::DuplicateColumn => self.duplicate_column(id),
                     MenuItem::Cut => return self.copy_selection(id, true),
                     MenuItem::Copy => return self.copy_selection(id, false),
                     MenuItem::Paste => return iced::clipboard::read().map(Message::Pasted),
-                    MenuItem::ExpandStruct => self.nested_step(id, false, false),
-                    MenuItem::ExpandAll => self.nested_step(id, false, true),
-                    MenuItem::ExplodeList => self.nested_step(id, true, false),
                     MenuItem::SortAscending | MenuItem::SortDescending => {
                         self.sort_selected(id, item == MenuItem::SortDescending);
                     }
