@@ -31,7 +31,7 @@ fn value<'a>(doc: &'a Document, key: &str) -> Option<&'a str> {
 fn rejected_commands_change_nothing() {
     let mut doc = Document::new();
     let err = execute(&mut doc, set("", "x")).unwrap_err();
-    assert!(matches!(err, Error::InvalidCommand(_)));
+    assert_eq!(err.code(), Some(crate::error::ErrorCode::MetadataKeyEmpty));
     assert!(doc.metadata().key_value.is_empty());
     assert!(execute(&mut doc, remove("missing")).is_err());
     assert!(!doc.history().can_undo());

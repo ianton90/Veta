@@ -8,6 +8,7 @@
 
 mod buckets;
 
+use crate::error::invalid;
 use arrow::array::{ArrayRef, UInt32Array};
 use arrow::compute::{SortOptions, concat_batches, take};
 use arrow::datatypes::{Schema, SchemaRef};
@@ -16,7 +17,6 @@ use arrow::row::{RowConverter, Rows, SortField};
 
 use crate::error::{Error, Result};
 use crate::steps::checkpoint::{Checkpoint, TempFile, write_parquet};
-use crate::steps::invalid;
 
 pub(crate) use buckets::{Plan, Sorted};
 
@@ -47,14 +47,14 @@ impl Sort {
 
     fn columns(&self, schema: &Schema) -> Result<Vec<usize>> {
         if self.keys.is_empty() {
-            return Err(invalid("a sort needs at least one column".into()));
+            return Err(invalid!(SortNoColumns));
         }
         self.keys
             .iter()
             .map(|k| {
                 schema
                     .index_of(&k.column)
-                    .map_err(|_| invalid(format!("no column named {:?}", k.column)))
+                    .map_err(|_| invalid!(ColumnNotFound, column = k.column))
             })
             .collect()
     }
@@ -73,7 +73,7 @@ impl Sort {
             })
             .collect::<Vec<_>>();
         if !RowConverter::supports_fields(&fields) {
-            return Err(invalid("one of the sort columns can't be sorted".into()));
+            return Err(invalid!(SortUnsortable));
         }
         Ok(RowConverter::new(fields)?)
     }
@@ -105,7 +105,7 @@ impl Sorter {
                 batch
                     .column_by_name(name)
                     .cloned()
-                    .ok_or_else(|| invalid(format!("no column named {name:?}")))
+                    .ok_or_else(|| invalid!(ColumnNotFound, column = name))
             })
             .collect::<Result<Vec<ArrayRef>>>()?;
         Ok(self.converter.convert_columns(&keys)?)

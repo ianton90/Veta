@@ -2,13 +2,14 @@
 //! at the top, at the bottom, or at a row number. Shared by the GUI and the
 //! CLI.
 
+use crate::error::invalid;
 use std::ops::Range;
 
 use crate::command::Command;
 use crate::history::Change;
 use crate::steps::{Step, normalize_ranges};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// Where rows go, or which rows are meant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,31 +28,21 @@ pub enum RowAction {
     Keep,
 }
 
-fn invalid(message: String) -> Error {
-    Error::InvalidCommand(message)
-}
-
 /// The `count` existing rows at `place` in a table of `num_rows` rows.
 pub fn row_range(place: RowPlace, count: usize, num_rows: usize) -> Result<Range<usize>> {
     if count == 0 {
-        return Err(invalid("the number of rows must be above 0".into()));
+        return Err(invalid!(RowCountZero));
     }
     let start = match place {
         RowPlace::Top => 0,
         RowPlace::Bottom => num_rows.saturating_sub(count),
         RowPlace::At(at) if at < num_rows => at,
         RowPlace::At(at) => {
-            return Err(invalid(format!(
-                "row {} is past the last row ({num_rows})",
-                at + 1
-            )));
+            return Err(invalid!(RowPastEnd, row = at + 1, rows = num_rows));
         }
     };
     if start + count > num_rows {
-        return Err(invalid(format!(
-            "there are only {} rows from there",
-            num_rows - start
-        )));
+        return Err(invalid!(RowsFromThere, rows = num_rows - start));
     }
     Ok(start..start + count)
 }
@@ -68,18 +59,14 @@ pub fn rows_command(
     match action {
         RowAction::Insert => {
             if count == 0 {
-                return Err(invalid("the number of rows must be above 0".into()));
+                return Err(invalid!(RowCountZero));
             }
             let at = match place {
                 RowPlace::Top => 0,
                 RowPlace::Bottom => num_rows,
                 RowPlace::At(at) if at <= num_rows => at,
                 RowPlace::At(at) => {
-                    return Err(invalid(format!(
-                        "row {} is past the end; use {} to add at the end",
-                        at + 1,
-                        num_rows + 1
-                    )));
+                    return Err(invalid!(RowPastEndUse, row = at + 1, end = num_rows + 1));
                 }
             };
             Ok(Command::InsertRows { at, count })
@@ -120,7 +107,11 @@ pub(super) fn plan(command: Command) -> Result<Change> {
             let ranges = normalize_ranges(ranges);
             Ok(Change::PushStep(Step::DeleteRows { rows: ranges }))
         }
-        other => Err(invalid(format!("not a {} command: {other:?}", "rows"))),
+        other => Err(invalid!(
+            WrongArea,
+            area = "rows",
+            command = format!("{other:?}")
+        )),
     }
 }
 

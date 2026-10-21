@@ -12,7 +12,8 @@ pub mod rows;
 mod steps;
 
 use crate::command::Command;
-use crate::error::{Error, Result};
+use crate::error::Result;
+use crate::error::invalid;
 use crate::history::Change;
 use crate::model::{Document, KeyValue};
 use crate::steps::Step;
@@ -95,17 +96,13 @@ fn plan(doc: &Document, command: Command) -> Result<Change> {
 fn check_keys(entries: &[KeyValue]) -> Result<()> {
     for (i, kv) in entries.iter().enumerate() {
         if kv.key.trim().is_empty() {
-            return Err(invalid("metadata keys cannot be empty".into()));
+            return Err(invalid!(MetadataKeyEmpty));
         }
         if entries[..i].iter().any(|other| other.key == kv.key) {
-            return Err(invalid(format!("metadata key {:?} appears twice", kv.key)));
+            return Err(invalid!(MetadataKeyTwice, key = kv.key));
         }
     }
     Ok(())
-}
-
-fn invalid(message: String) -> Error {
-    Error::InvalidCommand(message)
 }
 
 #[cfg(test)]

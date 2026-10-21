@@ -113,7 +113,9 @@ pub(super) fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element
     let mut list: Vec<Element<'a, Message>> = vec![item(None, tr("ST_STEPS_SOURCE"), None, None)];
     for (i, step) in steps.iter().enumerate() {
         let note = match doc.status() {
-            Status::Broken { step, error } if *step == i => Some((error.clone(), red)),
+            Status::Broken { step, error } if *step == i => {
+                Some((crate::i18n::errors::error_text(error), red))
+            }
             Status::Broken { step, .. } if i > *step => {
                 Some((tr("ST_STEPS_NOT_EVALUATED"), t.muted_text))
             }

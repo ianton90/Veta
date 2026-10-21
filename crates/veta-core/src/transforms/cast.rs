@@ -1,5 +1,6 @@
 //! Changing a column's type, with locale options for reading text.
 
+use crate::error::invalid;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -12,7 +13,6 @@ use arrow::record_batch::RecordBatch;
 
 use crate::display::type_name;
 use crate::error::Result;
-use crate::steps::invalid;
 use crate::values::is_text;
 
 /// Converts `column` to type `to`.
@@ -81,7 +81,7 @@ impl Cast {
     pub(crate) fn output_fields(&self, schema: &Schema) -> Result<Vec<Field>> {
         let index = schema
             .index_of(&self.column)
-            .map_err(|_| invalid(format!("no column named {:?}", self.column)))?;
+            .map_err(|_| invalid!(ColumnNotFound, column = self.column))?;
         let from = schema.field(index).data_type();
         let readable = if is_text(from) {
             // Nested values are read from JSON text.
@@ -90,33 +90,31 @@ impl Cast {
             can_cast_types(from, &self.to)
         };
         if !readable {
-            return Err(invalid(format!(
-                "{} can't be converted from {} to {}",
-                self.column,
-                type_name(from),
-                type_name(&self.to)
-            )));
+            return Err(invalid!(
+                CastImpossible,
+                column = self.column,
+                from = type_name(from),
+                to = type_name(&self.to)
+            ));
         }
         if let Some(format) = &self.options.format {
             if !matches!(self.to, DataType::Date32 | DataType::Timestamp(..)) {
-                return Err(invalid("a format only applies to dates and times".into()));
+                return Err(invalid!(FormatOnlyDates));
             }
             if !is_text(from) {
-                return Err(invalid("a format only applies when reading text".into()));
+                return Err(invalid!(FormatOnlyText));
             }
             check_format(format)?;
         }
         if self.options.thousands == Some(self.options.decimal) {
-            return Err(invalid(
-                "the decimal and thousands separators must differ".into(),
-            ));
+            return Err(invalid!(SeparatorsEqual));
         }
         let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
         fields[index] = Field::new(&self.column, self.to.clone(), true);
         if self.options.on_error == OnError::ErrorColumn {
             let name = self.error_column();
             if schema.fields().iter().any(|f| f.name() == &name) {
-                return Err(invalid(format!("a column named {name:?} already exists")));
+                return Err(invalid!(ColumnExists, column = name));
             }
             fields.insert(index + 1, Field::new(name, DataType::Utf8, true));
         }
@@ -128,7 +126,7 @@ impl Cast {
         let index = batch
             .schema()
             .index_of(&self.column)
-            .map_err(|_| invalid(format!("no column named {:?}", self.column)))?;
+            .map_err(|_| invalid!(ColumnNotFound, column = self.column))?;
         let input = batch.column(index);
         let output = self.convert(input)?;
         let failed = failures(input, &output);
@@ -136,12 +134,12 @@ impl Cast {
         match self.options.on_error {
             OnError::Fail => {
                 if let Some(row) = failed.first() {
-                    return Err(invalid(format!(
-                        "{:?} in column {} is not a valid {}",
-                        text_at(input, *row),
-                        self.column,
-                        type_name(&self.to)
-                    )));
+                    return Err(invalid!(
+                        CastValue,
+                        value = text_at(input, *row),
+                        column = self.column,
+                        data_type = type_name(&self.to)
+                    ));
                 }
             }
             OnError::Null => {}
@@ -162,7 +160,7 @@ impl Cast {
     pub(crate) fn first_failure(&self, batch: &RecordBatch) -> Result<Option<(usize, String)>> {
         let input = batch
             .column_by_name(&self.column)
-            .ok_or_else(|| invalid(format!("no column named {:?}", self.column)))?;
+            .ok_or_else(|| invalid!(ColumnNotFound, column = self.column))?;
         let output = self.convert(input)?;
         Ok(failures(input, &output)
             .first()
@@ -211,7 +209,7 @@ impl Cast {
                 let strings = strings
                     .as_any()
                     .downcast_ref::<StringArray>()
-                    .ok_or_else(|| invalid("expected text".into()))?;
+                    .ok_or_else(|| invalid!(ExpectedText))?;
                 let formatted: StringArray = strings
                     .iter()
                     .map(|s| s.map(|s| self.format_number(s)))
@@ -224,7 +222,7 @@ impl Cast {
         let strings = strings
             .as_any()
             .downcast_ref::<StringArray>()
-            .ok_or_else(|| invalid("expected text".into()))?;
+            .ok_or_else(|| invalid!(ExpectedText))?;
         if self.to.is_nested() {
             return parse_json_column(strings, &self.to);
         }
@@ -442,12 +440,12 @@ fn check_format(format: &str) -> Result<()> {
                 has_code = true;
             }
             Some('%') => {}
-            Some(other) => return Err(invalid(format!("unknown format code %{other}"))),
-            None => return Err(invalid("the format ends with %".into())),
+            Some(other) => return Err(invalid!(FormatUnknownCode, code = other)),
+            None => return Err(invalid!(FormatEndsWithPercent)),
         }
     }
     if !has_code {
-        return Err(invalid("the format has no codes".into()));
+        return Err(invalid!(FormatNoCodes));
     }
     Ok(())
 }
@@ -602,10 +600,7 @@ fn parse_dates(strings: &StringArray, format: &str, to: &DataType) -> Result<Arr
             arrow::compute::cast(&array, &DataType::Timestamp(*unit, tz.clone()))?
         }
         other => {
-            return Err(invalid(format!(
-                "a format doesn't apply to {}",
-                type_name(other)
-            )));
+            return Err(invalid!(FormatNotForType, data_type = type_name(other)));
         }
     })
 }

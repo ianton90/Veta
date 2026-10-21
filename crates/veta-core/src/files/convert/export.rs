@@ -1,6 +1,7 @@
 //! Exporting a document's output to CSV or JSON.
 
 use super::*;
+use crate::error::invalid;
 
 // Export.
 
@@ -113,7 +114,7 @@ fn format_piece(format: &ExportFormat, batches: &[RecordBatch], first: bool) -> 
             }
             writer.finish()?;
         }
-        ExportFormat::JsonArray => return Err(invalid("a JSON array is written in one piece")),
+        ExportFormat::JsonArray => return Err(invalid!(JsonArrayWhole)),
     }
     Ok(out)
 }
@@ -140,7 +141,7 @@ pub(super) fn decimal_text(batch: &RecordBatch, decimal: char) -> Result<RecordB
             let text = text
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or_else(|| invalid("expected text"))?;
+                .ok_or_else(|| invalid!(ExpectedText))?;
             let replaced: StringArray = text
                 .iter()
                 .map(|v| v.map(|v| v.replace('.', &decimal.to_string())))

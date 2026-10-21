@@ -4,6 +4,7 @@
 //! placeholders. Translation is the front end's job: `veta-core` speaks
 //! plain English, codes and enums (DECISIONS 51, 53).
 
+pub mod errors;
 pub mod model;
 
 use std::collections::HashMap;
@@ -72,6 +73,11 @@ impl Translations {
     /// The current language's locale, e.g. `es-ES`.
     pub fn language(&self) -> &str {
         &self.language
+    }
+
+    /// Whether `tag` has a text in any language.
+    pub fn has(&self, tag: &str) -> bool {
+        self.texts.contains_key(tag)
     }
 
     /// `tag`'s text in `language`, if it has one.
@@ -151,9 +157,13 @@ mod tests {
 
     #[test]
     fn tags_follow_the_naming_rules() {
-        // Static texts start with ST_; upper case, digits and underscores.
+        // Static texts start with ST_, errors with ERR_, warnings with
+        // WARN_; upper case, digits and underscores.
         for tag in Translations::load(FALLBACK).tags() {
-            assert!(tag.starts_with("ST_"), "{tag}");
+            assert!(
+                ["ST_", "ERR_", "WARN_"].iter().any(|p| tag.starts_with(p)),
+                "{tag}"
+            );
             assert!(
                 tag.chars()
                     .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'),

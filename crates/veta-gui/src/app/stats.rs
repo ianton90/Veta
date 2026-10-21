@@ -111,7 +111,7 @@ impl App {
                 !cancel.load(Ordering::Relaxed)
             });
             if !cancel.load(Ordering::Relaxed) {
-                let result = result.map_err(|e| e.to_string());
+                let result = result.map_err(|e| error_text(&e));
                 let _ = sender.unbounded_send(Message::StatsDone(id, revision, result));
             }
         });

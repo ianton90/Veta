@@ -16,6 +16,7 @@ mod eval;
 mod functions;
 mod parser;
 
+use crate::error::invalid;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -31,7 +32,6 @@ use arrow::record_batch::RecordBatch;
 
 use crate::display::type_name;
 use crate::error::Result;
-use crate::steps::invalid;
 use crate::values::is_text;
 
 use eval::{Context, to};
@@ -106,20 +106,53 @@ fn unify(a: &DataType, b: &DataType) -> Option<DataType> {
     }
 }
 
-fn mismatch(what: &str, a: &DataType, b: &DataType) -> crate::error::Error {
-    invalid(format!(
-        "can't {what} {} and {}",
-        type_name(a),
-        type_name(b)
-    ))
+/// What two values of types that don't go together were used for.
+#[derive(Debug, Clone, Copy)]
+enum Pair {
+    Combine,
+    Compare,
+    Calculate,
+    Divide,
+    Choose,
+    Coalesce,
 }
 
-fn expect(what: &str, t: &DataType, ok: bool) -> Result<()> {
-    if ok {
-        Ok(())
-    } else {
-        Err(invalid(format!("{what}, not {}", type_name(t))))
+fn mismatch(pair: Pair, a: &DataType, b: &DataType) -> crate::error::Error {
+    let (a, b) = (type_name(a), type_name(b));
+    match pair {
+        Pair::Combine => invalid!(FormulaCantCombine, a = a, b = b),
+        Pair::Compare => invalid!(FormulaCantCompare, a = a, b = b),
+        Pair::Calculate => invalid!(FormulaCantCalculate, a = a, b = b),
+        Pair::Divide => invalid!(FormulaCantDivide, a = a, b = b),
+        Pair::Choose => invalid!(FormulaCantChoose, a = a, b = b),
+        Pair::Coalesce => invalid!(FormulaCantCoalesce, a = a, b = b),
     }
+}
+
+/// What an operator or function needs a value to be.
+#[derive(Debug, Clone, Copy)]
+enum Need {
+    Number,
+    Bool,
+    Text,
+    Condition,
+    DateTime,
+}
+
+/// Checks `ok`: whether `what` (an operator or function) got the value it
+/// needs, of type `t`.
+fn expect(what: &str, need: Need, t: &DataType, ok: bool) -> Result<()> {
+    if ok {
+        return Ok(());
+    }
+    let t = type_name(t);
+    Err(match need {
+        Need::Number => invalid!(FormulaNeedsNumber, what = what, data_type = t),
+        Need::Bool => invalid!(FormulaNeedsBool, what = what, data_type = t),
+        Need::Text => invalid!(FormulaNeedsText, what = what, data_type = t),
+        Need::Condition => invalid!(FormulaNeedsCondition, data_type = t),
+        Need::DateTime => invalid!(FormulaNeedsDateTime, what = what, data_type = t),
+    })
 }
 
 impl Expr {
@@ -129,7 +162,7 @@ impl Expr {
             Expr::Column(name) => normalize(
                 schema
                     .field_with_name(name)
-                    .map_err(|_| invalid(format!("no column named {name:?}")))?
+                    .map_err(|_| invalid!(ColumnNotFound, column = name))?
                     .data_type(),
             ),
             Expr::Int(_) => DataType::Int64,
@@ -139,13 +172,14 @@ impl Expr {
             Expr::Null => DataType::Null,
             Expr::Neg(e) => {
                 let t = e.data_type(schema)?;
-                expect("- needs a number", &t, is_number(&t))?;
+                expect("-", Need::Number, &t, is_number(&t))?;
                 t
             }
             Expr::Not(e) => {
                 let t = e.data_type(schema)?;
                 expect(
-                    "not needs true/false",
+                    "not",
+                    Need::Bool,
                     &t,
                     matches!(t, DataType::Boolean | DataType::Null),
                 )?;
@@ -157,20 +191,20 @@ impl Expr {
                     BinOp::Or | BinOp::And => {
                         let ok = |t: &DataType| matches!(t, DataType::Boolean | DataType::Null);
                         if !ok(&ta) || !ok(&tb) {
-                            return Err(mismatch("combine with and/or", &ta, &tb));
+                            return Err(mismatch(Pair::Combine, &ta, &tb));
                         }
                         DataType::Boolean
                     }
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                         if unify(&ta, &tb).is_none() {
-                            return Err(mismatch("compare", &ta, &tb));
+                            return Err(mismatch(Pair::Compare, &ta, &tb));
                         }
                         DataType::Boolean
                     }
                     BinOp::Concat => DataType::Utf8,
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Rem => {
                         if !is_number(&ta) || !is_number(&tb) {
-                            return Err(mismatch("do arithmetic on", &ta, &tb));
+                            return Err(mismatch(Pair::Calculate, &ta, &tb));
                         }
                         if ta == DataType::Float64 || tb == DataType::Float64 {
                             DataType::Float64
@@ -180,7 +214,7 @@ impl Expr {
                     }
                     BinOp::Div => {
                         if !is_number(&ta) || !is_number(&tb) {
-                            return Err(mismatch("divide", &ta, &tb));
+                            return Err(mismatch(Pair::Divide, &ta, &tb));
                         }
                         DataType::Float64
                     }
@@ -194,29 +228,32 @@ impl Expr {
                 let text_arg = |i: usize| -> Result<()> {
                     let t = &types[i];
                     expect(
-                        &format!("{name} needs text"),
+                        name,
+                        Need::Text,
                         t,
                         matches!(t, DataType::Utf8 | DataType::Null),
                     )
                 };
                 let number_arg = |i: usize| -> Result<()> {
                     let t = &types[i];
-                    expect(&format!("{name} needs a number"), t, is_number(t))
+                    expect(name, Need::Number, t, is_number(t))
                 };
                 match name.as_str() {
                     "if" => {
                         expect(
-                            "if needs a true/false condition",
+                            "if",
+                            Need::Condition,
                             &types[0],
                             matches!(types[0], DataType::Boolean | DataType::Null),
                         )?;
                         unify(&types[1], &types[2])
-                            .ok_or_else(|| mismatch("choose between", &types[1], &types[2]))?
+                            .ok_or_else(|| mismatch(Pair::Choose, &types[1], &types[2]))?
                     }
                     "coalesce" => {
                         let mut t = DataType::Null;
                         for other in &types {
-                            t = unify(&t, other).ok_or_else(|| mismatch("coalesce", &t, other))?;
+                            t = unify(&t, other)
+                                .ok_or_else(|| mismatch(Pair::Coalesce, &t, other))?;
                         }
                         t
                     }
@@ -259,11 +296,11 @@ impl Expr {
                     }
                     "year" | "month" | "day" | "hour" | "minute" | "second" => {
                         let t = &types[0];
-                        expect(&format!("{name} needs a date or time"), t, is_temporal(t))?;
+                        expect(name, Need::DateTime, t, is_temporal(t))?;
                         DataType::Int64
                     }
                     "row" => DataType::Int64,
-                    other => return Err(invalid(format!("unknown function {other}"))),
+                    other => return Err(invalid!(UnknownFunction, function = other)),
                 }
             }
         })
@@ -300,19 +337,13 @@ impl CustomColumn {
 
     pub(crate) fn output_fields(&self, schema: &Schema) -> Result<Vec<arrow::datatypes::Field>> {
         if self.name.trim().is_empty() {
-            return Err(invalid("column name cannot be empty".into()));
+            return Err(invalid!(ColumnNameEmpty));
         }
         if schema.fields().iter().any(|f| f.name() == &self.name) {
-            return Err(invalid(format!(
-                "a column named {:?} already exists",
-                self.name
-            )));
+            return Err(invalid!(ColumnExists, column = self.name));
         }
         if self.at > schema.fields().len() {
-            return Err(invalid(format!(
-                "column position {} is out of range",
-                self.at
-            )));
+            return Err(invalid!(ColumnPosition, position = self.at));
         }
         let t = self.data_type(schema)?;
         let mut fields: Vec<arrow::datatypes::Field> =

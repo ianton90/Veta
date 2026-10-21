@@ -272,7 +272,7 @@ fn execute(command: Command, out: &mut impl Write) -> Result<(), Error> {
 pub(crate) fn open(path: &std::path::Path) -> Result<Document, Error> {
     Document::open(path, OpenOptions::paged()).map_err(|e| {
         Error::Core(match e {
-            veta_core::Error::Io(io) => veta_core::Error::Io(std::io::Error::new(
+            veta_core::Error::Io(io) => veta_core::Error::from(std::io::Error::new(
                 io.kind(),
                 format!("{}: {io}", path.display()),
             )),

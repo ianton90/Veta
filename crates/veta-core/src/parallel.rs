@@ -1,11 +1,12 @@
 //! Running independent pieces of work on all cores.
 
+use crate::error::invalid;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Condvar, Mutex};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// Number of threads worth running at once.
 pub(crate) fn threads() -> usize {
@@ -46,7 +47,7 @@ pub(crate) fn map<T: Send>(n: usize, f: impl Fn(usize) -> Result<T> + Sync) -> R
     }
     results
         .into_iter()
-        .map(|r| r.unwrap_or_else(|| Err(Error::InvalidCommand("a worker thread failed".into()))))
+        .map(|r| r.unwrap_or_else(|| Err(invalid!(WorkerFailed))))
         .collect()
 }
 
@@ -138,7 +139,7 @@ impl<T> Iterator for Ordered<T> {
                 Ok((i, result)) => {
                     self.early.insert(i, result);
                 }
-                Err(_) => break Err(Error::InvalidCommand("a worker thread failed".into())),
+                Err(_) => break Err(invalid!(WorkerFailed)),
             }
         };
         self.next += 1;
@@ -165,7 +166,7 @@ mod tests {
         assert!(map(0, Ok).unwrap().is_empty());
         let failed = map(10, |i| {
             if i == 7 {
-                Err(Error::InvalidCommand("seven".into()))
+                Err(invalid!(WorkerFailed))
             } else {
                 Ok(i)
             }

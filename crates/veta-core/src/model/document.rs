@@ -1,5 +1,6 @@
 //! [`Document`]: one open file, its steps and its settings.
 
+use crate::error::invalid;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -133,13 +134,10 @@ impl Document {
     pub fn output(&self) -> Result<Pipeline> {
         match self.status() {
             Status::Ready => Ok(self.pipeline.clone()),
-            Status::Computing { .. } => Err(Error::InvalidCommand(
-                "wait until the steps are computed".into(),
-            )),
-            Status::Broken { step, error } => Err(Error::InvalidCommand(format!(
-                "step {} has an error: {error}",
-                step + 1
-            ))),
+            Status::Computing { .. } => Err(invalid!(StepsComputing)),
+            Status::Broken { step, error } => {
+                Err(invalid!(StepHasError, step = step + 1; cause = error.clone()))
+            }
         }
     }
 
@@ -214,7 +212,7 @@ impl Document {
     }
 
     /// Marks the pending step broken after its pass failed.
-    pub fn fail_compute(&mut self, key: &[u64], error: String) -> bool {
+    pub fn fail_compute(&mut self, key: &[u64], error: std::sync::Arc<Error>) -> bool {
         self.pipeline.fail(key, error)
     }
 
@@ -235,9 +233,7 @@ impl Document {
     /// Fails while a step is computing or broken.
     pub fn stats_job(&self, columns: Vec<String>) -> Result<crate::stats::StatsJob> {
         if self.status() != &Status::Ready {
-            return Err(Error::InvalidCommand(
-                "statistics need every step to be evaluated".into(),
-            ));
+            return Err(invalid!(StatsNeedSteps));
         }
         crate::stats::StatsJob::new(self.pipeline.clone(), columns)
     }
@@ -294,21 +290,14 @@ impl Document {
         let target = match target.or_else(|| self.path.clone()) {
             Some(t) => t,
             None => {
-                return Err(Error::InvalidCommand(
-                    "choose where to save the file".into(),
-                ));
+                return Err(invalid!(NoSavePath));
             }
         };
         if let Status::Broken { step, error } = self.status() {
-            return Err(Error::InvalidCommand(format!(
-                "step {} has an error: {error}",
-                step + 1
-            )));
+            return Err(invalid!(StepHasError, step = step + 1; cause = error.clone()));
         }
         if self.num_columns() == 0 {
-            return Err(Error::InvalidCommand(
-                "a file needs at least one column".into(),
-            ));
+            return Err(invalid!(NoColumnsToSave));
         }
         let reopen = self
             .source_file

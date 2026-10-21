@@ -32,6 +32,7 @@ use crate::dialogs::{
     WriterMessage,
 };
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav, Selection};
+use crate::i18n::errors::error_text;
 use crate::i18n::{tr, tr_with};
 use crate::platform::files::FileKind;
 use crate::platform::{files, icon, instance};
@@ -357,7 +358,7 @@ impl App {
                 let _ = sender.send(read.run());
             });
             tasks.push(Task::perform(receiver, move |result| {
-                let result = result.unwrap_or_else(|_| Err("the read stopped".into()));
+                let result = result.unwrap_or(Err(veta_core::Error::Cancelled));
                 Message::RowsRead(document, id, result)
             }));
         }
@@ -610,7 +611,7 @@ impl App {
                 true
             }
             Err(e) => {
-                self.errors.push(e.to_string());
+                self.errors.push(error_text(&e));
                 false
             }
         }

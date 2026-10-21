@@ -2,6 +2,7 @@
 //! boundaries, the chunks are parsed at the same time, and their rows come
 //! back in file order.
 
+use crate::error::invalid;
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Read;
 use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
@@ -149,7 +150,7 @@ impl<'a, R: Read> ParallelCsv<'a, R> {
             let chunk = std::mem::replace(&mut self.rest, rest);
             let jobs = self.jobs.as_ref().expect("sending until the end");
             jobs.send((self.sent, chunk))
-                .map_err(|_| crate::Error::InvalidCommand("reading the file failed".into()))?;
+                .map_err(|_| invalid!(ReadFailed))?;
             self.sent += 1;
             self.in_flight += 1;
             return Ok(true);
@@ -177,10 +178,7 @@ impl<'a, R: Read> ParallelCsv<'a, R> {
             if self.in_flight == 0 {
                 return Ok(None);
             }
-            let (index, parsed) = self
-                .results
-                .recv()
-                .map_err(|_| crate::Error::InvalidCommand("reading the file failed".into()))?;
+            let (index, parsed) = self.results.recv().map_err(|_| invalid!(ReadFailed))?;
             self.early.insert(index, parsed);
         }
     }

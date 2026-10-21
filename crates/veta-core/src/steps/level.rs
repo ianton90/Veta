@@ -1,11 +1,12 @@
 //! The shape of the data after each step.
 
+use crate::error::invalid;
 use std::sync::Arc;
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 
+use super::Step;
 use super::compute::Cache;
-use super::{Step, invalid};
 use crate::error::Result;
 
 /// Shape of the data after a step.
@@ -19,7 +20,7 @@ impl Level {
     pub(super) fn index(&self, column: &str) -> Result<usize> {
         self.schema
             .index_of(column)
-            .map_err(|_| invalid(format!("no column named {column:?}")))
+            .map_err(|_| invalid!(ColumnNotFound, column = column))
     }
 
     pub(super) fn field(&self, column: &str) -> Result<&Field> {
@@ -42,7 +43,7 @@ impl Level {
             Step::RemoveEmptyColumn { name } => {
                 self.index(name)?;
                 if self.schema.fields().len() < 2 {
-                    return Err(invalid("at least one column must remain".into()));
+                    return Err(invalid!(LastColumn));
                 }
                 Ok(())
             }
@@ -90,13 +91,10 @@ impl Level {
             }
             Step::InsertRows { at, count } => {
                 if *at > self.num_rows {
-                    return Err(invalid(format!(
-                        "cannot insert rows after row {}",
-                        self.num_rows
-                    )));
+                    return Err(invalid!(InsertPastEnd, row = self.num_rows));
                 }
                 if *count == 0 {
-                    return Err(invalid("nothing to insert".into()));
+                    return Err(invalid!(NothingToInsert));
                 }
                 // Inserted rows are empty, so every column must allow nulls.
                 let fields = fields.into_iter().map(|f| f.with_nullable(true)).collect();
@@ -104,18 +102,15 @@ impl Level {
             }
             Step::DeleteRows { rows } => {
                 if rows.is_empty() {
-                    return Err(invalid("no rows to delete".into()));
+                    return Err(invalid!(NoRowsToDelete));
                 }
                 let mut previous_end = 0;
                 for (i, r) in rows.iter().enumerate() {
                     if r.is_empty() || (i > 0 && r.start <= previous_end) {
-                        return Err(invalid("row ranges must be sorted and disjoint".into()));
+                        return Err(invalid!(RowRanges));
                     }
                     if r.end > self.num_rows {
-                        return Err(invalid(format!(
-                            "row {} is past the last row ({})",
-                            r.end, self.num_rows
-                        )));
+                        return Err(invalid!(RowPastEnd, row = r.end, rows = self.num_rows));
                     }
                     previous_end = r.end;
                 }
@@ -132,7 +127,7 @@ impl Level {
             } => {
                 check_new_name(&self.schema, name)?;
                 if *at > fields.len() {
-                    return Err(invalid(format!("column position {at} is out of range")));
+                    return Err(invalid!(ColumnPosition, position = at));
                 }
                 let mut fields = fields;
                 fields.insert(*at, Field::new(name, data_type.clone(), true));
@@ -140,7 +135,7 @@ impl Level {
             }
             Step::KeepColumns { names } => {
                 if names.is_empty() {
-                    return Err(invalid("keep at least one column".into()));
+                    return Err(invalid!(KeepNoColumns));
                 }
                 for name in names {
                     self.index(name)?;
@@ -153,7 +148,7 @@ impl Level {
             }
             Step::RemoveColumns { names } => {
                 if names.is_empty() {
-                    return Err(invalid("no columns to remove".into()));
+                    return Err(invalid!(NoColumnsToRemove));
                 }
                 for name in names {
                     self.index(name)?;
@@ -163,7 +158,7 @@ impl Level {
                     .filter(|f| !names.contains(f.name()))
                     .collect();
                 if fields.is_empty() {
-                    return Err(invalid("at least one column must remain".into()));
+                    return Err(invalid!(LastColumn));
                 }
                 Ok(with_fields(fields, self.num_rows))
             }
@@ -243,11 +238,11 @@ impl Level {
             | Step::Fill(_)
             | Step::RemoveEmptyColumn { .. }
             | Step::ExplodeList { .. }
-            | Step::CollectList { .. } => Err(invalid("this step must be computed first".into())),
+            | Step::CollectList { .. } => Err(invalid!(ComputeFirst)),
             Step::MoveColumn { name, to } => {
                 let index = self.index(name)?;
                 if *to >= fields.len() {
-                    return Err(invalid(format!("column position {to} is out of range")));
+                    return Err(invalid!(ColumnPosition, position = to));
                 }
                 let mut fields = fields;
                 let field = fields.remove(index);
@@ -260,10 +255,10 @@ impl Level {
 
 fn check_new_name(schema: &Schema, name: &str) -> Result<()> {
     if name.trim().is_empty() {
-        return Err(invalid("column name cannot be empty".into()));
+        return Err(invalid!(ColumnNameEmpty));
     }
     if schema.fields().iter().any(|f| f.name() == name) {
-        return Err(invalid(format!("a column named {name:?} already exists")));
+        return Err(invalid!(ColumnExists, column = name));
     }
     Ok(())
 }

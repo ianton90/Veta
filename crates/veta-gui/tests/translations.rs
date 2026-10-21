@@ -17,6 +17,23 @@ fn switching_language_reloads_the_texts() {
 }
 
 #[test]
+fn every_error_code_has_a_text() {
+    use veta_core::error::ErrorCode;
+    use veta_gui::i18n::errors::error_tag;
+    let translations = Translations::load(FALLBACK);
+    for &code in ErrorCode::ALL {
+        let tag = error_tag(code);
+        // English reads as the core's own message.
+        assert_eq!(
+            translations.text(&tag, "en-GB"),
+            Some(code.english()),
+            "{tag}"
+        );
+        assert!(translations.text(&tag, "es-ES").is_some(), "{tag}");
+    }
+}
+
+#[test]
 fn every_tag_in_the_code_has_a_text() {
     let translations = Translations::load(FALLBACK);
     let known = translations.tags();

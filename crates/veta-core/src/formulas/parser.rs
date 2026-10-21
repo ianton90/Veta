@@ -2,6 +2,7 @@
 
 use super::functions::FUNCTIONS;
 use super::*;
+use crate::error::invalid;
 
 // Lexing.
 
@@ -36,7 +37,7 @@ fn lex(source: &str) -> Result<Vec<Token>> {
                 let end = chars[i..]
                     .iter()
                     .position(|&c| c == ']')
-                    .ok_or_else(|| invalid("missing ] after a column name".into()))?;
+                    .ok_or_else(|| invalid!(FormulaMissingBracket))?;
                 let name: String = chars[i + 1..i + end].iter().collect();
                 i += end;
                 Token::Column(name)
@@ -46,7 +47,7 @@ fn lex(source: &str) -> Result<Vec<Token>> {
                 i += 1;
                 loop {
                     match chars.get(i) {
-                        None => return Err(invalid("missing closing \"".into())),
+                        None => return Err(invalid!(FormulaMissingQuote)),
                         Some('"') if chars.get(i + 1) == Some(&'"') => {
                             text.push('"');
                             i += 1;
@@ -88,7 +89,7 @@ fn lex(source: &str) -> Result<Vec<Token>> {
                             .into_iter()
                             .find(|op| op.starts_with(c))
                     })
-                    .ok_or_else(|| invalid(format!("unexpected {c:?}")))?;
+                    .ok_or_else(|| invalid!(FormulaUnexpected, text = c))?;
                 i += op.len() - 1;
                 Token::Op(if op == "!=" { "<>" } else { op })
             }
@@ -185,11 +186,11 @@ impl Parser {
                 if n.contains('.') {
                     n.parse()
                         .map(Expr::Float)
-                        .map_err(|_| invalid(format!("{n} is not a number")))
+                        .map_err(|_| invalid!(FormulaNotNumber, text = n))
                 } else {
                     n.parse()
                         .map(Expr::Int)
-                        .map_err(|_| invalid(format!("{n} is too large")))
+                        .map_err(|_| invalid!(FormulaTooLarge, text = n))
                 }
             }
             Some(Token::Text(t)) => Ok(Expr::Text(t)),
@@ -198,7 +199,7 @@ impl Parser {
                 let inner = self.expression(0)?;
                 match self.next() {
                     Some(Token::RParen) => Ok(inner),
-                    _ => Err(invalid("missing )".into())),
+                    _ => Err(invalid!(FormulaMissingParen)),
                 }
             }
             Some(Token::Ident(word)) => {
@@ -214,17 +215,22 @@ impl Parser {
                             match self.next() {
                                 Some(Token::Comma) => {}
                                 Some(Token::RParen) => break,
-                                _ => return Err(invalid(format!("missing ) after {word}("))),
+                                _ => {
+                                    return Err(invalid!(
+                                        FormulaMissingParenAfter,
+                                        function = word
+                                    ));
+                                }
                             }
                         }
                     }
                     let Some(&(_, min, max, usage)) =
                         FUNCTIONS.iter().find(|(name, ..)| *name == lower)
                     else {
-                        return Err(invalid(format!("unknown function {word}")));
+                        return Err(invalid!(UnknownFunction, function = word));
                     };
                     if args.len() < min || args.len() > max {
-                        return Err(invalid(format!("use {usage}")));
+                        return Err(invalid!(FormulaUsage, usage = usage));
                     }
                     return Ok(Expr::Call(lower, args));
                 }
@@ -235,10 +241,10 @@ impl Parser {
                     _ => Expr::Column(word),
                 })
             }
-            Some(Token::Op(op)) => Err(invalid(format!("unexpected {op}"))),
-            Some(Token::RParen) => Err(invalid("unexpected )".into())),
-            Some(Token::Comma) => Err(invalid("unexpected ,".into())),
-            None => Err(invalid("the expression is incomplete".into())),
+            Some(Token::Op(op)) => Err(invalid!(FormulaUnexpected, text = op)),
+            Some(Token::RParen) => Err(invalid!(FormulaUnexpected, text = ")")),
+            Some(Token::Comma) => Err(invalid!(FormulaUnexpected, text = ",")),
+            None => Err(invalid!(FormulaIncomplete)),
         }
     }
 }
@@ -247,14 +253,12 @@ impl Parser {
 pub fn parse(source: &str) -> Result<Expr> {
     let tokens = lex(source)?;
     if tokens.is_empty() {
-        return Err(invalid("enter an expression".into()));
+        return Err(invalid!(FormulaEmpty));
     }
     let mut parser = Parser { tokens, pos: 0 };
     let expr = parser.expression(0)?;
     if let Some(token) = parser.peek() {
-        return Err(invalid(format!(
-            "unexpected {token:?} after the expression"
-        )));
+        return Err(invalid!(FormulaTrailing, text = format!("{token:?}")));
     }
     Ok(expr)
 }

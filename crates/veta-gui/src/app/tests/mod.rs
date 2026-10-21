@@ -45,10 +45,7 @@ fn app_with(paths: &[&Path]) -> App {
 fn finish_compute(app: &mut App, id: DocumentId) {
     let job = app.workbook.get(id).unwrap().compute_job().unwrap();
     let key = job.key().to_vec();
-    let result = job
-        .run(&mut |_| true)
-        .map(Slot::new)
-        .map_err(|e| e.to_string());
+    let result = job.run(&mut |_| true).map(Slot::new);
     let _ = app.update(Message::ComputeDone(id, Target::Document, key, result));
 }
 
@@ -57,10 +54,7 @@ fn finish_filter(app: &mut App, id: DocumentId) {
     let tab = app.tabs.iter().find(|t| t.id == id).unwrap();
     let job = tab.grid.filter_job().unwrap();
     let key = job.key().to_vec();
-    let result = job
-        .run(&mut |_| true)
-        .map(Slot::new)
-        .map_err(|e| e.to_string());
+    let result = job.run(&mut |_| true).map(Slot::new);
     let _ = app.update(Message::ComputeDone(id, Target::View, key, result));
 }
 

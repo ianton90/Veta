@@ -76,8 +76,9 @@ impl App {
                             Ok(None) => {}
                             Err(e) => {
                                 tab.grid.set_filter(None, doc);
+                                let error = crate::i18n::errors::error_text(&e);
                                 self.errors
-                                    .push(tr_with("ST_MSG_FILTER_FAILED", &[("error", &e)]));
+                                    .push(tr_with("ST_MSG_FILTER_FAILED", &[("error", &error)]));
                             }
                         }
                     }
@@ -89,7 +90,7 @@ impl App {
                 let changed = match result.map(|slot| slot.take()) {
                     Ok(Some(computed)) => doc.install(computed),
                     Ok(None) => false,
-                    Err(e) => doc.fail_compute(&key, e),
+                    Err(e) => doc.fail_compute(&key, std::sync::Arc::new(e)),
                 };
                 if changed {
                     self.after_compute(id);
@@ -103,7 +104,10 @@ impl App {
                         self.clear_filter(c.document);
                     } else if let Some(doc) = self.workbook.get_mut(c.document) {
                         if !controller::undo(doc) {
-                            doc.fail_compute(&c.key, tr("ST_MSG_CANCELLED"));
+                            doc.fail_compute(
+                                &c.key,
+                                std::sync::Arc::new(veta_core::Error::Cancelled),
+                            );
                         }
                         self.refresh(c.document);
                     }
@@ -287,7 +291,7 @@ impl App {
         let Some(doc) = self.workbook.get_mut(id) else {
             return Ok(());
         };
-        controller::execute(doc, command).map_err(|e| e.to_string())?;
+        controller::execute(doc, command).map_err(|e| error_text(&e))?;
         if check {
             self.error_check = Some((id, doc.steps().len().saturating_sub(1)));
         }
@@ -311,12 +315,14 @@ impl App {
                     _ => return,
                 };
                 if controller::amend(doc, Command::RemoveStep { index: step }).is_ok() {
-                    let count = error
-                        .split_once(": ")
-                        .map_or(String::new(), |(_, rest)| format!(" ({rest})"));
+                    // The removed step's error says how many values failed.
+                    let values = match error.as_ref() {
+                        veta_core::Error::Invalid(invalid) => invalid.arg("values"),
+                        _ => None,
+                    };
                     self.errors.push(tr_with(
                         "ST_MSG_VALUES_KEPT",
-                        &[("count", &count), ("column", &column)],
+                        &[("n", &values.unwrap_or("?")), ("column", &column)],
                     ));
                 }
             }
@@ -328,7 +334,11 @@ impl App {
                     .unwrap_or_default();
                 self.errors.push(tr_with(
                     "ST_MSG_STOPPED_AT_STEP",
-                    &[("n", &(step + 1)), ("step", &label), ("error", &error)],
+                    &[
+                        ("n", &(step + 1)),
+                        ("step", &label),
+                        ("error", &crate::i18n::errors::error_text(&error)),
+                    ],
                 ));
             }
             Status::Ready if check.is_some() => self.error_check = None,
@@ -401,7 +411,7 @@ impl App {
                 !cancel.load(Ordering::Relaxed)
             });
             if !cancel.load(Ordering::Relaxed) {
-                let result = result.map(Slot::new).map_err(|e| e.to_string());
+                let result = result.map(Slot::new);
                 let _ = sender.unbounded_send(Message::ComputeDone(id, target, key, result));
             }
         });

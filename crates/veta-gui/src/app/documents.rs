@@ -10,7 +10,7 @@ pub(crate) fn file_label(path: &Path) -> String {
 
 /// Whether an error message is the core's "cancelled".
 pub(crate) fn is_cancelled(error: &str) -> bool {
-    error == veta_core::Error::Cancelled.to_string()
+    error == error_text(&veta_core::Error::Cancelled)
 }
 
 /// Each top-level column with its metadata: as edited in Veta, otherwise
@@ -156,7 +156,7 @@ impl App {
                                     progress,
                                 )
                                 .map(Slot::new)
-                                .map_err(|e| e.to_string())
+                                .map_err(|e| error_text(&e))
                             },
                             move |result| Message::Imported(path.clone(), result),
                         );
@@ -209,7 +209,7 @@ impl App {
                     move |progress| {
                         veta_core::convert::export(&output, &path, &format, progress)
                             .map(|()| path)
-                            .map_err(|e| e.to_string())
+                            .map_err(|e| error_text(&e))
                     },
                     Message::Exported,
                 );
@@ -271,7 +271,7 @@ impl App {
                             .map(|n| n.to_string_lossy().into_owned()),
                     };
                     let result = veta_core::recipe::to_json(doc.steps(), &info)
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| error_text(&e))
                         .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
                     if let Err(e) = result {
                         self.errors
@@ -334,7 +334,7 @@ impl App {
                         };
                         match result {
                             Ok(()) => self.dialog = None,
-                            Err(e) => dialog.set_error(e.to_string()),
+                            Err(e) => dialog.set_error(error_text(&e)),
                         }
                     } else if cancel {
                         self.dialog = None;
@@ -550,7 +550,7 @@ impl App {
             Ok(job) => {
                 self.saving = Some(id);
                 Task::perform(
-                    blocking(move || job.run().map(Slot::new).map_err(|e| e.to_string())),
+                    blocking(move || job.run().map(Slot::new).map_err(|e| error_text(&e))),
                     move |result| Message::Saved(id, result),
                 )
             }
@@ -661,7 +661,7 @@ impl App {
                     move |progress| {
                         veta_core::convert::import_json(&worker_path, budget, progress)
                             .map(Loaded::new)
-                            .map_err(|e| e.to_string())
+                            .map_err(|e| error_text(&e))
                     },
                     move |result| Message::Opened(path.clone(), result),
                 ));
@@ -671,7 +671,7 @@ impl App {
                 blocking(move || {
                     Document::open(worker_path, options)
                         .map(Loaded::new)
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| error_text(&e))
                 }),
                 move |result| Message::Opened(path.clone(), result),
             ));

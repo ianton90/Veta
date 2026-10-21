@@ -1,12 +1,13 @@
 //! Copy and paste as tab-separated text, the format spreadsheets use on the
 //! clipboard.
 
+use crate::error::invalid;
 use std::ops::Range;
 
 use arrow::array::Array;
 
 use crate::display::{field_array, json_column};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::model::Document;
 
 /// The cells in `rows` × `columns` as tab-separated text, with the column
@@ -48,7 +49,7 @@ pub fn copy_fields(
     }
     if !rows.is_empty() {
         let batch = doc.read(rows)?;
-        let missing = || Error::InvalidCommand("that field no longer exists".into());
+        let missing = || invalid!(FieldGone);
         let arrays = targets
             .iter()
             .map(|(c, path)| field_array(batch.column(*c), path).ok_or_else(missing))

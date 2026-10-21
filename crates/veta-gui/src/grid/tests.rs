@@ -107,8 +107,9 @@ fn background_reads_while_scrolling() {
     // A failed read shows as an error.
     scroll(&mut view, 10);
     let third = view.take_read().unwrap();
-    view.install_read(third.id, Err("disk gone".into()), &doc);
-    assert_eq!(view.error(), Some("Disk gone"));
+    let gone = std::io::Error::other("disk gone");
+    view.install_read(third.id, Err(gone.into()), &doc);
+    assert_eq!(view.error(), Some("I/O error: disk gone"));
 }
 
 #[test]

@@ -1,6 +1,7 @@
 //! Steps for nested columns: expanding a struct into columns and exploding
 //! a list (or map) into rows.
 
+use crate::error::invalid;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -13,12 +14,11 @@ use arrow::record_batch::RecordBatch;
 
 use crate::display::PathPart;
 use crate::error::Result;
-use crate::steps::invalid;
 
 fn column_index(schema: &Schema, name: &str) -> Result<usize> {
     schema
         .index_of(name)
-        .map_err(|_| invalid(format!("no column named {name:?}")))
+        .map_err(|_| invalid!(ColumnNotFound, column = name))
 }
 
 /// Fields of a struct column become columns named `<column>.<field>`,
@@ -26,7 +26,7 @@ fn column_index(schema: &Schema, name: &str) -> Result<usize> {
 pub(crate) fn expand_fields(schema: &Schema, column: &str) -> Result<Vec<Field>> {
     let index = column_index(schema, column)?;
     let DataType::Struct(children) = schema.field(index).data_type() else {
-        return Err(invalid(format!("{column} is not a struct column")));
+        return Err(invalid!(NotStructColumn, column = column));
     };
     let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
     let new: Vec<Field> = children
@@ -42,10 +42,7 @@ pub(crate) fn expand_fields(schema: &Schema, column: &str) -> Result<Vec<Field>>
         .collect();
     for field in &new {
         if fields.iter().any(|f| f.name() == field.name()) {
-            return Err(invalid(format!(
-                "a column named {:?} already exists",
-                field.name()
-            )));
+            return Err(invalid!(ColumnExists, column = field.name()));
         }
     }
     fields.splice(index..=index, new);
@@ -149,10 +146,10 @@ pub(crate) fn change_field_fields(
         Ok(match add {
             Some(data_type) => {
                 if name.trim().is_empty() {
-                    return Err(invalid("field name cannot be empty".into()));
+                    return Err(invalid!(FieldNameEmpty));
                 }
                 if exists {
-                    return Err(invalid(format!("{} already has a field {name:?}", at())));
+                    return Err(invalid!(FieldExists, at = at(), field = name));
                 }
                 let mut children: Vec<Field> =
                     children.iter().map(|f| f.as_ref().clone()).collect();
@@ -161,10 +158,10 @@ pub(crate) fn change_field_fields(
             }
             None => {
                 if !exists {
-                    return Err(invalid(format!("{} has no field {name:?}", at())));
+                    return Err(invalid!(FieldNotFound, at = at(), field = name));
                 }
                 if children.len() == 1 {
-                    return Err(invalid("a struct needs at least one field".into()));
+                    return Err(invalid!(StructNoFields));
                 }
                 children
                     .iter()
@@ -174,7 +171,7 @@ pub(crate) fn change_field_fields(
             }
         })
     })
-    .ok_or_else(|| invalid(format!("{} is not a struct", at())))??;
+    .ok_or_else(|| invalid!(NotStruct, at = at()))??;
     let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
     fields[index] = schema.field(index).clone().with_data_type(changed);
     Ok(fields)
@@ -318,10 +315,10 @@ pub(crate) fn combine_fields(
     name: &str,
 ) -> Result<Vec<Field>> {
     if columns.is_empty() {
-        return Err(invalid("choose the columns to combine".into()));
+        return Err(invalid!(CombineNoColumns));
     }
     if name.trim().is_empty() {
-        return Err(invalid("column name cannot be empty".into()));
+        return Err(invalid!(ColumnNameEmpty));
     }
     let indices = columns
         .iter()
@@ -332,7 +329,7 @@ pub(crate) fn combine_fields(
     for (column, &i) in columns.iter().zip(&indices) {
         let field_name = column.strip_prefix(&prefix).unwrap_or(column);
         if children.iter().any(|c| c.name() == field_name) {
-            return Err(invalid(format!("{field_name:?} is chosen twice")));
+            return Err(invalid!(ChosenTwice, column = field_name));
         }
         children.push(schema.field(i).clone().with_name(field_name));
     }
@@ -347,7 +344,7 @@ pub(crate) fn combine_fields(
             ));
         } else if !indices.contains(&i) {
             if field.name() == name {
-                return Err(invalid(format!("a column named {name:?} already exists")));
+                return Err(invalid!(ColumnExists, column = name));
             }
             fields.push(field.as_ref().clone());
         }
@@ -370,7 +367,7 @@ pub(crate) fn combine(
         .collect::<Result<Vec<_>>>()?;
     let at = schema.index_of(name)?;
     let DataType::Struct(children) = schema.field(at).data_type() else {
-        return Err(invalid(format!("{name} is not a struct column")));
+        return Err(invalid!(NotStructColumn, column = name));
     };
     let arrays = indices.iter().map(|&i| batch.column(i).clone()).collect();
     let combined: ArrayRef = Arc::new(arrow::array::StructArray::try_new(
@@ -403,12 +400,12 @@ pub(crate) fn collect_fields(
     columns: &[String],
 ) -> Result<Vec<Field>> {
     if columns.is_empty() {
-        return Err(invalid("choose the columns to collect into lists".into()));
+        return Err(invalid!(CollectNoColumns));
     }
     for (i, name) in keys.iter().chain(columns).enumerate() {
         column_index(schema, name)?;
         if keys.iter().chain(columns).take(i).any(|n| n == name) {
-            return Err(invalid(format!("{name:?} is chosen twice")));
+            return Err(invalid!(ChosenTwice, column = name));
         }
     }
     Ok(schema
@@ -473,7 +470,7 @@ pub(crate) fn collect_groups(
                 return Ok(take(column, &firsts, None)?);
             }
             let DataType::List(item) = field.data_type() else {
-                return Err(invalid(format!("{} is not a list column", field.name())));
+                return Err(invalid!(NotListColumn, column = field.name()));
             };
             Ok(Arc::new(ListArray::try_new(
                 item.clone(),
@@ -499,7 +496,7 @@ pub(crate) fn explode_fields(schema: &Schema, column: &str) -> Result<Vec<Field>
             item.data_type().clone()
         }
         DataType::Map(entries, _) => entries.data_type().clone(),
-        _ => return Err(invalid(format!("{column} is not a list or map column"))),
+        _ => return Err(invalid!(NotListOrMapColumn, column = column)),
     };
     let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
     fields[index] = Field::new(column, item, true);
@@ -554,7 +551,7 @@ pub(crate) fn explode(
                     offsets_of(&offsets),
                 )
             }
-            _ => return Err(invalid(format!("{column} is not a list or map column"))),
+            _ => return Err(invalid!(NotListOrMapColumn, column = column)),
         }
     };
     let mut rows: Vec<u32> = Vec::new();

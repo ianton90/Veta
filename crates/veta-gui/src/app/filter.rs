@@ -108,7 +108,9 @@ impl App {
         if doc.status() != &Status::Ready {
             return Err(tr("ST_MSG_WAIT_STEPS"));
         }
-        let view = doc.filter_view(filter.clone()).map_err(|e| e.to_string())?;
+        let view = doc
+            .filter_view(filter.clone())
+            .map_err(|e| error_text(&e))?;
         self.commit_edit_or_drop();
         if let (Some(doc), Some(tab)) = (
             self.workbook.get(id),

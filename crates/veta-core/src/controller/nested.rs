@@ -2,6 +2,7 @@
 //! inside a cell. Each becomes an edit of the whole cell, through its JSON.
 
 use super::*;
+use crate::error::invalid;
 use arrow::datatypes::DataType;
 
 use crate::display::{PathPart, map_key_type, type_at, value_json};
@@ -17,11 +18,11 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
             value,
         } => {
             if path.is_empty() {
-                return Err(invalid("no value inside the cell given".into()));
+                return Err(invalid!(NoPathInCell));
             }
             let column_type = column_type(doc, &column)?;
             let leaf = type_at(&column_type, &path)
-                .ok_or_else(|| invalid(format!("{column} has no value at {}", describe(&path))))?
+                .ok_or_else(|| invalid!(NoValueAt, column = column, path = describe(&path)))?
                 .clone();
             let (parent, last) = path.split_at(path.len() - 1);
             // A list index at the end may append; a null fixed-size list is
@@ -37,10 +38,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
                     _ => None,
                 };
                 if fixed.is_some_and(|n| index >= n) {
-                    return Err(invalid(format!(
-                        "{column} has no value at {}",
-                        describe(&path)
-                    )));
+                    return Err(invalid!(NoValueAt, column = column, path = describe(&path)));
                 }
                 return edit_cell(doc, row, column, |json| {
                     let json = match fixed {
@@ -65,7 +63,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
                 edit_list(json, &path, &ListEdit::Insert(index))
             }),
             Container::Map(key_type) => {
-                let key = key.ok_or_else(|| invalid("a map entry needs a key".into()))?;
+                let key = key.ok_or_else(|| invalid!(EntryNeedsKey))?;
                 let edit = MapEdit::Insert {
                     index,
                     key: &key,
@@ -73,7 +71,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
                 };
                 edit_cell(doc, row, column, |json| edit_map(json, &path, &edit))
             }
-            Container::Fixed => Err(invalid("fixed-size lists can't grow".into())),
+            Container::Fixed => Err(invalid!(FixedListGrow)),
         },
         Command::RemoveItem {
             row,
@@ -87,7 +85,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
             Container::Map(_) => edit_cell(doc, row, column, |json| {
                 edit_map(json, &path, &MapEdit::Remove(index))
             }),
-            Container::Fixed => Err(invalid("fixed-size lists can't shrink".into())),
+            Container::Fixed => Err(invalid!(FixedListShrink)),
         },
         Command::SetKey {
             row,
@@ -104,10 +102,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
                 };
                 edit_cell(doc, row, column, |json| edit_map(json, &path, &edit))
             }
-            _ => Err(invalid(format!(
-                "{column} has no map at {}",
-                describe(&path)
-            ))),
+            _ => Err(invalid!(NoMapAt, column = column, path = describe(&path))),
         },
         _ => unreachable!("not a nested value command"),
     }
@@ -117,7 +112,7 @@ fn column_type(doc: &Document, column: &str) -> Result<DataType> {
     Ok(doc
         .schema()
         .field_with_name(column)
-        .map_err(|_| invalid(format!("no column named {column:?}")))?
+        .map_err(|_| invalid!(ColumnNotFound, column = column))?
         .data_type()
         .clone())
 }
@@ -140,14 +135,12 @@ fn container(doc: &Document, column: &str, path: &[PathPart]) -> Result<Containe
         Some(t @ DataType::Map(..)) => Ok(Container::Map(
             map_key_type(t).cloned().unwrap_or(DataType::Utf8),
         )),
-        _ => Err(invalid(format!(
-            "{column}{} is not a list or map",
-            if path.is_empty() {
-                String::new()
-            } else {
-                format!(" at {}", describe(path))
-            }
-        ))),
+        _ if path.is_empty() => Err(invalid!(NotListOrMapColumn, column = column)),
+        _ => Err(invalid!(
+            NotListOrMapAt,
+            column = column,
+            path = describe(path)
+        )),
     }
 }
 
@@ -176,13 +169,9 @@ fn edit_cell(
     let index = doc
         .schema()
         .index_of(&column)
-        .map_err(|_| invalid(format!("no column named {column:?}")))?;
+        .map_err(|_| invalid!(ColumnNotFound, column = column))?;
     if row >= doc.num_rows() {
-        return Err(invalid(format!(
-            "row {} is past the last row ({})",
-            row + 1,
-            doc.num_rows()
-        )));
+        return Err(invalid!(RowPastEnd, row = row + 1, rows = doc.num_rows()));
     }
     let batch = doc.read(row..row + 1)?;
     let json = value_json(batch.column(index).as_ref(), 0)?.unwrap_or_else(|| "null".into());

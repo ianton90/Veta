@@ -3,6 +3,7 @@
 //! settings, metadata, CSV import / export and confirmations. This file
 //! holds the widgets they share.
 
+use crate::i18n::errors::error_text;
 use crate::i18n::model::Labeled;
 use crate::i18n::{tr, tr_with};
 use iced::widget::{

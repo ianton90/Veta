@@ -15,12 +15,11 @@ pub struct RowRead {
 
 impl RowRead {
     /// Reads the rows; slow for paged documents, so run it on a thread.
-    pub fn run(&self) -> Result<RecordBatch, String> {
-        let result = match self.level {
+    pub fn run(&self) -> veta_core::Result<RecordBatch> {
+        match self.level {
             Some(level) => self.pipeline.read_at(level, self.range.clone()),
             None => self.pipeline.read(self.range.clone()),
-        };
-        result.map_err(|e| e.to_string())
+        }
     }
 }
 
@@ -227,7 +226,7 @@ impl GridView {
     pub fn install_read(
         &mut self,
         id: u64,
-        result: Result<RecordBatch, String>,
+        result: veta_core::Result<RecordBatch>,
         document: &Document,
     ) {
         let Some((current, range)) = self.reading.clone() else {
@@ -237,7 +236,6 @@ impl GridView {
             return;
         }
         self.reading = None;
-        let result = result.map_err(veta_core::Error::InvalidCommand);
         self.install(range.start, result);
         self.load(document, false);
     }
@@ -270,7 +268,7 @@ impl GridView {
             Err(e) => {
                 self.cells.clear();
                 self.batch = None;
-                self.error = Some(e.to_string());
+                self.error = Some(crate::i18n::errors::error_text(&e));
             }
         }
         self.build_trees();

@@ -75,12 +75,10 @@ impl MemorySource {
             .iter()
             .find(|b| b.schema().fields() != schema.fields())
         {
-            return Err(Error::Arrow(arrow::error::ArrowError::SchemaError(
-                format!(
-                    "batch schema {:?} does not match source schema",
-                    bad.schema()
-                ),
-            )));
+            return Err(Error::from(arrow::error::ArrowError::SchemaError(format!(
+                "batch schema {:?} does not match source schema",
+                bad.schema()
+            ))));
         }
         let batches: Vec<_> = batches.into_iter().filter(|b| b.num_rows() > 0).collect();
         let mut offsets = Vec::with_capacity(batches.len() + 1);

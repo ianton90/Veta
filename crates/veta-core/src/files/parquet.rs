@@ -1,5 +1,6 @@
 //! Reading and writing Parquet files.
 
+use crate::error::invalid;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -21,7 +22,7 @@ use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersi
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::model::{
     ColumnSettings, Compression, Encoding, FileInfo, FileMetadata, FormatVersion, KeyValue,
     RowGroupInfo, StatisticsLevel, WriterSettings,
@@ -447,7 +448,7 @@ pub fn leaf_columns(schema: &Schema) -> Result<Vec<(String, DataType)>> {
         .map(|c| c.path().string())
         .collect();
     if paths.len() != types.len() {
-        return Err(Error::InvalidCommand("unexpected nested schema".into()));
+        return Err(invalid!(UnexpectedNestedSchema));
     }
     Ok(paths.into_iter().zip(types).collect())
 }

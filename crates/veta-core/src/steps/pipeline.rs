@@ -1,5 +1,6 @@
 //! [`Pipeline`]: a source plus its steps, evaluated lazily.
 
+use crate::error::invalid;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -8,12 +9,12 @@ use arrow::compute::concat_batches;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 
+use super::Step;
 use super::compute::{Cache, ComputeJob, Computed, PASS_ROWS};
 use super::edits::CellEdits;
 use super::level::Level;
 use super::rows::kept_ranges;
-use super::{Step, invalid};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::source::DataSource;
 use crate::transforms::text::map_columns;
 
@@ -22,7 +23,7 @@ use crate::transforms::text::map_columns;
 pub(crate) const UNIT_ROWS: usize = 16 * PASS_ROWS;
 
 /// Whether the steps' output can be read.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum Status {
     /// Every step is evaluated.
     Ready,
@@ -32,8 +33,25 @@ pub enum Status {
     /// Step `step` no longer applies (e.g. it refers to a column an earlier
     /// step removed). Steps before it are evaluated; it and later steps are
     /// not.
-    Broken { step: usize, error: String },
+    Broken { step: usize, error: Arc<Error> },
 }
+
+/// Two statuses are equal when they are the same state; broken ones also
+/// share the same error.
+impl PartialEq for Status {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Status::Ready, Status::Ready) => true,
+            (Status::Computing { step: a }, Status::Computing { step: b }) => a == b,
+            (Status::Broken { step: a, error: e }, Status::Broken { step: b, error: f }) => {
+                a == b && Arc::ptr_eq(e, f)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Status {}
 
 /// A source plus its steps, evaluated lazily.
 ///
@@ -117,14 +135,8 @@ impl Pipeline {
     fn require_ready(&self) -> Result<()> {
         match &self.status {
             Status::Ready => Ok(()),
-            Status::Computing { step } => Err(invalid(format!(
-                "step {} is still being computed",
-                step + 1
-            ))),
-            Status::Broken { step, .. } => Err(invalid(format!(
-                "step {} has an error; fix or remove it first",
-                step + 1
-            ))),
+            Status::Computing { step } => Err(invalid!(StepComputing, step = step + 1)),
+            Status::Broken { step, .. } => Err(invalid!(StepBroken, step = step + 1)),
         }
     }
 
@@ -205,7 +217,7 @@ impl Pipeline {
                 Err(e) => {
                     self.status = Status::Broken {
                         step: i,
-                        error: e.to_string(),
+                        error: Arc::new(e),
                     };
                     return;
                 }
@@ -236,7 +248,7 @@ impl Pipeline {
 
     /// Marks the pending step broken after its pass failed. Returns `false`
     /// (and does nothing) if `key` is stale.
-    pub fn fail(&mut self, key: &[u64], error: String) -> bool {
+    pub fn fail(&mut self, key: &[u64], error: Arc<Error>) -> bool {
         if self.compute_key().as_deref() != Some(key) {
             return false;
         }
@@ -293,7 +305,7 @@ impl Pipeline {
                 // The step is marked broken, as when computed in the
                 // background.
                 Err(e) => {
-                    self.fail(&key, e.to_string());
+                    self.fail(&key, Arc::new(e.clone()));
                     return Err(e);
                 }
             }
@@ -323,7 +335,7 @@ impl Pipeline {
     /// that output's row count.
     pub fn read_at(&self, steps: usize, range: Range<usize>) -> Result<RecordBatch> {
         let Some(level) = self.levels.get(steps) else {
-            return Err(invalid(format!("step {steps} is not evaluated")));
+            return Err(invalid!(StepNotEvaluated, step = steps));
         };
         let end = range.end.min(level.num_rows);
         self.read_level(steps, range.start.min(end)..end)
@@ -369,7 +381,7 @@ impl Pipeline {
         names: &[String],
     ) -> Result<RecordBatch> {
         let Some(level) = self.levels.get(steps) else {
-            return Err(invalid(format!("step {steps} is not evaluated")));
+            return Err(invalid!(StepNotEvaluated, step = steps));
         };
         let end = range.end.min(level.num_rows);
         let range = range.start.min(end)..end;
@@ -514,7 +526,7 @@ impl Pipeline {
             | Step::Fill(_)
             | Step::RemoveEmptyColumn { .. }
             | Step::ExplodeList { .. }
-            | Step::CollectList { .. } => Err(invalid("this step must be computed first".into())),
+            | Step::CollectList { .. } => Err(invalid!(ComputeFirst)),
             Step::RemoveColumns { .. }
             | Step::KeepColumns { .. }
             | Step::RenameColumn { .. }

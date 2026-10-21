@@ -1,13 +1,14 @@
 //! Key/value metadata and writer settings commands.
 
 use super::*;
+use crate::error::invalid;
 
 /// Plans one of this area's commands (see `super::plan`).
 pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
     match command {
         Command::SetMetadata { key, value } => {
             if key.is_empty() {
-                return Err(Error::InvalidCommand("metadata key cannot be empty".into()));
+                return Err(invalid!(MetadataKeyEmpty));
             }
             let mut after = doc.metadata.clone();
             match after.key_value.iter_mut().find(|kv| kv.key == key) {
@@ -25,7 +26,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
         Command::RemoveMetadata { key } => {
             let mut after = doc.metadata.clone();
             let Some(index) = after.key_value.iter().position(|kv| kv.key == key) else {
-                return Err(Error::InvalidCommand(format!("no metadata key {key:?}")));
+                return Err(invalid!(MetadataKeyNotFound, key = key));
             };
             after.key_value.remove(index);
             Ok(Change::Metadata {
@@ -35,7 +36,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
         }
         Command::ReplaceColumnMetadata { column, entries } => {
             if doc.schema().field_with_name(&column).is_err() {
-                return Err(invalid(format!("no column named {column:?}")));
+                return Err(invalid!(ColumnNotFound, column = column));
             }
             check_keys(&entries)?;
             let mut after = doc.metadata.clone();
@@ -57,13 +58,17 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
         }
         Command::SetWriterSettings(settings) => {
             if settings.max_row_group_rows == 0 {
-                return Err(invalid("row group size must be at least 1".into()));
+                return Err(invalid!(RowGroupSize));
             }
             Ok(Change::Writer {
                 before: doc.writer.clone(),
                 after: settings,
             })
         }
-        other => Err(invalid(format!("not a {} command: {other:?}", "metadata"))),
+        other => Err(invalid!(
+            WrongArea,
+            area = "metadata",
+            command = format!("{other:?}")
+        )),
     }
 }

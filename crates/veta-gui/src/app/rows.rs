@@ -33,7 +33,7 @@ impl App {
                             }
                             Some(Err(e)) => {
                                 if let Some(Dialog::Rows { dialog, .. }) = &mut self.dialog {
-                                    dialog.set_error(e.to_string());
+                                    dialog.set_error(error_text(&e));
                                 }
                             }
                             None => self.dialog = None,

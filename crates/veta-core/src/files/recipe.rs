@@ -23,6 +23,7 @@
 //! `timestamp[us]`, …) and edited cell values as text, read back with the
 //! column's type.
 
+use crate::error::invalid;
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, SchemaRef};
@@ -289,7 +290,7 @@ fn null_on_error() -> RecipeOnError {
 }
 
 fn recipe_error(message: impl std::fmt::Display) -> Error {
-    Error::InvalidCommand(format!("recipe: {message}"))
+    invalid!(Recipe, error = message)
 }
 
 fn parse_type(name: &str) -> Result<DataType> {

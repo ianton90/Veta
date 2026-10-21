@@ -7,6 +7,7 @@
 //! the input fits half the memory budget; otherwise they are written to
 //! temporary files in parts.
 
+use crate::error::invalid;
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -245,7 +246,7 @@ fn fill_buckets(
                 let batch = crate::profile::time("sort: read input", || read(start..end))?;
                 jobs.as_ref()
                     .and_then(|jobs| jobs.send((sent, batch)).ok())
-                    .ok_or_else(|| Error::InvalidCommand("sorting failed".into()))?;
+                    .ok_or_else(|| invalid!(SortFailed))?;
                 sent += 1;
                 start = end;
                 while let Ok(result) = results.try_recv() {
@@ -265,7 +266,7 @@ fn fill_buckets(
             filler.add(result)?;
         }
         if filler.next < sent {
-            return Err(Error::InvalidCommand("sorting failed".into()));
+            return Err(invalid!(SortFailed));
         }
         Ok(())
     })?;
@@ -402,7 +403,7 @@ impl Sorted {
                             }))
                             .ok()
                         })
-                        .unwrap_or_else(|| Err(Error::InvalidCommand("sorting failed".into())));
+                        .unwrap_or_else(|| Err(invalid!(SortFailed)));
                     if send.send((b, sorted)).is_err() {
                         return;
                     }
@@ -440,7 +441,7 @@ impl Iterator for Sorted {
                     Ok((b, sorted)) => {
                         self.early.insert(b, sorted);
                     }
-                    Err(_) => break Err(Error::InvalidCommand("sorting failed".into())),
+                    Err(_) => break Err(invalid!(SortFailed)),
                 }
             };
             crate::profile::add("sort: output waiting for buckets", waiting.elapsed());

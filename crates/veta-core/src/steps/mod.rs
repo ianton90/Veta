@@ -21,8 +21,6 @@ use arrow::datatypes::DataType;
 
 use crate::display::PathPart;
 
-use crate::error::Error;
-
 pub use crate::formulas::{CustomColumn, function_signatures};
 pub use crate::transforms::cast::{Cast, CastOptions, CastPreview, OnError};
 pub use crate::transforms::fill::Fill;
@@ -174,10 +172,6 @@ pub fn schema_after(
         return Ok(schema.clone());
     }
     Ok(level.next(step)?.schema)
-}
-
-pub(crate) fn invalid(message: String) -> Error {
-    Error::InvalidCommand(message)
 }
 
 #[cfg(test)]

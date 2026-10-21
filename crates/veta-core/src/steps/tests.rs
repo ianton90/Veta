@@ -2,6 +2,7 @@
 
 use super::rows::kept_ranges;
 use super::*;
+use crate::error::Error;
 use crate::source::DataSource;
 use crate::source::MemorySource;
 use arrow::array::{ArrayRef, new_null_array};
@@ -230,7 +231,7 @@ fn changing_an_earlier_step_marks_later_steps_broken() {
         panic!("expected broken");
     };
     assert_eq!(step, 1);
-    assert!(error.contains("label"), "{error}");
+    assert!(error.to_string().contains("label"), "{error}");
     assert_eq!(p.evaluated(), 1);
     assert_eq!(names(&p.read(0..1).unwrap()), ["id", "title"]);
     assert!(p.push(Step::InsertRows { at: 0, count: 1 }).is_err());
@@ -334,7 +335,7 @@ fn stale_or_cancelled_results_are_dropped() {
     assert!(!p.install(computed));
     assert_eq!(p.status(), &Status::Computing { step: 0 });
     assert_ne!(p.compute_key(), Some(old_key.clone()));
-    assert!(!p.fail(&old_key, "boom".into()));
+    assert!(!p.fail(&old_key, Arc::new(Error::Cancelled)));
     p.compute_all(&mut |_| true).unwrap();
     assert_eq!(p.num_rows(), 499);
 }
@@ -379,12 +380,13 @@ fn a_failed_pass_breaks_its_step() {
     let mut p = Pipeline::new(source(10));
     p.push(keep_ids_above(3)).unwrap();
     let key = p.compute_key().unwrap();
-    assert!(p.fail(&key, "disk full".into()));
+    let disk_full = Arc::new(Error::from(std::io::Error::other("disk full")));
+    assert!(p.fail(&key, disk_full.clone()));
     assert_eq!(
         p.status(),
         &Status::Broken {
             step: 0,
-            error: "disk full".into()
+            error: disk_full
         }
     );
     assert_eq!(p.compute_key(), None);

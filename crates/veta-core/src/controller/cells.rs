@@ -1,6 +1,7 @@
 //! Cell commands: setting one cell and pasting blocks of values.
 
 use super::*;
+use crate::error::invalid;
 
 /// Plans one of this area's commands (see `super::plan`).
 pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
@@ -9,17 +10,13 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
             let schema = doc.schema();
             let field = schema
                 .field_with_name(&column)
-                .map_err(|_| invalid(format!("no column named {column:?}")))?;
+                .map_err(|_| invalid!(ColumnNotFound, column = column))?;
             if row >= doc.num_rows() {
-                return Err(invalid(format!(
-                    "row {} is past the last row ({})",
-                    row + 1,
-                    doc.num_rows()
-                )));
+                return Err(invalid!(RowPastEnd, row = row + 1, rows = doc.num_rows()));
             }
             let after = parse_value(value.as_deref(), field.data_type())?;
             if after.is_null(0) && !field.is_nullable() {
-                return Err(invalid(format!("{column} cannot be empty")));
+                return Err(invalid!(NotNullable, column = column));
             }
             let change = match doc.steps().last() {
                 Some(Step::EditCells(edits)) => Change::EditCell {
@@ -47,14 +44,15 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
             let schema = doc.schema();
             let width = values.iter().map(Vec::len).max().unwrap_or(0);
             if width == 0 {
-                return Err(invalid("there is nothing to paste".into()));
+                return Err(invalid!(NothingToPaste));
             }
             if column + width > schema.fields().len() {
-                return Err(invalid(format!(
-                    "the pasted values are {width} columns wide; only {} fit from column {}",
-                    schema.fields().len().saturating_sub(column),
-                    column + 1
-                )));
+                return Err(invalid!(
+                    PasteTooWide,
+                    width = width,
+                    fit = schema.fields().len().saturating_sub(column),
+                    column = column + 1
+                ));
             }
             let mut changes = Vec::new();
             let end = row + values.len();
@@ -76,9 +74,9 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
                     let name = field.name().clone();
                     let r = row + i;
                     let after = parse_value(value.as_deref(), field.data_type())
-                        .map_err(|e| invalid(format!("row {}, {name}: {e}", r + 1)))?;
+                        .map_err(|e| invalid!(RowColumn, row = r + 1, column = name; cause = e))?;
                     if after.is_null(0) && !field.is_nullable() {
-                        return Err(invalid(format!("{name} cannot be empty (row {})", r + 1)));
+                        return Err(invalid!(NotNullableRow, column = name, row = r + 1));
                     }
                     changes.push(Change::EditCell {
                         before: existing.and_then(|e| e.get(&name, r).cloned()),
@@ -101,13 +99,14 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
             let schema = doc.schema();
             let width = values.iter().map(Vec::len).max().unwrap_or(0);
             if width == 0 {
-                return Err(invalid("there is nothing to paste".into()));
+                return Err(invalid!(NothingToPaste));
             }
             if width > targets.len() {
-                return Err(invalid(format!(
-                    "the pasted values are {width} columns wide; only {} fit there",
-                    targets.len()
-                )));
+                return Err(invalid!(
+                    PasteTooWideThere,
+                    width = width,
+                    fit = targets.len()
+                ));
             }
             let mut changes = Vec::new();
             let end = row + values.len();
@@ -137,16 +136,17 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
                     let field = schema
                         .fields()
                         .get(*c)
-                        .ok_or_else(|| invalid(format!("there is no column {}", c + 1)))?;
+                        .ok_or_else(|| invalid!(NoColumnAt, column = c + 1))?;
                     let name = field.name();
                     let leaf = field_type(field.data_type(), path).ok_or_else(|| {
-                        invalid(format!("{name} has no field {}", path.join(".")))
+                        invalid!(FieldNotFound, at = name, field = path.join("."))
                     })?;
                     if path.is_empty() {
-                        let after = parse_value(value.as_deref(), leaf)
-                            .map_err(|e| invalid(format!("row {}, {name}: {e}", r + 1)))?;
+                        let after = parse_value(value.as_deref(), leaf).map_err(
+                            |e| invalid!(RowColumn, row = r + 1, column = name; cause = e),
+                        )?;
                         if after.is_null(0) && !field.is_nullable() {
-                            return Err(invalid(format!("{name} cannot be empty (row {})", r + 1)));
+                            return Err(invalid!(NotNullableRow, column = name, row = r + 1));
                         }
                         cells.retain(|(cc, _)| cc != c);
                         changes.push(Change::EditCell {
@@ -169,7 +169,9 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
                     };
                     let pointer: Vec<_> = path.iter().cloned().map(PathPart::Field).collect();
                     let json = crate::values::set_nested(&json, &pointer, value.as_deref(), leaf)
-                        .map_err(|e| invalid(format!("row {}, {name}: {e}", r + 1)))?;
+                        .map_err(
+                        |e| invalid!(RowColumn, row = r + 1, column = name; cause = e),
+                    )?;
                     cells.push((*c, json));
                 }
                 for (c, json) in cells {
@@ -187,6 +189,10 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
             }
             Ok(Change::Batch(changes))
         }
-        other => Err(invalid(format!("not a {} command: {other:?}", "cells"))),
+        other => Err(invalid!(
+            WrongArea,
+            area = "cells",
+            command = format!("{other:?}")
+        )),
     }
 }

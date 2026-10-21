@@ -1,6 +1,7 @@
 //! Transformation steps (filter, sort, cast, …) and managing the steps list: remove, move, replace, append.
 
 use super::*;
+use crate::error::invalid;
 
 /// Plans one of this area's commands (see `super::plan`).
 pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
@@ -29,7 +30,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
         Command::RemoveStep { index } => {
             let mut after = doc.steps().to_vec();
             if index >= after.len() {
-                return Err(invalid(format!("there is no step {}", index + 1)));
+                return Err(invalid!(NoStep, step = index + 1));
             }
             after.remove(index);
             Ok(Change::Steps {
@@ -41,7 +42,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
         Command::MoveStep { from, to } => {
             let mut after = doc.steps().to_vec();
             if from >= after.len() || to >= after.len() {
-                return Err(invalid("step position out of range".into()));
+                return Err(invalid!(StepPosition));
             }
             let step = after.remove(from);
             after.insert(to, step);
@@ -53,7 +54,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
         }
         Command::ReplaceSteps { steps } => {
             if steps.is_empty() {
-                return Err(invalid("there are no steps to use".into()));
+                return Err(invalid!(NoStepsToUse));
             }
             Ok(Change::Steps {
                 before: doc.steps().to_vec(),
@@ -63,7 +64,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
         }
         Command::AppendSteps { steps } => {
             if steps.is_empty() {
-                return Err(invalid("there are no steps to add".into()));
+                return Err(invalid!(NoStepsToAdd));
             }
             let before = doc.steps().to_vec();
             let keep = before.len();
@@ -78,7 +79,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
         Command::ReplaceStep { index, step } => {
             let mut after = doc.steps().to_vec();
             let Some(slot) = after.get_mut(index) else {
-                return Err(invalid(format!("there is no step {}", index + 1)));
+                return Err(invalid!(NoStep, step = index + 1));
             };
             *slot = step;
             Ok(Change::Steps {
@@ -87,6 +88,10 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
                 keep: index,
             })
         }
-        other => Err(invalid(format!("not a {} command: {other:?}", "steps"))),
+        other => Err(invalid!(
+            WrongArea,
+            area = "steps",
+            command = format!("{other:?}")
+        )),
     }
 }

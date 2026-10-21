@@ -1,6 +1,7 @@
 //! Keeping rows that match conditions (Power Query's "Keep Rows" / column
 //! filters).
 
+use crate::error::invalid;
 use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, BooleanArray, Scalar, StringArray};
@@ -12,7 +13,6 @@ use arrow::record_batch::RecordBatch;
 
 use crate::display::type_name;
 use crate::error::Result;
-use crate::steps::invalid;
 use crate::values::{is_text, parse_value};
 
 /// Rows are kept when all (or any) conditions hold.
@@ -84,67 +84,39 @@ impl FilterOp {
     }
 }
 
-impl FilterOp {
-    /// The operator in plain English, for step descriptions and messages
-    /// until they leave the core (#146, #138).
-    pub(crate) fn phrase(self) -> &'static str {
-        match self {
-            Self::Equals => "equals",
-            Self::NotEquals => "does not equal",
-            Self::Less => "is less than",
-            Self::LessOrEqual => "is less than or equal to",
-            Self::Greater => "is greater than",
-            Self::GreaterOrEqual => "is greater than or equal to",
-            Self::Contains => "contains",
-            Self::NotContains => "does not contain",
-            Self::StartsWith => "starts with",
-            Self::EndsWith => "ends with",
-            Self::IsNull => "is null",
-            Self::IsNotNull => "is not null",
-        }
-    }
-}
-
 impl Condition {}
 
 impl Filter {
     /// Checks the filter against the input schema.
     pub(crate) fn validate(&self, schema: &Schema) -> Result<()> {
         if self.conditions.is_empty() {
-            return Err(invalid("a filter needs at least one condition".into()));
+            return Err(invalid!(FilterNoConditions));
         }
         for c in &self.conditions {
             let field = schema
                 .field_with_name(&c.column)
-                .map_err(|_| invalid(format!("no column named {:?}", c.column)))?;
+                .map_err(|_| invalid!(ColumnNotFound, column = c.column))?;
             let nested = field.data_type().is_nested();
             if nested && !c.op.is_text_test() && c.op.needs_value() && !c.op.is_equality() {
-                return Err(invalid(format!(
-                    "\"{}\" doesn't apply to {}: use equals, contains, starts/ends with or null tests",
-                    c.op.phrase(),
-                    c.column
-                )));
+                return Err(invalid!(FilterOpNotForNested, column = c.column));
             }
             if nested && c.op.is_equality() {
                 // The value is JSON, checked against the column's type.
                 parse_value(Some(&c.value), field.data_type())
-                    .map_err(|e| invalid(format!("value for {}: {e}", c.column)))?;
+                    .map_err(|e| invalid!(FilterValue, column = c.column; cause = e))?;
                 continue;
             }
             if c.op.needs_value() && !c.op.is_text_test() && !is_text(field.data_type()) {
                 parse_value(Some(&c.value), field.data_type()).map_err(|_| {
-                    invalid(format!(
-                        "{:?} is not a valid {} for column {}",
-                        c.value,
-                        type_name(field.data_type()),
-                        c.column
-                    ))
+                    invalid!(
+                        FilterValueType,
+                        value = c.value,
+                        data_type = type_name(field.data_type()),
+                        column = c.column
+                    )
                 })?;
                 if c.value.trim().is_empty() {
-                    return Err(invalid(format!(
-                        "enter a value to compare {} with",
-                        c.column
-                    )));
+                    return Err(invalid!(FilterNoValue, column = c.column));
                 }
             }
         }
@@ -176,7 +148,7 @@ impl Condition {
     fn evaluate(&self, batch: &RecordBatch) -> Result<BooleanArray> {
         let column = batch
             .column_by_name(&self.column)
-            .ok_or_else(|| invalid(format!("no column named {:?}", self.column)))?;
+            .ok_or_else(|| invalid!(ColumnNotFound, column = self.column))?;
         let data_type = column.data_type().clone();
         match self.op {
             FilterOp::IsNull => return Ok(arrow::compute::is_null(column)?),
@@ -230,7 +202,7 @@ fn compare(op: FilterOp, left: &ArrayRef, right: &dyn arrow::array::Datum) -> Re
         FilterOp::LessOrEqual => cmp::lt_eq(left, right)?,
         FilterOp::Greater => cmp::gt(left, right)?,
         FilterOp::GreaterOrEqual => cmp::gt_eq(left, right)?,
-        other => return Err(invalid(format!("{} is not a comparison", other.phrase()))),
+        _ => return Err(invalid!(NotAComparison)),
     })
 }
 

@@ -2,6 +2,7 @@
 //! window at a time (filter, sort, fill). The result is cached on the
 //! pipeline so later reads are windowed again.
 
+use crate::error::invalid;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use arrow::array::{Array, ArrayRef};
 use arrow::record_batch::RecordBatch;
 
 use super::checkpoint::{Checkpoint, TempFile, write_parquet};
-use super::{Pipeline, Step, invalid};
+use super::{Pipeline, Step};
 use crate::error::{Error, Result};
 use crate::source::{DataSource, MemorySource, SourceMode};
 use crate::transforms::fill::{Fill, carry_out, fill};
@@ -139,7 +140,7 @@ impl ComputeJob {
         let input_rows = self
             .pipeline
             .num_rows_at(self.step)
-            .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+            .ok_or_else(|| invalid!(InputNotEvaluated))?;
         match &self.pipeline.steps()[self.step] {
             Step::Filter(filter) => {
                 // Pieces are read and filtered on several threads.
@@ -167,7 +168,7 @@ impl ComputeJob {
                 let schema = self
                     .pipeline
                     .schema_at(self.step)
-                    .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+                    .ok_or_else(|| invalid!(InputNotEvaluated))?;
                 let read = |range| self.pipeline.read_at(self.step, range);
                 let names = sort_key_names(sort);
                 let read_keys = |range| self.pipeline.read_columns_at(self.step, range, &names);
@@ -175,7 +176,7 @@ impl ComputeJob {
                     sort, &schema, input_rows, &read, &read_keys, PASS_ROWS,
                 )?))
             }
-            _ => Err(invalid("this step can't be streamed".into())),
+            _ => Err(invalid!(NotStreamable)),
         }
     }
 
@@ -185,7 +186,7 @@ impl ComputeJob {
         let input_rows = self
             .pipeline
             .num_rows_at(self.step)
-            .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+            .ok_or_else(|| invalid!(InputNotEvaluated))?;
         let cache = match &self.pipeline.steps()[self.step] {
             Step::Filter(filter) => {
                 // Only the columns the conditions test are read.
@@ -228,7 +229,7 @@ impl ComputeJob {
                 let schema = self
                     .pipeline
                     .schema_at(self.step)
-                    .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+                    .ok_or_else(|| invalid!(InputNotEvaluated))?;
                 let read = |range| self.pipeline.read_at(self.step, range);
                 let source: Arc<dyn DataSource> = match self.pipeline.source().mode() {
                     SourceMode::InMemory => {
@@ -260,7 +261,7 @@ impl ComputeJob {
                 let input = self
                     .pipeline
                     .schema_at(self.step)
-                    .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+                    .ok_or_else(|| invalid!(InputNotEvaluated))?;
                 let schema = Arc::new(arrow::datatypes::Schema::new_with_metadata(
                     cast.output_fields(&input)?,
                     input.metadata().clone(),
@@ -270,12 +271,13 @@ impl ComputeJob {
                     let end = (start + PASS_ROWS).min(input_rows);
                     let batch = self.pipeline.read_at(self.step, start..end)?;
                     if let Some((row, value)) = cast.first_failure(&batch)? {
-                        return Err(invalid(format!(
-                            "row {}: {value:?} in column {} is not a valid {}",
-                            start + row + 1,
-                            cast.column,
-                            crate::display::type_name(&cast.to)
-                        )));
+                        return Err(invalid!(
+                            RowValueType,
+                            row = start + row + 1,
+                            value = value,
+                            column = cast.column,
+                            data_type = crate::display::type_name(&cast.to)
+                        ));
                     }
                     start = end;
                     if !progress(start as f32 / input_rows as f32) {
@@ -293,7 +295,7 @@ impl ComputeJob {
                     let batch = self.pipeline.read_at(self.step, start..end)?;
                     let column = batch
                         .column_by_name(name)
-                        .ok_or_else(|| invalid(format!("no column named {name:?}")))?;
+                        .ok_or_else(|| invalid!(ColumnNotFound, column = name))?;
                     values += column.len() - column.null_count();
                     if example.is_none()
                         && let Some(i) = (0..column.len()).find(|&i| column.is_valid(i))
@@ -306,15 +308,20 @@ impl ComputeJob {
                     }
                 }
                 if values > 0 {
-                    let example = example.map(|e| format!(", e.g. {e:?}")).unwrap_or_default();
-                    return Err(invalid(format!(
-                        "{name} isn't empty: {values} values{example}"
-                    )));
+                    return Err(match example {
+                        Some(example) => invalid!(
+                            NotEmptyExample,
+                            column = name,
+                            values = values,
+                            example = example
+                        ),
+                        None => invalid!(NotEmpty, column = name, values = values),
+                    });
                 }
                 let schema = self
                     .pipeline
                     .schema_at(self.step)
-                    .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+                    .ok_or_else(|| invalid!(InputNotEvaluated))?;
                 let fields: Vec<_> = schema
                     .fields()
                     .iter()
@@ -327,7 +334,7 @@ impl ComputeJob {
                 )))
             }
             other => {
-                return Err(invalid(format!("{other:?} doesn't need computing")));
+                return Err(invalid!(NoComputeNeeded, step = format!("{other:?}")));
             }
         };
         Ok(Computed {
@@ -351,7 +358,7 @@ impl ComputeJob {
         let schema = self
             .pipeline
             .schema_at(self.step)
-            .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+            .ok_or_else(|| invalid!(InputNotEvaluated))?;
         let indices = f
             .columns
             .iter()
@@ -446,7 +453,7 @@ impl ComputeJob {
         let input = self
             .pipeline
             .schema_at(self.step)
-            .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+            .ok_or_else(|| invalid!(InputNotEvaluated))?;
         let schema = Arc::new(arrow::datatypes::Schema::new_with_metadata(
             crate::transforms::nested::collect_fields(&input, keys, columns)?,
             input.metadata().clone(),
@@ -569,7 +576,7 @@ impl ComputeJob {
         let input = self
             .pipeline
             .schema_at(self.step)
-            .ok_or_else(|| invalid("the step's input is not evaluated".into()))?;
+            .ok_or_else(|| invalid!(InputNotEvaluated))?;
         let schema = Arc::new(arrow::datatypes::Schema::new_with_metadata(
             crate::transforms::nested::explode_fields(&input, column)?,
             input.metadata().clone(),

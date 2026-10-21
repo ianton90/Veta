@@ -8,6 +8,7 @@
 //! one column much slower than the rest; the finished chunks are appended
 //! to the file in order.
 
+use crate::error::invalid;
 use std::collections::VecDeque;
 use std::io::Write;
 use std::panic::AssertUnwindSafe;
@@ -202,7 +203,7 @@ struct Encoding {
 type Reply = parquet::errors::Result<ArrowColumnChunk>;
 
 fn failed() -> Error {
-    Error::InvalidCommand("writing a column failed".into())
+    invalid!(WriteColumnFailed)
 }
 
 /// Encoding one column chunk: the column's writer and its rows.

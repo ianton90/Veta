@@ -41,7 +41,12 @@ pub(crate) enum Message {
     /// Progress (0–1) of the background pass with this key.
     ComputeProgress(DocumentId, Target, Vec<u64>, f32),
     /// The background pass with this key finished.
-    ComputeDone(DocumentId, Target, Vec<u64>, Result<Slot<Computed>, String>),
+    ComputeDone(
+        DocumentId,
+        Target,
+        Vec<u64>,
+        Result<Slot<Computed>, veta_core::Error>,
+    ),
     /// Stop the background pass and undo the change that started it.
     CancelCompute,
     SideTab(SideTab),
@@ -64,7 +69,7 @@ pub(crate) enum Message {
     RowsRead(
         DocumentId,
         u64,
-        Result<veta_core::arrow::record_batch::RecordBatch, String>,
+        Result<veta_core::arrow::record_batch::RecordBatch, veta_core::Error>,
     ),
     StatsDone(DocumentId, u64, Result<Vec<ColumnStats>, String>),
     /// A file to import was chosen.

@@ -5,7 +5,7 @@
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 const MIB: usize = 1024 * 1024;
 /// The smallest budget allowed.
@@ -52,11 +52,7 @@ pub fn set_budget(bytes: Option<usize>) {
 /// Reads a budget written as bytes with a unit (`512M`, `4G`, `4GB`, `2.5G`)
 /// or a share of RAM (`25%`).
 pub fn parse_budget(text: &str) -> Result<usize> {
-    let invalid = || {
-        Error::InvalidCommand(format!(
-            "{text:?} is not a memory size; use e.g. 512M, 4G or 25%"
-        ))
-    };
+    let invalid = || crate::error::invalid!(MemorySize, value = text);
     let text = text.trim();
     if let Some(percent) = text.strip_suffix('%') {
         let share: f64 = percent.trim().parse().map_err(|_| invalid())?;

@@ -1,6 +1,7 @@
 //! Column commands: add, remove, keep, rename and move columns, and add or remove struct fields.
 
 use super::*;
+use crate::error::invalid;
 
 /// Plans one of this area's commands (see `super::plan`).
 pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
@@ -76,6 +77,10 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
         Command::RemoveField { column, path, name } => {
             Ok(Change::PushStep(Step::RemoveField { column, path, name }))
         }
-        other => Err(invalid(format!("not a {} command: {other:?}", "columns"))),
+        other => Err(invalid!(
+            WrongArea,
+            area = "columns",
+            command = format!("{other:?}")
+        )),
     }
 }

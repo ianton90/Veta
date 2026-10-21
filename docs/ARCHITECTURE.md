@@ -51,7 +51,9 @@ starts with a `//!` comment saying what it is for.
 ```
 veta-core/src/
   lib.rs                 module list; short paths (io, command, rows, …)
-  error.rs
+  error/                 Error; rejected input as Invalid { code, args,
+                         cause } built with invalid!(Code, name = value);
+                         codes.rs: ErrorCode and each code's English
   parallel.rs            independent work on all cores
   memory.rs              the memory budget (half of RAM by default)
   model/                 Document, Workbook, metadata, undo history
@@ -104,7 +106,8 @@ veta-gui/src/
                          language, icon font
   ribbon.rs              the ribbon and its Actions
   i18n/                  translations: mod.rs (tag → language → text, tr),
-                         model.rs (step names, option labels, summaries)
+                         model.rs (step names, option labels, summaries),
+                         errors.rs (core errors through ERR_ tags)
 veta-gui/translations/   translations_<locale>.json, one per language
 veta-gui/tests/          translations: every tag has a text, switching
 
@@ -218,6 +221,10 @@ Document
   names (from the `Step` data; the core has no step names),
   filter / text / on-error options (`Labeled<T>` for pick lists), value
   summaries and the import report.
+- Errors from the core are codes with values (`Error::Invalid`); the GUI
+  words them with the tag `ERR_<CODE>` (`errors::error_text`), the CLI
+  prints the core's English. A new error: add its code and English to
+  `error/codes.rs`, and its `ERR_` texts to every translations file.
 - Saving a new language in Settings sends `Message::LanguageChanged`; it
   reloads the translations and the next redraw shows the new texts.
 - To add a language: add `translations_<locale>.json` with every tag and

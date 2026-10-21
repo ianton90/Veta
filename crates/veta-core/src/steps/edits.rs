@@ -1,12 +1,12 @@
 //! [`CellEdits`]: the values an edit-cells step sets.
 
+use crate::error::invalid;
 use std::collections::BTreeMap;
 
 use arrow::array::{Array, ArrayRef};
 use arrow::compute::interleave;
 use arrow::record_batch::RecordBatch;
 
-use super::invalid;
 use super::level::Level;
 use crate::error::Result;
 
@@ -61,20 +61,14 @@ impl CellEdits {
         for (column, rows) in &self.columns {
             let field = level.field(column)?;
             if let Some((&row, _)) = rows.range(level.num_rows..).next() {
-                return Err(invalid(format!(
-                    "row {} is past the last row ({})",
-                    row + 1,
-                    level.num_rows
-                )));
+                return Err(invalid!(RowPastEnd, row = row + 1, rows = level.num_rows));
             }
             for value in rows.values() {
                 if value.data_type() != field.data_type() || value.len() != 1 {
-                    return Err(invalid(format!(
-                        "edited value does not match the type of {column}"
-                    )));
+                    return Err(invalid!(EditType, column = column));
                 }
                 if value.is_null(0) && !field.is_nullable() {
-                    return Err(invalid(format!("{column} cannot be empty")));
+                    return Err(invalid!(NotNullable, column = column));
                 }
             }
         }

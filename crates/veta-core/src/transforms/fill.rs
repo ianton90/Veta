@@ -1,11 +1,11 @@
 //! Filling nulls with the nearest value above or below.
 
+use crate::error::invalid;
 use arrow::array::{Array, ArrayRef, UInt32Array, new_null_array};
 use arrow::compute::{concat, take};
 use arrow::datatypes::Schema;
 
 use crate::error::Result;
-use crate::steps::invalid;
 
 /// Fills nulls in `columns` with the previous non-null value (down) or the
 /// next one (up).
@@ -18,12 +18,12 @@ pub struct Fill {
 impl Fill {
     pub(crate) fn validate(&self, schema: &Schema) -> Result<()> {
         if self.columns.is_empty() {
-            return Err(invalid("no columns to fill".into()));
+            return Err(invalid!(NoColumnsToFill));
         }
         for name in &self.columns {
             schema
                 .index_of(name)
-                .map_err(|_| invalid(format!("no column named {name:?}")))?;
+                .map_err(|_| invalid!(ColumnNotFound, column = name))?;
         }
         Ok(())
     }

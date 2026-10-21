@@ -1,5 +1,6 @@
 //! Parsing user input into typed values.
 
+use crate::error::invalid;
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, StringArray, new_null_array};
@@ -7,7 +8,7 @@ use arrow::compute::{CastOptions, cast_with_options};
 use arrow::datatypes::DataType;
 
 use crate::display::type_name;
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 pub fn is_text(data_type: &DataType) -> bool {
     matches!(
@@ -34,20 +35,21 @@ pub fn parse_value(text: Option<&str>, data_type: &DataType) -> Result<ArrayRef>
         safe: false,
         ..CastOptions::default()
     };
-    cast_with_options(&input, data_type, &options).map_err(|_| {
-        Error::InvalidCommand(format!("{text:?} is not a valid {}", type_name(data_type)))
-    })
+    cast_with_options(&input, data_type, &options)
+        .map_err(|_| invalid!(InvalidValue, value = text, data_type = type_name(data_type)))
 }
 
 /// Parses JSON text (`{"x": 1}`, `[1, 2]`, …) as a one-element array of a
 /// nested type.
 fn parse_json(text: &str, data_type: &DataType) -> Result<ArrayRef> {
+    // `detail`: what the JSON reader said.
     let invalid = |detail: String| {
-        Error::InvalidCommand(format!(
-            "not a valid {} (write it as JSON, e.g. {}): {detail}",
-            type_name(data_type),
-            json_example(data_type)
-        ))
+        invalid!(
+            NotValidJsonValue,
+            data_type = type_name(data_type),
+            example = json_example(data_type),
+            detail = detail
+        )
     };
     // Reject trailing text and non-JSON early, with a clear message.
     serde_json::from_str::<serde_json::Value>(text).map_err(|e| invalid(e.to_string()))?;
@@ -64,7 +66,13 @@ fn parse_json(text: &str, data_type: &DataType) -> Result<ArrayRef> {
         .map_err(|e| invalid(e.to_string()))?;
     let batch = reader
         .next()
-        .ok_or_else(|| invalid("no value".into()))?
+        .ok_or_else(|| {
+            invalid!(
+                NotValidJson,
+                data_type = type_name(data_type),
+                example = json_example(data_type)
+            )
+        })?
         .map_err(|e| invalid(e.to_string()))?;
     let value = batch.column(0).clone();
     if json_type.is_none() {
@@ -75,7 +83,7 @@ fn parse_json(text: &str, data_type: &DataType) -> Result<ArrayRef> {
         ..CastOptions::default()
     };
     cast_with_options(&value, data_type, &options)
-        .map_err(|e| invalid(format!("a key doesn't fit its type ({e})")))
+        .map_err(|e| invalid!(KeyType, data_type = type_name(data_type), error = e))
 }
 
 /// The JSON of a nested cell with the leaf at `pointer` replaced by
@@ -86,13 +94,11 @@ pub fn set_nested(
     text: Option<&str>,
     leaf_type: &DataType,
 ) -> Result<String> {
-    let mut root: serde_json::Value = serde_json::from_str(cell_json)
-        .map_err(|e| Error::InvalidCommand(format!("the cell is not valid JSON: {e}")))?;
+    let mut root: serde_json::Value =
+        serde_json::from_str(cell_json).map_err(|e| invalid!(CellNotJson, error = e))?;
     let leaf = parse_value(text, leaf_type)?;
     let leaf = match crate::display::value_json(leaf.as_ref(), 0)? {
-        Some(json) => {
-            serde_json::from_str(&json).map_err(|e| Error::InvalidCommand(e.to_string()))?
-        }
+        Some(json) => serde_json::from_str(&json).map_err(|e| invalid!(Json, error = e))?,
         None => serde_json::Value::Null,
     };
     *value_at_or_insert(&mut root, pointer)? = leaf;
@@ -122,16 +128,16 @@ pub fn edit_list(
     list: &[crate::display::PathPart],
     edit: &ListEdit,
 ) -> Result<String> {
-    let mut root: serde_json::Value = serde_json::from_str(cell_json)
-        .map_err(|e| Error::InvalidCommand(format!("the cell is not valid JSON: {e}")))?;
+    let mut root: serde_json::Value =
+        serde_json::from_str(cell_json).map_err(|e| invalid!(CellNotJson, error = e))?;
     let target = value_at_or_insert(&mut root, list)?;
     if target.is_null() {
         *target = serde_json::Value::Array(Vec::new());
     }
     let serde_json::Value::Array(items) = target else {
-        return Err(Error::InvalidCommand("that value is not a list".into()));
+        return Err(invalid!(ValueNotList));
     };
-    let gone = || Error::InvalidCommand("that item no longer exists".into());
+    let gone = || invalid!(ItemGone);
     match *edit {
         ListEdit::Set {
             index,
@@ -140,9 +146,7 @@ pub fn edit_list(
         } => {
             let item = parse_value(text, item_type)?;
             let item = match crate::display::value_json(item.as_ref(), 0)? {
-                Some(json) => {
-                    serde_json::from_str(&json).map_err(|e| Error::InvalidCommand(e.to_string()))?
-                }
+                Some(json) => serde_json::from_str(&json).map_err(|e| invalid!(Json, error = e))?,
                 None => serde_json::Value::Null,
             };
             match index.cmp(&items.len()) {
@@ -170,8 +174,8 @@ pub fn fill_null_list(
     list: &[crate::display::PathPart],
     len: usize,
 ) -> Result<String> {
-    let mut root: serde_json::Value = serde_json::from_str(cell_json)
-        .map_err(|e| Error::InvalidCommand(format!("the cell is not valid JSON: {e}")))?;
+    let mut root: serde_json::Value =
+        serde_json::from_str(cell_json).map_err(|e| invalid!(CellNotJson, error = e))?;
     let target = value_at_or_insert(&mut root, list)?;
     if target.is_null() {
         *target = serde_json::Value::Array(vec![serde_json::Value::Null; len]);
@@ -214,25 +218,25 @@ pub fn edit_map(
     map: &[crate::display::PathPart],
     edit: &MapEdit,
 ) -> Result<String> {
-    let mut root: serde_json::Value = serde_json::from_str(cell_json)
-        .map_err(|e| Error::InvalidCommand(format!("the cell is not valid JSON: {e}")))?;
+    let mut root: serde_json::Value =
+        serde_json::from_str(cell_json).map_err(|e| invalid!(CellNotJson, error = e))?;
     let target = value_at_or_insert(&mut root, map)?;
     if target.is_null() {
         *target = serde_json::Value::Object(Default::default());
     }
     let serde_json::Value::Object(object) = target else {
-        return Err(Error::InvalidCommand("that value is not a map".into()));
+        return Err(invalid!(ValueNotMap));
     };
     let mut entries: Vec<(String, serde_json::Value)> =
         std::mem::take(object).into_iter().collect();
-    let gone = || Error::InvalidCommand("that entry no longer exists".into());
+    let gone = || invalid!(EntryGone);
     let taken =
         |entries: &[(String, serde_json::Value)], key: &str, except: Option<usize>| match entries
             .iter()
             .enumerate()
             .any(|(i, (k, _))| k == key && Some(i) != except)
         {
-            true => Err(Error::InvalidCommand(format!("{key:?} is already a key"))),
+            true => Err(invalid!(KeyExists, key = key)),
             false => Ok(()),
         };
     match *edit {
@@ -243,9 +247,7 @@ pub fn edit_map(
         } => {
             let value = parse_value(text, value_type)?;
             let value = match crate::display::value_json(value.as_ref(), 0)? {
-                Some(json) => {
-                    serde_json::from_str(&json).map_err(|e| Error::InvalidCommand(e.to_string()))?
-                }
+                Some(json) => serde_json::from_str(&json).map_err(|e| invalid!(Json, error = e))?,
                 None => serde_json::Value::Null,
             };
             entries.get_mut(index).ok_or_else(gone)?.1 = value;
@@ -285,7 +287,7 @@ fn map_key(text: &str, key_type: &DataType) -> Result<String> {
     }
     let key = parse_value(Some(text), key_type)?;
     if key.is_null(0) {
-        return Err(Error::InvalidCommand("a key can't be empty".into()));
+        return Err(invalid!(KeyEmpty));
     }
     let key = arrow::compute::cast(&key, &DataType::Utf8)?;
     Ok(key
@@ -314,9 +316,7 @@ fn value_at_or_insert<'a>(
                         map.entry(name.clone()).or_insert(serde_json::Value::Null)
                     }
                     _ => {
-                        return Err(Error::InvalidCommand(
-                            "that part of the value no longer exists".into(),
-                        ));
+                        return Err(invalid!(PartGone));
                     }
                 }
             }
@@ -333,7 +333,7 @@ fn value_at<'a>(
     use crate::display::PathPart;
     let mut target = root;
     for part in pointer {
-        let missing = || Error::InvalidCommand("that part of the value no longer exists".into());
+        let missing = || invalid!(PartGone);
         target = match part {
             PathPart::Field(name) => target.get_mut(name.as_str()).ok_or_else(missing)?,
             PathPart::Index(i) => target.get_mut(*i).ok_or_else(missing)?,

@@ -4,9 +4,10 @@
 //! apply and revert itself. Applied changes go on the undo stack; undoing
 //! moves them to the redo stack.
 
+use crate::error::invalid;
 use arrow::array::ArrayRef;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::model::{Document, FileMetadata, WriterSettings};
 use crate::steps::{CellEdits, Step};
 
@@ -132,7 +133,7 @@ impl Change {
 fn last_edits(doc: &mut Document) -> Result<&mut CellEdits> {
     doc.pipeline
         .last_edits_mut()
-        .ok_or_else(|| Error::InvalidCommand("the last step is not a cell edit".into()))
+        .ok_or_else(|| invalid!(LastStepNotEdit))
 }
 
 #[derive(Debug, Clone)]

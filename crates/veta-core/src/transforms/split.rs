@@ -1,5 +1,6 @@
 //! Splitting a column into several, and merging columns into one.
 
+use crate::error::invalid;
 use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, StringArray, StringBuilder};
@@ -8,7 +9,6 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 
 use crate::error::Result;
-use crate::steps::invalid;
 
 /// Splits a column's text into `parts` new text columns named
 /// `<column>.1`, `<column>.2`, …, which replace it.
@@ -47,18 +47,18 @@ impl Split {
         match &self.by {
             SplitBy::Delimiter { delimiter, parts } => {
                 if delimiter.is_empty() {
-                    return Err(invalid("enter a delimiter".into()));
+                    return Err(invalid!(SplitNoDelimiter));
                 }
                 if *parts < 2 {
-                    return Err(invalid("split into at least 2 columns".into()));
+                    return Err(invalid!(SplitTooFew));
                 }
             }
             SplitBy::Positions(positions) => {
                 if positions.is_empty() {
-                    return Err(invalid("enter at least one position".into()));
+                    return Err(invalid!(SplitNoPositions));
                 }
                 if positions[0] == 0 || positions.windows(2).any(|w| w[0] >= w[1]) {
-                    return Err(invalid("positions must be increasing and above 0".into()));
+                    return Err(invalid!(SplitBadPositions));
                 }
             }
         }
@@ -70,7 +70,7 @@ impl Split {
                 .enumerate()
                 .any(|(i, f)| i != index && f.name() == name)
             {
-                return Err(invalid(format!("a column named {name:?} already exists")));
+                return Err(invalid!(ColumnExists, column = name));
             }
         }
         fields.splice(
@@ -133,18 +133,18 @@ pub struct Merge {
 impl Merge {
     pub(crate) fn output_fields(&self, schema: &Schema) -> Result<Vec<Field>> {
         if self.columns.len() < 2 {
-            return Err(invalid("select at least 2 columns to merge".into()));
+            return Err(invalid!(MergeTooFew));
         }
         let mut indices = Vec::new();
         for name in &self.columns {
             let i = column_index(schema, name)?;
             if indices.contains(&i) {
-                return Err(invalid(format!("{name} is listed twice")));
+                return Err(invalid!(ColumnTwice, column = name));
             }
             indices.push(i);
         }
         if self.name.trim().is_empty() {
-            return Err(invalid("column name cannot be empty".into()));
+            return Err(invalid!(ColumnNameEmpty));
         }
         let first = indices.iter().copied().min().unwrap_or_default();
         let mut fields = Vec::new();
@@ -153,10 +153,7 @@ impl Merge {
                 fields.push(Field::new(&self.name, DataType::Utf8, true));
             } else if !indices.contains(&i) {
                 if field.name() == &self.name {
-                    return Err(invalid(format!(
-                        "a column named {:?} already exists",
-                        self.name
-                    )));
+                    return Err(invalid!(ColumnExists, column = self.name));
                 }
                 fields.push(field.as_ref().clone());
             }
@@ -211,14 +208,14 @@ impl Merge {
 fn column_index(schema: &Schema, name: &str) -> Result<usize> {
     schema
         .index_of(name)
-        .map_err(|_| invalid(format!("no column named {name:?}")))
+        .map_err(|_| invalid!(ColumnNotFound, column = name))
 }
 
 fn as_strings(array: &ArrayRef) -> Result<&StringArray> {
     array
         .as_any()
         .downcast_ref::<StringArray>()
-        .ok_or_else(|| invalid("expected text".into()))
+        .ok_or_else(|| invalid!(ExpectedText))
 }
 
 /// Byte offset of character `chars` in `s` (the end if past it).

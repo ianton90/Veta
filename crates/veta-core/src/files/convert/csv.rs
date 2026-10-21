@@ -1,6 +1,7 @@
 //! CSV import: reading text columns and converting them to their types.
 
 use super::*;
+use crate::error::invalid;
 
 // CSV.
 
@@ -30,10 +31,7 @@ pub(super) fn convert_columns(
             .map(|(column, field)| scope.spawn(move || convert_column(column, field, options)))
             .collect();
         work.into_iter()
-            .map(|w| {
-                w.join()
-                    .unwrap_or_else(|_| Err(Error::InvalidCommand("import failed".into())))
-            })
+            .map(|w| w.join().unwrap_or_else(|_| Err(invalid!(ImportFailed))))
             .collect()
     })
 }
@@ -117,12 +115,13 @@ pub(super) fn import_batch(
             && let Some(&row) = failed.first()
         {
             let value = array_text(text.column(i), row);
-            return Err(invalid(format!(
-                "row {}: {value:?} in column {} is not a valid {}",
-                first_row + row + 1,
-                schema.field(i).name(),
-                crate::display::type_name(schema.field(i).data_type())
-            )));
+            return Err(invalid!(
+                RowValueType,
+                row = first_row + row + 1,
+                value = value,
+                column = schema.field(i).name(),
+                data_type = crate::display::type_name(schema.field(i).data_type())
+            ));
         }
     }
     let columns = layout
@@ -222,11 +221,11 @@ pub(super) fn csv_schema(path: &Path, options: &CsvOptions) -> Result<SchemaRef>
         None => Ok(inferred),
         Some(types) => {
             if types.len() != inferred.fields().len() {
-                return Err(invalid(format!(
-                    "the file has {} columns, not {}",
-                    inferred.fields().len(),
-                    types.len()
-                )));
+                return Err(invalid!(
+                    ColumnCount,
+                    found = inferred.fields().len(),
+                    expected = types.len()
+                ));
             }
             Ok(Arc::new(Schema::new(
                 inferred
@@ -347,7 +346,7 @@ pub fn convert_csv(
             let batch = import_batch(&text, &schema, &layout, options, rows, &mut failures)?;
             if options.on_error == OnError::ErrorColumn && failures.iter().any(|&n| n > 0) {
                 needs_errors = true;
-                return Err(invalid("values need error columns"));
+                return Err(invalid!(ErrorColumnsNeeded));
             }
             rows += text.num_rows();
             Ok(batch)

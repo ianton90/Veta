@@ -3,6 +3,7 @@
 
 use super::eval::*;
 use super::*;
+use crate::error::invalid;
 
 /// Functions, with their argument counts (min, max).
 pub(super) const FUNCTIONS: &[(&str, usize, usize, &str)] = &[
@@ -11,7 +12,7 @@ pub(super) const FUNCTIONS: &[(&str, usize, usize, &str)] = &[
         "coalesce",
         1,
         usize::MAX,
-        "coalesce(a, b, …): first non-null",
+        "coalesce(a, b, …)",
     ),
     ("text", 1, 1, "text(x)"),
     ("number", 1, 1, "number(x)"),
@@ -33,7 +34,7 @@ pub(super) const FUNCTIONS: &[(&str, usize, usize, &str)] = &[
     ("hour", 1, 1, "hour(t)"),
     ("minute", 1, 1, "minute(t)"),
     ("second", 1, 1, "second(t)"),
-    ("row", 0, 0, "row(): row number from 1"),
+    ("row", 0, 0, "row()"),
 ];
 
 /// Each function as it is written, e.g. `if(condition, then, else)`.
@@ -57,9 +58,8 @@ impl Expr {
         let v = |i: usize| &values[i];
         Ok(match name {
             "if" => {
-                let t = unify(v(1).data_type(), v(2).data_type()).ok_or_else(|| {
-                    mismatch("choose between", v(1).data_type(), v(2).data_type())
-                })?;
+                let t = unify(v(1).data_type(), v(2).data_type())
+                    .ok_or_else(|| mismatch(Pair::Choose, v(1).data_type(), v(2).data_type()))?;
                 if t == DataType::Null {
                     return Ok(Arc::new(NullArray::new(n)));
                 }
@@ -69,7 +69,7 @@ impl Expr {
                 let mut t = DataType::Null;
                 for value in &values {
                     t = unify(&t, value.data_type())
-                        .ok_or_else(|| mismatch("coalesce", &t, value.data_type()))?;
+                        .ok_or_else(|| mismatch(Pair::Coalesce, &t, value.data_type()))?;
                 }
                 if t == DataType::Null {
                     return Ok(Arc::new(NullArray::new(n)));
@@ -203,7 +203,7 @@ impl Expr {
                 };
                 to(&date_part(v(0).as_ref(), part)?, &DataType::Int64)?
             }
-            other => return Err(invalid(format!("unknown function {other}"))),
+            other => return Err(invalid!(UnknownFunction, function = other)),
         })
     }
 }

@@ -416,7 +416,10 @@ fn failing_cast_breaks_its_step() {
         panic!("expected a broken step, got {:?}", doc.status());
     };
     assert_eq!(*step, 0);
-    assert!(error.contains("ow 2: \"bo\" in column name"), "{error}");
+    assert!(
+        error.to_string().contains("ow 2: \"bo\" in column name"),
+        "{error}"
+    );
     // A cast that works is computed and read normally.
     assert!(undo(&mut doc));
     execute(

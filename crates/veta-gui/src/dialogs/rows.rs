@@ -103,7 +103,8 @@ impl RowsDialog {
                 Place::At(at - 1)
             }
         };
-        rows_command(self.action, place, count, self.num_rows).map_err(|e| sentence(&e.to_string()))
+        rows_command(self.action, place, count, self.num_rows)
+            .map_err(|e| sentence(&error_text(&e)))
     }
 
     /// The command to run, on Apply.

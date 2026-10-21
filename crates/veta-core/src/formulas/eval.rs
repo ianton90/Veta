@@ -1,6 +1,7 @@
 //! Evaluating an [`Expr`] on a batch of rows with arrow kernels.
 
 use super::*;
+use crate::error::invalid;
 
 // Evaluation.
 
@@ -30,7 +31,7 @@ pub(super) fn floats(array: &ArrayRef) -> Result<Float64Array> {
     Ok(array
         .as_any()
         .downcast_ref::<Float64Array>()
-        .ok_or_else(|| invalid("expected a number".into()))?
+        .ok_or_else(|| invalid!(ExpectedNumber))?
         .clone())
 }
 
@@ -39,7 +40,7 @@ pub(super) fn ints(array: &ArrayRef) -> Result<Int64Array> {
     Ok(array
         .as_any()
         .downcast_ref::<Int64Array>()
-        .ok_or_else(|| invalid("expected a whole number".into()))?
+        .ok_or_else(|| invalid!(ExpectedWholeNumber))?
         .clone())
 }
 
@@ -48,7 +49,7 @@ pub(super) fn strings(array: &ArrayRef) -> Result<StringArray> {
     Ok(array
         .as_any()
         .downcast_ref::<StringArray>()
-        .ok_or_else(|| invalid("expected text".into()))?
+        .ok_or_else(|| invalid!(ExpectedText))?
         .clone())
 }
 
@@ -57,7 +58,7 @@ pub(super) fn bools(array: &ArrayRef) -> Result<BooleanArray> {
     Ok(array
         .as_any()
         .downcast_ref::<BooleanArray>()
-        .ok_or_else(|| invalid("expected true/false".into()))?
+        .ok_or_else(|| invalid!(ExpectedBool))?
         .clone())
 }
 
@@ -87,7 +88,7 @@ impl Expr {
                 let column = cx
                     .batch
                     .column_by_name(name)
-                    .ok_or_else(|| invalid(format!("no column named {name:?}")))?;
+                    .ok_or_else(|| invalid!(ColumnNotFound, column = name))?;
                 to(column, &normalize(column.data_type()))?
             }
             Expr::Int(v) => Arc::new(Int64Array::from_value(*v, n)),
@@ -125,7 +126,7 @@ impl Expr {
             BinOp::Or => Arc::new(or_kleene(&bools(&va)?, &bools(&vb)?)?),
             BinOp::And => Arc::new(and_kleene(&bools(&va)?, &bools(&vb)?)?),
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                let t = unify(&ta, &tb).ok_or_else(|| mismatch("compare", &ta, &tb))?;
+                let t = unify(&ta, &tb).ok_or_else(|| mismatch(Pair::Compare, &ta, &tb))?;
                 if t == DataType::Null {
                     return Ok(new_null_array(&DataType::Boolean, cx.len()));
                 }

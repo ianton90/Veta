@@ -1,5 +1,6 @@
 //! Row-by-row value transforms: replacing values and formatting text.
 
+use crate::error::invalid;
 use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, BooleanArray, Scalar, StringArray};
@@ -10,7 +11,6 @@ use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
 
 use crate::error::Result;
-use crate::steps::invalid;
 use crate::values::{is_text, parse_value};
 
 /// Replaces values in a column (Power Query's "Replace Values").
@@ -34,16 +34,14 @@ impl Replace {
     pub(crate) fn validate(&self, schema: &Schema) -> Result<()> {
         let field = schema
             .field_with_name(&self.column)
-            .map_err(|_| invalid(format!("no column named {:?}", self.column)))?;
+            .map_err(|_| invalid!(ColumnNotFound, column = self.column))?;
         let data_type = field.data_type();
         if self.find.is_none() && self.with.is_none() {
-            return Err(invalid(
-                "replacing nulls needs a value to put instead".into(),
-            ));
+            return Err(invalid!(ReplaceNullsNeedValue));
         }
         if self.substring(data_type) {
             if self.find.as_deref() == Some("") {
-                return Err(invalid("enter the text to find".into()));
+                return Err(invalid!(ReplaceNoText));
             }
             return Ok(());
         }
@@ -51,7 +49,7 @@ impl Replace {
             && !is_text(data_type)
             && find.trim().is_empty()
         {
-            return Err(invalid("enter the value to find".into()));
+            return Err(invalid!(ReplaceNoValue));
         }
         parse_value(self.find.as_deref(), data_type)?;
         parse_value(self.with.as_deref(), data_type)?;
@@ -93,14 +91,14 @@ impl TextOp {
 
     pub(crate) fn validate(self, schema: &Schema, columns: &[String]) -> Result<()> {
         if columns.is_empty() {
-            return Err(invalid("no columns to format".into()));
+            return Err(invalid!(NoColumnsToFormat));
         }
         for name in columns {
             let field = schema
                 .field_with_name(name)
-                .map_err(|_| invalid(format!("no column named {name:?}")))?;
+                .map_err(|_| invalid!(ColumnNotFound, column = name))?;
             if !is_text(field.data_type()) {
-                return Err(invalid(format!("{name} is not a text column")));
+                return Err(invalid!(NotTextColumn, column = name));
             }
         }
         Ok(())
@@ -150,7 +148,7 @@ fn map_text(column: &ArrayRef, f: impl Fn(&str) -> String) -> Result<ArrayRef> {
     let strings = strings
         .as_any()
         .downcast_ref::<StringArray>()
-        .ok_or_else(|| invalid("expected text".into()))?;
+        .ok_or_else(|| invalid!(ExpectedText))?;
     let mapped: ArrayRef = Arc::new(strings.iter().map(|s| s.map(&f)).collect::<StringArray>());
     Ok(cast(&mapped, column.data_type())?)
 }
@@ -168,7 +166,7 @@ pub(crate) fn map_columns(
         let index = batch
             .schema()
             .index_of(name)
-            .map_err(|_| invalid(format!("no column named {name:?}")))?;
+            .map_err(|_| invalid!(ColumnNotFound, column = name))?;
         columns[index] = f(&columns[index])?;
     }
     Ok(RecordBatch::try_new(schema.clone(), columns)?)

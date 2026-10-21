@@ -56,7 +56,7 @@ impl CustomDialog {
             self.custom()
                 .data_type(&self.schema)
                 .map(|t| type_name(&t))
-                .map_err(|e| e.to_string())
+                .map_err(|e| error_text(&e))
         };
     }
 

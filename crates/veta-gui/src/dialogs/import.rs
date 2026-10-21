@@ -242,7 +242,7 @@ impl ImportDialog {
             return;
         }
         self.preview =
-            preview_csv(&self.path, &self.options(), PREVIEW_ROWS).map_err(|e| e.to_string());
+            preview_csv(&self.path, &self.options(), PREVIEW_ROWS).map_err(|e| error_text(&e));
         if let Ok(preview) = &self.preview {
             self.types = preview
                 .schema

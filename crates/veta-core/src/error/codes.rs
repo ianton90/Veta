@@ -1,0 +1,185 @@
+//! Error codes and their plain English messages. `{name}` placeholders are
+//! the error's values; `{cause}` is the error it wraps. Front ends word
+//! each code in their own language (the GUI: tag `ERR_<CODE>`, decision 56).
+
+/// Declares the codes with their English messages.
+macro_rules! error_codes {
+    ($($code:ident => $english:literal,)*) => {
+        /// What went wrong, for [`super::Invalid`].
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum ErrorCode {
+            $($code,)*
+        }
+
+        impl ErrorCode {
+            /// Every code.
+            pub const ALL: &[ErrorCode] = &[$(ErrorCode::$code,)*];
+
+            /// The code's name, e.g. `ColumnNotFound`.
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(ErrorCode::$code => stringify!($code),)*
+                }
+            }
+
+            /// The message in plain English, with its placeholders.
+            pub fn english(self) -> &'static str {
+                match self {
+                    $(ErrorCode::$code => $english,)*
+                }
+            }
+        }
+    };
+}
+
+error_codes! {
+    CastImpossible => "{column} can't be converted from {from} to {to}",
+    CastValue => "\"{value}\" in column {column} is not a valid {data_type}",
+    CellNotJson => "the cell is not valid JSON: {error}",
+    ChosenTwice => "\"{column}\" is chosen twice",
+    CollectNoColumns => "there are no columns to collect into lists",
+    ColumnCount => "the file has {found} columns, not {expected}",
+    ColumnExists => "a column named \"{column}\" already exists",
+    ColumnNameEmpty => "column name cannot be empty",
+    ColumnNotFound => "no column named \"{column}\"",
+    ColumnPosition => "column position {position} is out of range",
+    ColumnTwice => "{column} is listed twice",
+    CombineNoColumns => "there are no columns to combine",
+    ComputeFirst => "this step must be computed first",
+    EditType => "edited value does not match the type of {column}",
+    EntryGone => "that entry no longer exists",
+    EntryNeedsKey => "a map entry needs a key",
+    ErrorColumnsNeeded => "values need error columns",
+    ExpectedBool => "expected true/false",
+    ExpectedNumber => "expected a number",
+    ExpectedNumbers => "expected numbers",
+    ExpectedText => "expected text",
+    ExpectedWholeNumber => "expected a whole number",
+    FieldExists => "{at} already has a field \"{field}\"",
+    FieldGone => "that field no longer exists",
+    FieldNameEmpty => "field name cannot be empty",
+    FieldNotFound => "{at} has no field \"{field}\"",
+    FilterNoConditions => "a filter needs at least one condition",
+    FilterNoValue => "enter a value to compare {column} with",
+    FilterOpNotForNested => "this condition doesn't apply to {column}: use equals, contains, starts/ends with or null tests",
+    FilterValue => "value for {column}: {cause}",
+    FilterValueType => "\"{value}\" is not a valid {data_type} for column {column}",
+    FixedListGrow => "fixed-size lists can't grow",
+    FixedListShrink => "fixed-size lists can't shrink",
+    FormatEndsWithPercent => "the format ends with %",
+    FormatNoCodes => "the format has no codes",
+    FormatNotForType => "a format doesn't apply to {data_type}",
+    FormatOnlyDates => "a format only applies to dates and times",
+    FormatOnlyText => "a format only applies when reading text",
+    FormatUnknownCode => "unknown format code %{code}",
+    FormulaCantCalculate => "can't do arithmetic on {a} and {b}",
+    FormulaCantChoose => "can't choose between {a} and {b}",
+    FormulaCantCoalesce => "can't coalesce {a} and {b}",
+    FormulaCantCombine => "can't combine {a} and {b} with and/or",
+    FormulaCantCompare => "can't compare {a} and {b}",
+    FormulaCantDivide => "can't divide {a} and {b}",
+    FormulaEmpty => "the expression is empty",
+    FormulaIncomplete => "the expression is incomplete",
+    FormulaMissingBracket => "missing ] after a column name",
+    FormulaMissingParen => "missing )",
+    FormulaMissingParenAfter => "missing ) after {function}(",
+    FormulaMissingQuote => "missing closing \"",
+    FormulaNeedsBool => "{what} needs true/false, not {data_type}",
+    FormulaNeedsCondition => "if needs a true/false condition, not {data_type}",
+    FormulaNeedsDateTime => "{what} needs a date or time, not {data_type}",
+    FormulaNeedsNumber => "{what} needs a number, not {data_type}",
+    FormulaNeedsText => "{what} needs text, not {data_type}",
+    FormulaNotNumber => "{text} is not a number",
+    FormulaTooLarge => "{text} is too large",
+    FormulaTrailing => "unexpected \"{text}\" after the expression",
+    FormulaUnexpected => "unexpected \"{text}\"",
+    FormulaUsage => "use {usage}",
+    ImportFailed => "import failed",
+    InputNotEvaluated => "the step's input is not evaluated",
+    InsertPastEnd => "cannot insert rows after row {row}",
+    InvalidValue => "\"{value}\" is not a valid {data_type}",
+    ItemGone => "that item no longer exists",
+    Json => "JSON error: {error}",
+    JsonArrayWhole => "a JSON array is written in one piece",
+    KeepNoColumns => "at least one column must be kept",
+    KeyEmpty => "a key can't be empty",
+    KeyExists => "\"{key}\" is already a key",
+    KeyType => "not a valid {data_type}: a key doesn't fit its type ({error})",
+    LastColumn => "at least one column must remain",
+    LastStepNotEdit => "the last step is not a cell edit",
+    MemorySize => "\"{value}\" is not a memory size; use e.g. 512M, 4G or 25%",
+    MergeTooFew => "merging needs at least 2 columns",
+    MetadataKeyEmpty => "metadata key cannot be empty",
+    MetadataKeyNotFound => "no metadata key \"{key}\"",
+    MetadataKeyTwice => "metadata key \"{key}\" appears twice",
+    NoColumnAt => "there is no column {column}",
+    NoColumnsToFill => "no columns to fill",
+    NoColumnsToFormat => "no columns to format",
+    NoColumnsToRemove => "no columns to remove",
+    NoColumnsToSave => "a file needs at least one column",
+    NoComputeNeeded => "{step} doesn't need computing",
+    NoMapAt => "{column} has no map at {path}",
+    NoPathInCell => "no value inside the cell given",
+    NoRowsToDelete => "no rows to delete",
+    NoSavePath => "the file has no path to save to",
+    NoStep => "there is no step {step}",
+    NoStepsToAdd => "there are no steps to add",
+    NoStepsToUse => "there are no steps to use",
+    NoValueAt => "{column} has no value at {path}",
+    NotAComparison => "this is not a comparison",
+    NotEmpty => "{column} isn't empty: {values} values",
+    NotEmptyExample => "{column} isn't empty: {values} values, e.g. \"{example}\"",
+    NotListColumn => "{column} is not a list column",
+    NotListOrMapAt => "{column} at {path} is not a list or map",
+    NotListOrMapColumn => "{column} is not a list or map column",
+    NotNullable => "{column} cannot be empty",
+    NotNullableRow => "{column} cannot be empty (row {row})",
+    NotStreamable => "this step can't be streamed",
+    NotStruct => "{at} is not a struct",
+    NotStructColumn => "{column} is not a struct column",
+    NotTextColumn => "{column} is not a text column",
+    NotValidJson => "not a valid {data_type} (write it as JSON, e.g. {example})",
+    NotValidJsonValue => "not a valid {data_type} (write it as JSON, e.g. {example}): {detail}",
+    NothingToInsert => "nothing to insert",
+    NothingToPaste => "there is nothing to paste",
+    PartGone => "that part of the value no longer exists",
+    PasteTooWide => "the pasted values are {width} columns wide; only {fit} fit from column {column}",
+    PasteTooWideThere => "the pasted values are {width} columns wide; only {fit} fit there",
+    ReadFailed => "reading the file failed",
+    Recipe => "recipe: {error}",
+    ReplaceNoText => "enter the text to find",
+    ReplaceNoValue => "enter the value to find",
+    ReplaceNullsNeedValue => "replacing nulls needs a value to put instead",
+    RowColumn => "row {row}, {column}: {cause}",
+    RowCountZero => "the number of rows must be above 0",
+    RowGroupSize => "row group size must be at least 1",
+    RowPastEnd => "row {row} is past the last row ({rows})",
+    RowPastEndUse => "row {row} is past the end; use {end} to add at the end",
+    RowRanges => "row ranges must be sorted and disjoint",
+    RowValueType => "row {row}: \"{value}\" in column {column} is not a valid {data_type}",
+    RowsFromThere => "there are only {rows} rows from there",
+    SeparatorsEqual => "the decimal and thousands separators must differ",
+    SortFailed => "sorting failed",
+    SortNoColumns => "a sort needs at least one column",
+    SortUnsortable => "one of the sort columns can't be sorted",
+    SplitBadPositions => "positions must be increasing and above 0",
+    SplitNoDelimiter => "enter a delimiter",
+    SplitNoPositions => "enter at least one position",
+    SplitTooFew => "split into at least 2 columns",
+    StatsFailed => "statistics failed",
+    StatsNeedSteps => "statistics need every step to be evaluated",
+    StepBroken => "step {step} has an error; fix or remove it first",
+    StepComputing => "step {step} is still being computed",
+    StepHasError => "step {step} has an error: {cause}",
+    StepNotEvaluated => "step {step} is not evaluated",
+    StepPosition => "step position out of range",
+    StepsComputing => "wait until the steps are computed",
+    StructNoFields => "a struct needs at least one field",
+    UnexpectedNestedSchema => "unexpected nested schema",
+    UnknownFunction => "unknown function {function}",
+    ValueNotList => "that value is not a list",
+    ValueNotMap => "that value is not a map",
+    WorkerFailed => "a worker thread failed",
+    WriteColumnFailed => "writing a column failed",
+    WrongArea => "not a {area} command: {command}",
+}

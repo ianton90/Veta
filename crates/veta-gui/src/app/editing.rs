@@ -101,7 +101,7 @@ impl App {
                     match result {
                         Ok(true) => self.refresh(id),
                         Ok(false) => {}
-                        Err(e) => self.errors.push(e.to_string()),
+                        Err(e) => self.errors.push(error_text(&e)),
                     }
                 }
             }
@@ -119,7 +119,7 @@ impl App {
     /// document, without refreshing its grid.
     fn nested_command(&mut self, id: DocumentId, command: Command) -> Result<(), String> {
         let doc = self.workbook.get_mut(id).ok_or("closed")?;
-        controller::execute(doc, command).map_err(|e| e.to_string())
+        controller::execute(doc, command).map_err(|e| error_text(&e))
     }
 
     /// Expands the selected struct column, or explodes the selected list
@@ -635,7 +635,7 @@ impl App {
                 value: Some(edit.text.clone()),
             };
             match self.workbook.get_mut(edit.document) {
-                Some(doc) => controller::execute(doc, command).map_err(|e| e.to_string()),
+                Some(doc) => controller::execute(doc, command).map_err(|e| error_text(&e)),
                 None => return false,
             }
         };

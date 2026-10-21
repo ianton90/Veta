@@ -7,6 +7,7 @@
 //! file with no steps, [`quick_stats`] reads nulls, min and max from the
 //! Parquet footer without touching the data.
 
+use crate::error::invalid;
 use arrow::array::{Array, ArrayRef, Float64Array, make_comparator};
 use arrow::compute::{SortOptions, cast};
 use arrow::datatypes::{DataType, SchemaRef};
@@ -142,7 +143,7 @@ impl Accumulator {
             let values = values
                 .as_any()
                 .downcast_ref::<Float64Array>()
-                .ok_or_else(|| Error::InvalidCommand("expected numbers".into()))?;
+                .ok_or_else(|| invalid!(ExpectedNumbers))?;
             for x in values.iter().flatten().filter(|x| x.is_finite()) {
                 self.n += 1;
                 let delta = x - self.mean;
@@ -496,7 +497,7 @@ impl StatsJob {
         for column in &columns {
             schema
                 .index_of(column)
-                .map_err(|_| Error::InvalidCommand(format!("no column named {column:?}")))?;
+                .map_err(|_| invalid!(ColumnNotFound, column = column))?;
         }
         let columns = if columns.is_empty() {
             schema.fields().iter().map(|f| f.name().clone()).collect()
@@ -558,7 +559,7 @@ impl StatsJob {
                     for acc in &mut counted {
                         let column = batch
                             .column_by_name(&acc.column)
-                            .ok_or_else(|| Error::InvalidCommand("statistics failed".into()))?;
+                            .ok_or_else(|| invalid!(StatsFailed))?;
                         acc.add(column)?;
                     }
                     rows += batch.num_rows();
@@ -650,7 +651,7 @@ fn value_as_text<S: serde::Serializer>(
 
 /// Statistics as pretty JSON (for `veta-cli stats --json`).
 pub fn to_json(stats: &[ColumnStats]) -> Result<String> {
-    serde_json::to_string_pretty(stats).map_err(|e| Error::InvalidCommand(e.to_string()))
+    serde_json::to_string_pretty(stats).map_err(|e| invalid!(Json, error = e))
 }
 
 #[cfg(test)]

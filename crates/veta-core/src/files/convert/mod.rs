@@ -140,10 +140,6 @@ impl ImportFormat {
     }
 }
 
-fn invalid(message: impl Into<String>) -> Error {
-    Error::InvalidCommand(message.into())
-}
-
 /// What an import found.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportReport {
