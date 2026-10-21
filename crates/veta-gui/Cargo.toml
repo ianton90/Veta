@@ -12,6 +12,7 @@ veta-core.workspace = true
 iced.workspace = true
 rfd.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 
 [target.'cfg(windows)'.dependencies]

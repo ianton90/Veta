@@ -1,7 +1,10 @@
 //! Translations: one shared object, a map tag → language → text, read from
 //! `translations/translations_<locale>.json` (built into the app). Tags of
 //! static texts start with `ST_`; texts with values hold `{name}`
-//! placeholders. See DECISIONS 51.
+//! placeholders. Translation is the front end's job: `veta-core` speaks
+//! plain English, codes and enums (DECISIONS 51, 53).
+
+pub mod model;
 
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -11,11 +14,11 @@ use std::sync::{LazyLock, RwLock, RwLockReadGuard};
 const FILES: [(&str, &str); 2] = [
     (
         "en-GB",
-        include_str!("../../../translations/translations_en-GB.json"),
+        include_str!("../../translations/translations_en-GB.json"),
     ),
     (
         "es-ES",
-        include_str!("../../../translations/translations_es-ES.json"),
+        include_str!("../../translations/translations_es-ES.json"),
     ),
 ];
 

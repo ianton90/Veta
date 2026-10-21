@@ -1,8 +1,8 @@
 //! The right-click menu.
 
 use super::*;
+use crate::i18n::{tr, tr_with};
 use iced::widget::column;
-use veta_core::i18n::{tr, tr_with};
 use veta_core::values::node::NodeKind;
 
 /// One entry of a right-click menu: icon, label, shortcut, action. The

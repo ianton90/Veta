@@ -9,7 +9,7 @@
 use iced::widget::{Space, button, column, container, row, rule, text, tooltip};
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 
-use veta_core::i18n::tr;
+use crate::i18n::tr;
 
 use crate::platform::icon::{Icon, icon};
 use crate::settings::config::ModePreference;
@@ -208,7 +208,7 @@ enum Size {
 #[derive(Debug, Clone, Copy)]
 struct Item {
     action: Action,
-    /// Tag of the label (see `veta_core::i18n`).
+    /// Tag of the label (see `crate::i18n`).
     label: &'static str,
     icon: Icon,
     size: Size,

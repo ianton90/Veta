@@ -8,6 +8,7 @@
 mod app;
 mod dialogs;
 mod grid;
+pub mod i18n;
 mod panes;
 mod platform;
 mod ribbon;

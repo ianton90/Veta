@@ -32,6 +32,7 @@ use crate::dialogs::{
     WriterMessage,
 };
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav, Selection};
+use crate::i18n::{tr, tr_with};
 use crate::platform::files::FileKind;
 use crate::platform::{files, icon, instance};
 use crate::ribbon::{Action, Ribbon, RibbonMessage};
@@ -53,7 +54,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use veta_core::arrow::array::ArrayRef;
 use veta_core::convert::ImportReport;
-use veta_core::i18n::{tr, tr_with};
 use veta_core::stats::ColumnStats;
 use veta_core::steps::{
     Cast, ComputeJob, Computed, Condition, CustomColumn, Fill, Filter, FilterOp, Merge, OnError,
@@ -155,7 +155,7 @@ impl Startup {
             None => (Config::default(), None),
         };
         // Messages from here on are in the chosen language.
-        veta_core::i18n::Translations::set_language(config.language());
+        crate::i18n::Translations::set_language(config.language());
         let (themes, mut errors) = theme::load_all(themes_dir.as_deref());
         errors.extend(config_error);
         Self {
@@ -246,7 +246,7 @@ impl App {
             notice: None,
         };
         app.config.apply_memory_budget();
-        veta_core::i18n::Translations::set_language(app.config.language());
+        crate::i18n::Translations::set_language(app.config.language());
         let open = app.open(files);
         let system = iced::system::theme().map(Message::SystemMode);
         (app, Task::batch([open, system]))
@@ -573,7 +573,7 @@ impl App {
                 }
             }
             Message::LanguageChanged(language) => {
-                veta_core::i18n::Translations::set_language(language);
+                crate::i18n::Translations::set_language(language);
                 // The grid keeps the text of the rows it read ("[2 items]").
                 for tab in &mut self.tabs {
                     if let Some(doc) = self.workbook.get(tab.id) {

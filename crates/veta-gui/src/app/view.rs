@@ -6,7 +6,9 @@ use iced::widget::column;
 /// What the computing overlay says is running.
 pub(crate) fn computing_label(doc: &Document, c: &Computing) -> String {
     match (c.target, doc.steps().get(c.step)) {
-        (Target::Document, Some(step)) => format!("{}. {}", c.step + 1, step.describe()),
+        (Target::Document, Some(step)) => {
+            format!("{}. {}", c.step + 1, crate::i18n::model::step_name(step))
+        }
         _ => tr("ST_MSG_FILTERING_ROWS"),
     }
 }

@@ -10,6 +10,7 @@
 //! (open cells: nested values as trees of lines), `load` (reading rows, the
 //! filter view), `input` (the widget and its event handling) and `draw`.
 
+use crate::i18n::{tr, tr_with};
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::text::{self, Renderer as _, Text};
@@ -29,7 +30,6 @@ use veta_core::Document;
 use veta_core::arrow::array::Array;
 use veta_core::arrow::datatypes::{DataType, Field, Schema};
 use veta_core::arrow::record_batch::{RecordBatch, RecordBatchOptions};
-use veta_core::i18n::{tr, tr_with};
 use veta_core::steps::{ComputeJob, Computed, Filter, Pipeline, Status};
 
 use crate::platform::icon::{self, Icon};

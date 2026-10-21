@@ -185,9 +185,11 @@ impl Node {
         let n = self.len();
         Some(match (self.kind(), n) {
             (NodeKind::List, 0) => "[]".into(),
-            (NodeKind::List, n) => crate::display::list_summary(n),
+            (NodeKind::List, 1) => "[1 item]".into(),
+            (NodeKind::List, n) => format!("[{n} items]"),
             (NodeKind::Map, 0) => "{}".into(),
-            (NodeKind::Map, n) => crate::display::map_summary(n),
+            (NodeKind::Map, 1) => "{1 entry}".into(),
+            (NodeKind::Map, n) => format!("{{{n} entries}}"),
             _ => return self.text(),
         })
     }

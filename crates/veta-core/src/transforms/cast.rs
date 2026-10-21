@@ -1,6 +1,5 @@
 //! Changing a column's type, with locale options for reading text.
 
-use crate::i18n::{tr, tr_with};
 use std::sync::Arc;
 
 use arrow::array::{
@@ -64,11 +63,11 @@ impl OnError {
 
 impl std::fmt::Display for OnError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&tr(match self {
-            Self::Null => "ST_ON_ERROR_NULL",
-            Self::Fail => "ST_ON_ERROR_FAIL",
-            Self::ErrorColumn => "ST_ON_ERROR_COLUMN",
-        }))
+        f.write_str(match self {
+            Self::Null => "set to null",
+            Self::Fail => "stop with an error",
+            Self::ErrorColumn => "set to null and keep the text in an error column",
+        })
     }
 }
 
@@ -83,10 +82,7 @@ pub struct CastPreview {
 
 impl Cast {
     pub fn describe(&self) -> String {
-        tr_with(
-            "ST_STEP_CAST",
-            &[("column", &self.column), ("type", &type_name(&self.to))],
-        )
+        format!("Changed {} to {}", self.column, type_name(&self.to))
     }
 
     /// Name of the extra column holding values that failed to convert.

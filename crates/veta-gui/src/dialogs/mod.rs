@@ -3,6 +3,8 @@
 //! settings, metadata, CSV import / export and confirmations. This file
 //! holds the widgets they share.
 
+use crate::i18n::model::Labeled;
+use crate::i18n::{tr, tr_with};
 use iced::widget::{
     Space, button, checkbox, container, pick_list, row, scrollable, text, text_input,
 };
@@ -14,14 +16,13 @@ use veta_core::convert::{
     CsvExportOptions, CsvOptions, CsvPreview, ExportFormat, TextEncoding, preview_csv,
 };
 use veta_core::display::type_name;
-use veta_core::i18n::{tr, tr_with};
 use veta_core::io::ARROW_SCHEMA_KEY;
 use veta_core::model::KeyValue;
 use veta_core::steps::{
     Cast, CastOptions, CastPreview, Condition, Filter, FilterOp, OnError, Replace, Sort, SortKey,
     TextOp,
 };
-use veta_core::steps::{CustomColumn, Merge, Split, SplitBy, Step, count_parts, expression_help};
+use veta_core::steps::{CustomColumn, Merge, Split, SplitBy, Step, count_parts};
 use veta_core::values::is_text;
 use veta_core::{
     ColumnSettings, Command, Compression, Encoding, FormatVersion, StatisticsLevel, WriterSettings,

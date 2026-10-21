@@ -172,10 +172,10 @@ impl FilterDialog {
             if i == 0 {
                 value = value.id(FILTER_VALUE_ID);
             }
-            let ops: Vec<FilterOp> = if nested {
-                NESTED_OPS.to_vec()
+            let ops: Vec<Labeled<FilterOp>> = if nested {
+                NESTED_OPS.map(Labeled).to_vec()
             } else {
-                FilterOp::ALL.to_vec()
+                FilterOp::ALL.map(Labeled).to_vec()
             };
             if c.op.needs_value() {
                 value = value
@@ -192,7 +192,10 @@ impl FilterDialog {
                         FilterMessage::Column(i, col)
                     })
                     .width(160),
-                    pick_list(ops, Some(c.op), move |op| FilterMessage::Op(i, op)).width(190),
+                    pick_list(ops, Some(Labeled(c.op)), move |op: Labeled<FilterOp>| {
+                        FilterMessage::Op(i, op.0)
+                    })
+                    .width(190),
                     value,
                     checkbox(c.case_sensitive)
                         .label("Aa")

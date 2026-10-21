@@ -321,9 +321,13 @@ impl CastDialog {
         }
         body = body.push(labelled(
             "ST_DLG_CAST_INVALID",
-            pick_list(OnError::ALL, Some(self.on_error), CastMessage::OnError)
-                .width(Length::Fill)
-                .into(),
+            pick_list(
+                OnError::ALL.map(Labeled),
+                Some(Labeled(self.on_error)),
+                |e| CastMessage::OnError(e.0),
+            )
+            .width(Length::Fill)
+            .into(),
         ));
         let p = &self.preview;
         let summary = if self.data_type().is_none() {

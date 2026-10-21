@@ -8,7 +8,6 @@
 
 mod buckets;
 
-use crate::i18n::{tr, tr_with};
 use arrow::array::{ArrayRef, UInt32Array};
 use arrow::compute::{SortOptions, concat_batches, take};
 use arrow::datatypes::{Schema, SchemaRef};
@@ -46,20 +45,16 @@ impl Sort {
             .keys
             .iter()
             .map(|k| {
-                let tag = match (k.descending, k.nulls_first) {
-                    (false, false) => "ST_STEP_SORT_ASCENDING",
-                    (true, false) => "ST_STEP_SORT_DESCENDING",
-                    (false, true) => "ST_STEP_SORT_ASCENDING_NULLS_FIRST",
-                    (true, true) => "ST_STEP_SORT_DESCENDING_NULLS_FIRST",
+                let order = if k.descending {
+                    "descending"
+                } else {
+                    "ascending"
                 };
-                tr_with(tag, &[("column", &k.column)])
+                let nulls = if k.nulls_first { ", nulls first" } else { "" };
+                format!("{} {order}{nulls}", k.column)
             })
             .collect();
-        let then = tr("ST_STEP_SORT_THEN");
-        tr_with(
-            "ST_STEP_SORT",
-            &[("keys", &keys.join(&format!(", {then} ")))],
-        )
+        format!("Sorted by {}", keys.join(", then "))
     }
 
     /// Checks the sort against the input schema.

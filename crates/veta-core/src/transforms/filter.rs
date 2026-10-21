@@ -1,7 +1,6 @@
 //! Keeping rows that match conditions (Power Query's "Keep Rows" / column
 //! filters).
 
-use crate::i18n::{tr, tr_with};
 use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, BooleanArray, Scalar, StringArray};
@@ -87,20 +86,20 @@ impl FilterOp {
 
 impl std::fmt::Display for FilterOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&tr(match self {
-            Self::Equals => "ST_FILTER_OP_EQUALS",
-            Self::NotEquals => "ST_FILTER_OP_NOT_EQUALS",
-            Self::Less => "ST_FILTER_OP_LESS",
-            Self::LessOrEqual => "ST_FILTER_OP_LESS_OR_EQUAL",
-            Self::Greater => "ST_FILTER_OP_GREATER",
-            Self::GreaterOrEqual => "ST_FILTER_OP_GREATER_OR_EQUAL",
-            Self::Contains => "ST_FILTER_OP_CONTAINS",
-            Self::NotContains => "ST_FILTER_OP_NOT_CONTAINS",
-            Self::StartsWith => "ST_FILTER_OP_STARTS_WITH",
-            Self::EndsWith => "ST_FILTER_OP_ENDS_WITH",
-            Self::IsNull => "ST_FILTER_OP_IS_NULL",
-            Self::IsNotNull => "ST_FILTER_OP_IS_NOT_NULL",
-        }))
+        f.write_str(match self {
+            Self::Equals => "equals",
+            Self::NotEquals => "does not equal",
+            Self::Less => "is less than",
+            Self::LessOrEqual => "is less than or equal to",
+            Self::Greater => "is greater than",
+            Self::GreaterOrEqual => "is greater than or equal to",
+            Self::Contains => "contains",
+            Self::NotContains => "does not contain",
+            Self::StartsWith => "starts with",
+            Self::EndsWith => "ends with",
+            Self::IsNull => "is null",
+            Self::IsNotNull => "is not null",
+        })
     }
 }
 
@@ -119,23 +118,10 @@ impl Condition {
 
 impl Filter {
     pub fn describe(&self) -> String {
-        let tag = if self.exclude {
-            "ST_STEP_FILTER_REMOVED"
-        } else {
-            "ST_STEP_FILTER_KEPT"
-        };
-        tr_with(tag, &[("conditions", &self.describe_conditions())])
-    }
-
-    /// The conditions, joined by "and" or "or".
-    pub fn describe_conditions(&self) -> String {
         let parts: Vec<String> = self.conditions.iter().map(Condition::describe).collect();
-        let join = tr(if self.match_all {
-            "ST_STEP_AND"
-        } else {
-            "ST_STEP_OR"
-        });
-        parts.join(&format!(" {join} "))
+        let joined = parts.join(if self.match_all { " and " } else { " or " });
+        let verb = if self.exclude { "Removed" } else { "Kept" };
+        format!("{verb} rows where {joined}")
     }
 
     /// Checks the filter against the input schema.

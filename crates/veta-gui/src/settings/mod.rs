@@ -5,9 +5,9 @@ pub mod theme;
 
 use std::path::Path;
 
+use crate::i18n::{Translations, tr, tr_with};
 use iced::widget::{button, checkbox, column, pick_list, row, text, text_input};
 use iced::{Alignment, Element, Length};
-use veta_core::i18n::{Translations, tr, tr_with};
 use veta_core::{Compression, FormatVersion, StatisticsLevel, WriterSettings};
 
 use crate::dialogs::{Level, card, level_picker};

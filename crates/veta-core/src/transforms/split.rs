@@ -1,6 +1,5 @@
 //! Splitting a column into several, and merging columns into one.
 
-use crate::i18n::tr_with;
 use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, StringArray, StringBuilder};
@@ -32,20 +31,15 @@ pub enum SplitBy {
 impl Split {
     pub fn describe(&self) -> String {
         match &self.by {
-            SplitBy::Delimiter { delimiter, parts } => tr_with(
-                "ST_STEP_SPLIT_DELIMITER",
-                &[
-                    ("column", &self.column),
-                    ("delimiter", &format!("{delimiter:?}")),
-                    ("n", parts),
-                ],
-            ),
+            SplitBy::Delimiter { delimiter, parts } => {
+                format!(
+                    "Split {} by {delimiter:?} into {parts} columns",
+                    self.column
+                )
+            }
             SplitBy::Positions(positions) => {
                 let list: Vec<String> = positions.iter().map(ToString::to_string).collect();
-                tr_with(
-                    "ST_STEP_SPLIT_POSITIONS",
-                    &[("column", &self.column), ("positions", &list.join(", "))],
-                )
+                format!("Split {} at positions {}", self.column, list.join(", "))
             }
         }
     }
@@ -153,10 +147,7 @@ pub struct Merge {
 
 impl Merge {
     pub fn describe(&self) -> String {
-        tr_with(
-            "ST_STEP_MERGE",
-            &[("columns", &self.columns.join(", ")), ("name", &self.name)],
-        )
+        format!("Merged {} into {}", self.columns.join(", "), self.name)
     }
 
     pub(crate) fn output_fields(&self, schema: &Schema) -> Result<Vec<Field>> {

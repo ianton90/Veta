@@ -1,6 +1,5 @@
 //! Filling nulls with the nearest value above or below.
 
-use crate::i18n::tr_with;
 use arrow::array::{Array, ArrayRef, UInt32Array, new_null_array};
 use arrow::compute::{concat, take};
 use arrow::datatypes::Schema;
@@ -18,11 +17,10 @@ pub struct Fill {
 
 impl Fill {
     pub fn describe(&self) -> String {
-        match (self.columns.as_slice(), self.up) {
-            ([one], false) => tr_with("ST_STEP_FILL_DOWN_ONE", &[("column", one)]),
-            ([one], true) => tr_with("ST_STEP_FILL_UP_ONE", &[("column", one)]),
-            (many, false) => tr_with("ST_STEP_FILL_DOWN_MANY", &[("n", &many.len())]),
-            (many, true) => tr_with("ST_STEP_FILL_UP_MANY", &[("n", &many.len())]),
+        let direction = if self.up { "up" } else { "down" };
+        match self.columns.as_slice() {
+            [one] => format!("Filled {direction} {one}"),
+            many => format!("Filled {direction} {} columns", many.len()),
         }
     }
 

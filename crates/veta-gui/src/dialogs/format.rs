@@ -36,7 +36,10 @@ impl FormatDialog {
         let body = column![
             text(tr("ST_DLG_FORMAT_TITLE")).size(20),
             text(self.columns.join(", ")).color(tokens.muted_text),
-            pick_list(TextOp::ALL, Some(self.op), FormatMessage::Op).width(Length::Fill),
+            pick_list(TextOp::ALL.map(Labeled), Some(Labeled(self.op)), |op| {
+                FormatMessage::Op(op.0)
+            })
+            .width(Length::Fill),
             buttons("ST_COMMON_OK", FormatMessage::Cancel, FormatMessage::Apply),
         ]
         .spacing(14);

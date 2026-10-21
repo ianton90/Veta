@@ -456,8 +456,12 @@ impl ImportDialog {
         .push(
             row![
                 text(tr("ST_DLG_IMPORT_ON_ERROR")),
-                pick_list(OnError::ALL, Some(self.on_error), ImportMessage::OnError)
-                    .width(Length::Fill),
+                pick_list(
+                    OnError::ALL.map(Labeled),
+                    Some(Labeled(self.on_error)),
+                    |e| ImportMessage::OnError(e.0)
+                )
+                .width(Length::Fill),
             ]
             .spacing(12)
             .align_y(Alignment::Center),

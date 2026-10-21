@@ -126,7 +126,9 @@ impl CustomDialog {
             ))
             .size(12)
             .color(tokens.muted_text),
-            text(expression_help()).size(12).color(tokens.muted_text),
+            text(crate::i18n::model::formula_help())
+                .size(12)
+                .color(tokens.muted_text),
         ]
         .spacing(12);
         if let Some(error) = &self.error {

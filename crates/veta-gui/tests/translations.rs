@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use veta_core::i18n::{FALLBACK, Translations, tr, tr_with};
+use veta_gui::i18n::{FALLBACK, Translations, tr, tr_with};
 
 #[test]
 fn switching_language_reloads_the_texts() {
@@ -20,10 +20,10 @@ fn switching_language_reloads_the_texts() {
 fn every_tag_in_the_code_has_a_text() {
     let translations = Translations::load(FALLBACK);
     let known = translations.tags();
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut missing = Vec::new();
-    for dir in ["veta-core/src", "veta-gui/src", "veta/src", "veta-cli/src"] {
-        for (file, tag) in tags_in(&crates.join(dir)) {
+    {
+        for (file, tag) in tags_in(&src) {
             if !known.contains(&tag.as_str()) {
                 missing.push(format!("{tag} ({file})"));
             }
@@ -33,7 +33,7 @@ fn every_tag_in_the_code_has_a_text() {
 }
 
 /// Every `"ST_…"` literal under `dir`, with the file it is in (not in
-/// `i18n.rs`, whose examples and tests name made-up tags).
+/// `i18n/mod.rs`, whose examples and tests name made-up tags).
 fn tags_in(dir: &Path) -> Vec<(String, String)> {
     let mut found = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -43,7 +43,7 @@ fn tags_in(dir: &Path) -> Vec<(String, String)> {
         let path = entry.path();
         if path.is_dir() {
             found.extend(tags_in(&path));
-        } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("i18n.rs") {
+        } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("i18n/mod.rs") {
             let text = std::fs::read_to_string(&path).unwrap_or_default();
             for part in text.split("\"ST_").skip(1) {
                 let name: String = part

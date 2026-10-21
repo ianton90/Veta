@@ -127,7 +127,7 @@ fn push_children(
             path: path.clone(),
             depth,
             label: child.label,
-            text: child.node.summary(),
+            text: crate::i18n::model::summary(&child.node),
             gutter,
             what: What::Node {
                 kind: child_kind,

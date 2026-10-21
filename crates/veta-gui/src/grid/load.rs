@@ -252,7 +252,8 @@ impl GridView {
                     continue;
                 }
                 for (row, cells) in cells.iter_mut().enumerate() {
-                    if let Some(summary) = veta_core::display::items_summary(column.as_ref(), row) {
+                    let node = veta_core::values::node::Node::new(column.clone(), row);
+                    if let Some(summary) = crate::i18n::model::summary(&node) {
                         cells[i] = Some(summary);
                     }
                 }

@@ -3934,6 +3934,7 @@ dependencies = [
  "iced",
  "rfd",
  "serde",
+ "serde_json",
  "toml",
  "uds_windows",
  "veta-core",

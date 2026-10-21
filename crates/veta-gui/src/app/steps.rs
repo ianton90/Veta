@@ -324,7 +324,7 @@ impl App {
                 let label = doc
                     .steps()
                     .get(step)
-                    .map(Step::describe)
+                    .map(crate::i18n::model::step_name)
                     .unwrap_or_default();
                 self.errors.push(tr_with(
                     "ST_MSG_STOPPED_AT_STEP",

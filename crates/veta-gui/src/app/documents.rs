@@ -85,7 +85,7 @@ impl App {
                 match result.map(|slot| slot.take()) {
                     Ok(Some((document, report))) => {
                         self.add_document(&path, document);
-                        if let Some(summary) = report.summary() {
+                        if let Some(summary) = crate::i18n::model::import_report(&report) {
                             self.errors.push(summary);
                         }
                     }

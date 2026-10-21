@@ -6,6 +6,7 @@
 - No CI on pushes (releases build in GitHub Actions on version tags, see `docs/RELEASING.md`). Before every push run: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
 - Keep dependencies minimal. New crates need the owner's approval, an entry in `docs/DECISIONS.md` saying why the exception (and what was measured, if it was for speed), and a short comment where the crate is used pointing to that entry.
 - `veta-core` must not depend on `iced` or `clap`. All data changes go through controller `Command`s.
+- `veta-core` is the model behind the scenes: its messages are plain English, codes and enums. Translation and user-facing wording belong to each front end (GUI or CLI); another app using `veta-core` brings its own (decision 53).
 
 ## Code conventions
 

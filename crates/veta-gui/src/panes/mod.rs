@@ -4,12 +4,12 @@
 
 use std::path::PathBuf;
 
+use crate::i18n::{tr, tr_with};
 use iced::widget::{
     button, center, column, container, progress_bar, row, rule, scrollable, text, text_input,
 };
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 use veta_core::display::{abbreviate, human_bytes};
-use veta_core::i18n::{tr, tr_with};
 use veta_core::{Document, DocumentId, SourceMode};
 
 use crate::app::{Edit, FORMULA_ID, MenuItem, Message, SideTab, Tab, Ui, bold};
@@ -176,7 +176,7 @@ pub fn filter_bar<'a>(tab: &Tab, doc: &Document, ui: Ui) -> Option<Element<'a, M
             tr_with(
                 tag,
                 &[
-                    ("conditions", &filter.describe_conditions()),
+                    ("conditions", &crate::i18n::model::conditions(filter)),
                     ("shown", &abbreviate_count(shown)),
                     ("total", &abbreviate_count(total)),
                 ],

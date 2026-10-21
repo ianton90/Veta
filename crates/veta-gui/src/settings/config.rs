@@ -9,7 +9,7 @@ use crate::settings::theme::{self, Mode};
 
 /// "Settings file <path>: <error>".
 fn file_error(path: &Path, error: &dyn std::fmt::Display) -> String {
-    veta_core::i18n::tr_with(
+    crate::i18n::tr_with(
         "ST_MSG_SETTINGS_FILE_ERROR",
         &[("path", &path.display()), ("error", error)],
     )
@@ -119,7 +119,7 @@ impl ModePreference {
 
 impl std::fmt::Display for ModePreference {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&veta_core::i18n::tr(match self {
+        f.write_str(&crate::i18n::tr(match self {
             Self::System => "ST_SETTINGS_MODE_SYSTEM",
             Self::Light => "ST_SETTINGS_MODE_LIGHT",
             Self::Dark => "ST_SETTINGS_MODE_DARK",
@@ -167,7 +167,7 @@ impl Config {
     pub fn language(&self) -> &'static str {
         let chosen = self.appearance.language.clone();
         let locale = chosen.or_else(crate::platform::locale::system_locale);
-        veta_core::i18n::closest_language(&locale.unwrap_or_default())
+        crate::i18n::closest_language(&locale.unwrap_or_default())
     }
 
     pub fn add_recent(&mut self, path: &Path) {

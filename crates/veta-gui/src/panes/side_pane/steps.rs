@@ -128,7 +128,7 @@ pub(super) fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element
         let open = edits.is_some() && tab.expanded_steps.contains(&i);
         list.push(item(
             Some(i),
-            format!("{}. {}", i + 1, step.describe()),
+            format!("{}. {}", i + 1, crate::i18n::model::step_name(step)),
             note,
             edits.map(|_| open),
         ));
