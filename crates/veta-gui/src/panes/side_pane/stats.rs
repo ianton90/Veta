@@ -17,7 +17,7 @@ pub struct StatsView {
 
 /// Statistics of the selected columns.
 pub(super) fn stats_pane<'a>(view: StatsView, ui: Ui) -> Element<'a, Message> {
-    use veta_core::stats::{format_distinct, format_float};
+    use veta_fmt::{format_distinct, format_float};
     let t = ui.tokens;
     let mut content = column![].spacing(10).padding([0, 12]);
     if let Some(reason) = view.waiting {

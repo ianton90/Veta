@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 veta-core.workspace = true
+veta-fmt.workspace = true
 iced.workspace = true
 rfd.workspace = true
 serde.workspace = true

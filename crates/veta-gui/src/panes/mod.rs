@@ -9,8 +9,8 @@ use iced::widget::{
     button, center, column, container, progress_bar, row, rule, scrollable, text, text_input,
 };
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
-use veta_core::display::{abbreviate, human_bytes};
 use veta_core::{Document, DocumentId, SourceMode};
+use veta_fmt::{abbreviate, human_bytes};
 
 use crate::app::{Edit, FORMULA_ID, MenuItem, Message, SideTab, Tab, Ui, bold};
 use crate::grid::MenuTarget;

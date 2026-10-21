@@ -34,7 +34,8 @@ use veta_core::steps::{ComputeJob, Computed, Filter, Pipeline, Status};
 
 use crate::platform::icon::{self, Icon};
 use crate::settings::theme::Tokens;
-use veta_core::display::{format_batch, has_items, is_numeric, type_name};
+use veta_core::display::{format_batch, has_items, type_name};
+use veta_fmt::is_numeric;
 
 mod draw;
 mod geometry;

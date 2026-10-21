@@ -4,7 +4,8 @@ use std::io::Write;
 
 use veta_core::Document;
 use veta_core::arrow::datatypes::{DataType, Field};
-use veta_core::display::{abbreviate, format_batch, human_bytes, type_name};
+use veta_core::display::{format_batch, type_name};
+use veta_fmt::{abbreviate, human_bytes};
 
 use crate::{Error, table};
 
@@ -129,7 +130,7 @@ pub(crate) fn head(doc: &Document, rows: usize, out: &mut impl Write) -> Result<
     let right: Vec<bool> = schema
         .fields()
         .iter()
-        .map(|f| veta_core::display::is_numeric(f.data_type()))
+        .map(|f| veta_fmt::is_numeric(f.data_type()))
         .collect();
     table::write(out, &names, Some(&types), &cells, &right)?;
     if doc.num_rows() > rows {
@@ -144,7 +145,7 @@ pub(crate) fn stats(
     json: bool,
     out: &mut impl Write,
 ) -> Result<(), Error> {
-    use veta_core::stats::{format_distinct, format_float};
+    use veta_fmt::{format_distinct, format_float};
     let stats = doc.stats_job(columns)?.run(&mut |_| true)?;
     if json {
         writeln!(out, "{}", veta_core::stats::to_json(&stats)?)?;

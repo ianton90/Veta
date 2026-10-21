@@ -638,32 +638,6 @@ pub fn quick_stats(
     Some(stats)
 }
 
-/// A mean or deviation for display: up to 4 decimals, trailing zeros
-/// trimmed; scientific notation for very large or small values.
-pub fn format_float(x: f64) -> String {
-    let magnitude = x.abs();
-    if magnitude != 0.0 && !(1e-4..1e15).contains(&magnitude) {
-        return format!("{x:.4e}");
-    }
-    let text = format!("{x:.4}");
-    let text = text.trim_end_matches('0').trim_end_matches('.');
-    if text == "-0" {
-        "0".into()
-    } else {
-        text.into()
-    }
-}
-
-/// The distinct count for display (`~` when estimated).
-pub fn format_distinct(stats: &ColumnStats) -> Option<String> {
-    let n = stats.distinct?;
-    Some(if stats.distinct_estimated {
-        format!("~{n}")
-    } else {
-        n.to_string()
-    })
-}
-
 /// Statistics as pretty JSON (for `veta-cli stats --json`).
 pub fn to_json(stats: &[ColumnStats]) -> Result<String> {
     serde_json::to_string_pretty(stats).map_err(|e| Error::InvalidCommand(e.to_string()))
@@ -764,15 +738,6 @@ mod tests {
         assert_eq!(full[3].max, None, "booleans have no range");
         // Written without statistics.
         assert!(doc.quick_stats("score").is_none());
-    }
-
-    #[test]
-    fn float_formatting() {
-        assert_eq!(format_float(99_999.5), "99999.5");
-        assert_eq!(format_float(1.0 / 3.0), "0.3333");
-        assert_eq!(format_float(2.0), "2");
-        assert_eq!(format_float(-0.00001), "-1.0000e-5");
-        assert_eq!(format_float(0.0), "0");
     }
 
     #[test]

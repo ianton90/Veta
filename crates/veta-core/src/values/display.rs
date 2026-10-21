@@ -491,37 +491,6 @@ fn split_top_level(text: &str) -> Vec<&str> {
     parts
 }
 
-/// Whether values of this type read best right-aligned.
-pub fn is_numeric(data_type: &DataType) -> bool {
-    data_type.is_numeric() || matches!(data_type, DataType::Dictionary(_, v) if v.is_numeric())
-}
-
-/// Shortens `value` to at most `max` characters for display, noting how much
-/// was cut, e.g. `abcdef… (1.2 KiB)`.
-pub fn abbreviate(value: &str, max: usize) -> String {
-    if value.chars().count() <= max {
-        return value.to_owned();
-    }
-    let head: String = value.chars().take(max).collect();
-    format!("{head}… ({})", human_bytes(value.len() as u64))
-}
-
-/// Formats a byte count with binary units, e.g. `1.5 MiB`.
-pub fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
-}
-
 fn unit_name(unit: TimeUnit) -> &'static str {
     match unit {
         TimeUnit::Second => "s",
@@ -604,12 +573,6 @@ mod tests {
     }
 
     #[test]
-    fn abbreviates_long_values() {
-        assert_eq!(abbreviate("short", 10), "short");
-        assert_eq!(abbreviate(&"x".repeat(2048), 3), "xxx… (2.0 KiB)");
-    }
-
-    #[test]
     fn parses_type_names() {
         for data_type in [
             DataType::Int64,
@@ -642,13 +605,6 @@ mod tests {
                 true
             ))))
         );
-    }
-
-    #[test]
-    fn bytes() {
-        assert_eq!(human_bytes(512), "512 B");
-        assert_eq!(human_bytes(1536), "1.5 KiB");
-        assert_eq!(human_bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
     }
 }
 

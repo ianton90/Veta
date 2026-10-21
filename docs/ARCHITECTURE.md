@@ -30,7 +30,9 @@
 
 ```
 crates/
-  veta-core/   library: model, controller, io, steps, stats. No UI deps.
+  veta-core/   library: model, controller, io, steps, stats. No UI deps, no
+               user-facing wording or translation (decision 53).
+  veta-fmt/    library: display formatting shared by the GUI and the CLI.
   veta-gui/    library: iced application (views + message → command mapping).
   veta-cli/    library: clap definitions + command runners.
   veta/        binary: no args → GUI, subcommand → CLI.
@@ -113,6 +115,8 @@ veta-cli/src/
   table.rs               text tables
 veta-cli/tests/cli.rs    runs the real binary
 
+veta-fmt/src/lib.rs      display formatting both front ends share: sizes,
+                         shortened values, statistics, alignment
 veta/src/main.rs         the desktop binary
 veta-testkit/            Parquet fixtures and temp dirs for tests
 ```

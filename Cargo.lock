@@ -3912,6 +3912,7 @@ dependencies = [
  "clap",
  "mimalloc",
  "veta-core",
+ "veta-fmt",
  "veta-testkit",
 ]
 
@@ -3928,6 +3929,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "veta-fmt"
+version = "0.6.0"
+dependencies = [
+ "veta-core",
+]
+
+[[package]]
 name = "veta-gui"
 version = "0.6.0"
 dependencies = [
@@ -3938,6 +3946,7 @@ dependencies = [
  "toml",
  "uds_windows",
  "veta-core",
+ "veta-fmt",
  "veta-testkit",
 ]
 
