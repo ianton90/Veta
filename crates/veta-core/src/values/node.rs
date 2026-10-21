@@ -176,24 +176,6 @@ impl Node {
         format_value(&self.array, self.index)
     }
 
-    /// Short text for the value: lists and maps as their size (`[3 items]`,
-    /// `{1 entry}`, `[]`), other values as [`Self::text`].
-    pub fn summary(&self) -> Option<String> {
-        if self.null {
-            return None;
-        }
-        let n = self.len();
-        Some(match (self.kind(), n) {
-            (NodeKind::List, 0) => "[]".into(),
-            (NodeKind::List, 1) => "[1 item]".into(),
-            (NodeKind::List, n) => format!("[{n} items]"),
-            (NodeKind::Map, 0) => "{}".into(),
-            (NodeKind::Map, 1) => "{1 entry}".into(),
-            (NodeKind::Map, n) => format!("{{{n} entries}}"),
-            _ => return self.text(),
-        })
-    }
-
     /// Item range, values and (for maps) keys of a list or map value.
     fn items(&self) -> Option<(Range<usize>, ArrayRef, Option<ArrayRef>)> {
         if self.null {
@@ -233,7 +215,7 @@ mod tests {
             orders,
         );
         assert_eq!(value.kind(), NodeKind::List);
-        assert_eq!(value.summary().as_deref(), Some("[2 items]"));
+        assert_eq!(value.len(), 2);
         let labels: Vec<String> = value.children().map(|c| c.label).collect();
         assert_eq!(labels, ["0", "1"]);
         let path = [
@@ -268,8 +250,11 @@ mod tests {
             "[[1, 2], [], null]",
             &DataType::new_list(DataType::new_list(DataType::Int64, true), true),
         );
-        let rows: Vec<Option<String>> = matrix.children().map(|c| c.node.summary()).collect();
-        assert_eq!(rows, [Some("[2 items]".into()), Some("[]".into()), None]);
+        let rows: Vec<(bool, usize)> = matrix
+            .children()
+            .map(|c| (c.node.is_null(), c.node.len()))
+            .collect();
+        assert_eq!(rows, [(false, 2), (false, 0), (true, 0)]);
         assert_eq!(
             matrix
                 .get(&[PathPart::Index(0), PathPart::Index(1)])

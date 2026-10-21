@@ -210,20 +210,6 @@ pub fn has_items(data_type: &DataType) -> bool {
     )
 }
 
-/// A short summary of a list or map value: `[3 items]`, `{2 entries}`,
-/// `[]`; `None` for other types and nulls.
-pub fn items_summary(array: &dyn Array, row: usize) -> Option<String> {
-    let (range, _, keys) = items_of(array, row)?;
-    Some(match (range.len(), keys.is_some()) {
-        (0, false) => "[]".into(),
-        (0, true) => "{}".into(),
-        (1, false) => "[1 item]".into(),
-        (1, true) => "{1 entry}".into(),
-        (n, false) => format!("[{n} items]"),
-        (n, true) => format!("{{{n} entries}}"),
-    })
-}
-
 /// The field at `path` (field names) of a struct `array`, null wherever a
 /// parent struct is; `array` itself for an empty path. `None` if a step of
 /// the path isn't a struct field.
@@ -584,16 +570,9 @@ mod tests {
         let doc = crate::Document::open(&path, crate::OpenOptions::default()).unwrap();
         let batch = doc.read(0..4).unwrap();
         let (tags, scores) = (batch.column(2), batch.column(4));
-        assert_eq!(
-            items_summary(tags.as_ref(), 0).as_deref(),
-            Some("[2 items]")
-        );
-        assert_eq!(items_summary(tags.as_ref(), 1).as_deref(), Some("[]"));
-        assert_eq!(items_summary(tags.as_ref(), 2), None, "null");
-        assert_eq!(
-            items_summary(scores.as_ref(), 0).as_deref(),
-            Some("{2 entries}")
-        );
+        assert_eq!(item_count(tags.as_ref(), 0), 2);
+        assert_eq!(item_count(tags.as_ref(), 1), 0);
+        assert_eq!(item_count(scores.as_ref(), 0), 2);
         assert_eq!(item_count(tags.as_ref(), 3), 3);
         assert!(!has_items(&DataType::Int64));
         // Struct type names parse back, nested too.

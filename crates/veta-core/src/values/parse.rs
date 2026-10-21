@@ -326,14 +326,6 @@ fn value_at_or_insert<'a>(
     Ok(target)
 }
 
-/// `json` indented for reading; returned as is if it isn't valid JSON.
-pub fn pretty_json(json: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(json)
-        .ok()
-        .and_then(|v| serde_json::to_string_pretty(&v).ok())
-        .unwrap_or_else(|| json.to_owned())
-}
-
 fn value_at<'a>(
     root: &'a mut serde_json::Value,
     pointer: &[crate::display::PathPart],

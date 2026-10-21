@@ -24,7 +24,7 @@ use crate::display::PathPart;
 use crate::display::type_name;
 use crate::error::Error;
 
-pub use crate::formulas::{CustomColumn, expression_help, function_signatures};
+pub use crate::formulas::{CustomColumn, function_signatures};
 pub use crate::transforms::cast::{Cast, CastOptions, CastPreview, FORMAT_CODES, OnError};
 pub use crate::transforms::fill::Fill;
 pub use crate::transforms::filter::{Condition, Filter, FilterOp};

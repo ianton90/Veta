@@ -36,19 +36,9 @@ pub(super) const FUNCTIONS: &[(&str, usize, usize, &str)] = &[
     ("row", 0, 0, "row(): row number from 1"),
 ];
 
-/// Short help listing the syntax and functions.
 /// Each function as it is written, e.g. `if(condition, then, else)`.
 pub fn function_signatures() -> Vec<&'static str> {
     FUNCTIONS.iter().map(|f| f.3).collect()
-}
-
-pub fn expression_help() -> String {
-    let functions: Vec<&str> = FUNCTIONS.iter().map(|f| f.3).collect();
-    format!(
-        "Columns: [Name] or name. Operators: + - * / % & (join text) = <> < <= > >= and or not. \
-         Functions: {}.",
-        functions.join(", ")
-    )
 }
 
 impl Expr {

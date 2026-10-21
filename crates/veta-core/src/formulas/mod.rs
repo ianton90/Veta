@@ -35,7 +35,7 @@ use crate::steps::invalid;
 use crate::values::is_text;
 
 use eval::{Context, to};
-pub use functions::{expression_help, function_signatures};
+pub use functions::function_signatures;
 pub use parser::parse;
 
 /// A parsed expression.
