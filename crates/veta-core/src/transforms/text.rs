@@ -137,17 +137,6 @@ impl TextOp {
     }
 }
 
-impl std::fmt::Display for TextOp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Trim => "Trim spaces",
-            Self::Lower => "lowercase",
-            Self::Upper => "UPPERCASE",
-            Self::Title => "Capitalize Each Word",
-        })
-    }
-}
-
 fn title_case(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut start = true;

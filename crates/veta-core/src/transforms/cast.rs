@@ -61,16 +61,6 @@ impl OnError {
     pub const ALL: [OnError; 3] = [Self::Null, Self::Fail, Self::ErrorColumn];
 }
 
-impl std::fmt::Display for OnError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Null => "set to null",
-            Self::Fail => "stop with an error",
-            Self::ErrorColumn => "set to null and keep the text in an error column",
-        })
-    }
-}
-
 /// Values that failed to convert in a sample.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CastPreview {
@@ -444,10 +434,6 @@ fn month_name(text: &str, abbreviated: bool) -> Option<(u32, usize)> {
     Some((month as u32 + 1, len))
 }
 
-/// Format codes understood in date formats.
-pub const FORMAT_CODES: &str = "%Y year, %y two-digit year, %m month, %d day, %b/%B month name (en, es, fr, de, it, pt, nl), \
-     %H hour, %I hour (12h) with %p AM/PM, %M minute, %S second, %f fraction";
-
 fn check_format(format: &str) -> Result<()> {
     let mut chars = format.chars();
     let mut has_code = false;
@@ -465,7 +451,7 @@ fn check_format(format: &str) -> Result<()> {
         }
     }
     if !has_code {
-        return Err(invalid(format!("the format has no codes ({FORMAT_CODES})")));
+        return Err(invalid("the format has no codes".into()));
     }
     Ok(())
 }

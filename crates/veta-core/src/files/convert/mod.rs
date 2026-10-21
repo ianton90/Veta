@@ -154,29 +154,6 @@ pub struct ImportReport {
     pub on_error: Option<OnError>,
 }
 
-impl ImportReport {
-    /// A sentence for the user, if any values didn't fit.
-    pub fn summary(&self) -> Option<String> {
-        if self.failures.is_empty() {
-            return None;
-        }
-        let total: u64 = self.failures.iter().map(|(_, n)| n).sum();
-        let columns: Vec<String> = self
-            .failures
-            .iter()
-            .map(|(c, n)| format!("{c} ({n})"))
-            .collect();
-        let fate = match self.on_error {
-            Some(OnError::ErrorColumn) => "kept as text in the matching \"errors\" columns",
-            _ => "imported as null",
-        };
-        Some(format!(
-            "{total} values didn't fit their column's type and were {fate}: {}.",
-            columns.join(", ")
-        ))
-    }
-}
-
 // Storing imported batches.
 
 fn file_name(path: &Path) -> String {

@@ -84,9 +84,11 @@ impl FilterOp {
     }
 }
 
-impl std::fmt::Display for FilterOp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl FilterOp {
+    /// The operator in plain English, for step descriptions and messages
+    /// until they leave the core (#146, #138).
+    pub(crate) fn phrase(self) -> &'static str {
+        match self {
             Self::Equals => "equals",
             Self::NotEquals => "does not equal",
             Self::Less => "is less than",
@@ -99,7 +101,7 @@ impl std::fmt::Display for FilterOp {
             Self::EndsWith => "ends with",
             Self::IsNull => "is null",
             Self::IsNotNull => "is not null",
-        })
+        }
     }
 }
 
@@ -107,11 +109,11 @@ impl Condition {
     pub fn describe(&self) -> String {
         if self.op.needs_value() && self.value.contains('"') {
             // JSON values read better unescaped.
-            format!("{} {} {}", self.column, self.op, self.value)
+            format!("{} {} {}", self.column, self.op.phrase(), self.value)
         } else if self.op.needs_value() {
-            format!("{} {} {:?}", self.column, self.op, self.value)
+            format!("{} {} {:?}", self.column, self.op.phrase(), self.value)
         } else {
-            format!("{} {}", self.column, self.op)
+            format!("{} {}", self.column, self.op.phrase())
         }
     }
 }
@@ -137,7 +139,8 @@ impl Filter {
             if nested && !c.op.is_text_test() && c.op.needs_value() && !c.op.is_equality() {
                 return Err(invalid(format!(
                     "\"{}\" doesn't apply to {}: use equals, contains, starts/ends with or null tests",
-                    c.op, c.column
+                    c.op.phrase(),
+                    c.column
                 )));
             }
             if nested && c.op.is_equality() {
@@ -245,7 +248,7 @@ fn compare(op: FilterOp, left: &ArrayRef, right: &dyn arrow::array::Datum) -> Re
         FilterOp::LessOrEqual => cmp::lt_eq(left, right)?,
         FilterOp::Greater => cmp::gt(left, right)?,
         FilterOp::GreaterOrEqual => cmp::gt_eq(left, right)?,
-        other => return Err(invalid(format!("{other} is not a comparison"))),
+        other => return Err(invalid(format!("{} is not a comparison", other.phrase()))),
     })
 }
 

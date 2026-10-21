@@ -28,18 +28,6 @@ impl TextEncoding {
     ];
 }
 
-impl std::fmt::Display for TextEncoding {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Utf8 => "UTF-8",
-            Self::Latin1 => "Latin-1 (ISO-8859-1)",
-            Self::Windows1252 => "Windows-1252",
-            Self::Utf16Le => "UTF-16 LE",
-            Self::Utf16Be => "UTF-16 BE",
-        })
-    }
-}
-
 /// Windows-1252 characters for bytes 0x80-0x9F (the rest match Latin-1).
 pub(super) const WINDOWS_1252: [char; 32] = [
     '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',

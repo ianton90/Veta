@@ -89,7 +89,6 @@ fn csv_values_that_do_not_fit_are_reported() {
     };
     let (doc, report) = import_csv(&path, &options, veta_core::memory::budget(), &mut go).unwrap();
     assert_eq!(report.failures, [("n".to_owned(), 1)]);
-    assert!(report.summary().is_some());
     // The value is kept in an error column next to its column.
     assert_eq!(doc.schema().fields().len(), 2);
     assert_eq!(all(&doc)[2][0], None);

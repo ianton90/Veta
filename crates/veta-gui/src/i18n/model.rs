@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use veta_core::convert::ImportReport;
+use veta_core::convert::{ImportReport, TextEncoding};
 use veta_core::display::type_name;
 use veta_core::steps::{
     Condition, Filter, FilterOp, OnError, SplitBy, Step, TextOp, function_signatures, type_path,
@@ -65,6 +65,18 @@ impl Label for OnError {
             Self::Null => "ST_ON_ERROR_NULL",
             Self::Fail => "ST_ON_ERROR_FAIL",
             Self::ErrorColumn => "ST_ON_ERROR_COLUMN",
+        })
+    }
+}
+
+impl Label for TextEncoding {
+    fn label(self) -> String {
+        tr(match self {
+            Self::Utf8 => "ST_ENCODING_UTF8",
+            Self::Latin1 => "ST_ENCODING_LATIN1",
+            Self::Windows1252 => "ST_ENCODING_WINDOWS_1252",
+            Self::Utf16Le => "ST_ENCODING_UTF16_LE",
+            Self::Utf16Be => "ST_ENCODING_UTF16_BE",
         })
     }
 }

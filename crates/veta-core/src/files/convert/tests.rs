@@ -104,11 +104,11 @@ fn invalid_values_are_reported() {
     assert_eq!(names, ["n", "n errors", "m", "m errors", "s"]);
     assert_eq!(cells(&doc)[1][1].as_deref(), Some("x"));
     assert_eq!(report.failures, [("n".to_owned(), 1), ("m".to_owned(), 1)]);
-    assert!(report.summary().unwrap().contains("errors"));
+    assert_eq!(report.on_error, Some(OnError::ErrorColumn));
 
     let (doc, report) = run(OnError::Null).unwrap();
     assert_eq!(doc.num_columns(), 3);
-    assert!(report.summary().unwrap().contains("null"));
+    assert_eq!(report.failures.len(), 2);
 
     let err = run(OnError::Fail).unwrap_err().to_string();
     assert!(err.contains("ow 2") && err.contains("\"x\""), "{err}");
@@ -118,7 +118,7 @@ fn invalid_values_are_reported() {
     std::fs::write(&fine, "n\n1\n2\n").unwrap();
     let (doc, report) = import_csv(&fine, &CsvOptions::default(), 1 << 30, &mut |_| true).unwrap();
     assert_eq!(doc.num_columns(), 1);
-    assert_eq!(report.summary(), None);
+    assert!(report.failures.is_empty());
 
     let preview = preview_csv(
         &path,

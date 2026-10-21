@@ -84,6 +84,29 @@ pub struct ConvertArgs {
 }
 
 /// Converts a file between formats.
+/// What an import couldn't fit, if anything, as a sentence.
+fn import_summary(report: &veta_core::convert::ImportReport) -> Option<String> {
+    if report.failures.is_empty() {
+        return None;
+    }
+    let total: u64 = report.failures.iter().map(|(_, n)| n).sum();
+    let columns: Vec<String> = report
+        .failures
+        .iter()
+        .map(|(c, n)| format!("{c} ({n})"))
+        .collect();
+    let fate = match report.on_error {
+        Some(veta_core::steps::OnError::ErrorColumn) => {
+            "kept as text in the matching \"errors\" columns"
+        }
+        _ => "imported as null",
+    };
+    Some(format!(
+        "{total} values didn't fit their column's type and were {fate}: {}.",
+        columns.join(", ")
+    ))
+}
+
 pub fn convert(args: ConvertArgs, out: &mut impl Write) -> Result<(), Error> {
     use veta_core::convert::{
         CsvExportOptions, CsvOptions, ExportFormat, TextEncoding, convert_csv, export, import_csv,
@@ -152,14 +175,14 @@ pub fn convert(args: ConvertArgs, out: &mut impl Write) -> Result<(), Error> {
                 && let Some(report) =
                     convert_csv(&args.input, &options, &args.output, &mut |_| true)?
             {
-                if let Some(summary) = report.summary() {
+                if let Some(summary) = import_summary(&report) {
                     writeln!(out, "{summary}")?;
                 }
                 writeln!(out, "Saved {}", args.output.display())?;
                 return Ok(());
             }
             let (doc, report) = import_csv(&args.input, &options, budget, &mut |_| true)?;
-            if let Some(summary) = report.summary() {
+            if let Some(summary) = import_summary(&report) {
                 writeln!(out, "{summary}")?;
             }
             doc

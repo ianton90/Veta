@@ -343,9 +343,9 @@ impl ImportDialog {
             column![
                 text(tr("ST_DLG_WRITER_ENCODING")).size(13),
                 pick_list(
-                    TextEncoding::ALL,
-                    Some(self.encoding),
-                    ImportMessage::Encoding
+                    TextEncoding::ALL.map(Labeled),
+                    Some(Labeled(self.encoding)),
+                    |e| ImportMessage::Encoding(e.0)
                 )
                 .width(150),
             ]
