@@ -83,6 +83,8 @@ pub struct Appearance {
     pub font_family: Option<String>,
     /// Overrides the theme's font size. Applied on restart.
     pub font_size: Option<f32>,
+    /// Language of the app, by locale (`es-ES`); `None` follows the system.
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -133,6 +135,7 @@ impl Default for Appearance {
             dark_theme: theme::DEFAULT_DARK.into(),
             font_family: None,
             font_size: None,
+            language: None,
         }
     }
 }
@@ -151,6 +154,14 @@ impl Config {
     }
 
     /// Moves `path` to the front of the recent files list.
+    /// The language to show: the chosen one if Veta has it, else the
+    /// closest to the system's.
+    pub fn language(&self) -> &'static str {
+        let chosen = self.appearance.language.clone();
+        let locale = chosen.or_else(crate::platform::locale::system_locale);
+        veta_core::i18n::closest_language(&locale.unwrap_or_default())
+    }
+
     pub fn add_recent(&mut self, path: &Path) {
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         self.recent_files.retain(|p| p != &path);

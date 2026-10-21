@@ -52,6 +52,7 @@ veta-core/src/
   error.rs
   parallel.rs            independent work on all cores
   memory.rs              the memory budget (half of RAM by default)
+  i18n.rs                translations: tag → language → text, tr()
   model/                 Document, Workbook, metadata, undo history
   controller/            the only way to change a Document
     command.rs           the Command enum
@@ -71,7 +72,7 @@ veta-core/src/
                          value and its children, at any depth), parse
                          (text to values, nested edits), clipboard
 veta-core/tests/         integration tests: workflows, recipes, large
-                         files, import/export, edge files
+                         files, import/export, edge files, translations
 
 veta-gui/src/
   lib.rs                 module list; run()
@@ -98,7 +99,8 @@ veta-gui/src/
   dialogs/               one file per dialog; mod.rs has the shared
                          widgets and the StepDialog trait
   settings/              Settings dialog, config.toml, themes
-  platform/              native file dialogs, single instance, icon font
+  platform/              native file dialogs, single instance, system
+                         language, icon font
   ribbon.rs              the ribbon and its Actions
 
 veta-cli/src/
@@ -110,6 +112,7 @@ veta-cli/tests/cli.rs    runs the real binary
 
 veta/src/main.rs         the desktop binary
 veta-testkit/            Parquet fixtures and temp dirs for tests
+translations/            translations_<locale>.json, one per language
 ```
 
 ## Request flow
@@ -193,6 +196,18 @@ Document
   gathers each row group and encodes every column chunk as a task on a
   pool of threads, several row groups at once (up to 1/8 of the memory
   budget), so few or uneven columns still use all cores.
+
+### Translations
+- `veta_core::i18n::Translations` is a single shared object (decision 51):
+  a map tag → language → text, read from `translations/` (built into the
+  binary) at start-up and whenever the language changes. Code shows text
+  with `tr("ST_…")`, or `tr_with("ST_…", &[("n", &3)])` for texts with
+  `{n}` placeholders. Missing texts fall back to en-GB, then to the tag.
+- Saving a new language in Settings sends `Message::LanguageChanged`; it
+  reloads the translations and the next redraw shows the new texts.
+- To add a language: add `translations_<locale>.json` with every tag and
+  list it in `i18n.rs`. Tests check every file has every tag and every tag
+  in the code has a text.
 
 ### Steps
 Every data change is a `Step`, Power Query style:

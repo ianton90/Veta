@@ -19,8 +19,11 @@ mod steps;
 
 fn app() -> App {
     let (themes, _) = theme::load_all(None);
+    // English whatever the system language, so texts can be checked.
+    let mut config = Config::default();
+    config.appearance.language = Some("en-GB".into());
     let startup = Startup {
-        config: Config::default(),
+        config,
         config_path: None,
         themes,
         themes_dir: None,

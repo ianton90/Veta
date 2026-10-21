@@ -243,6 +243,7 @@ impl App {
             notice: None,
         };
         app.config.apply_memory_budget();
+        veta_core::i18n::Translations::set_language(app.config.language());
         let open = app.open(files);
         let system = iced::system::theme().map(Message::SystemMode);
         (app, Task::batch([open, system]))
@@ -555,13 +556,21 @@ impl App {
                         Outcome::Editing => {}
                         Outcome::Cancelled => self.dialog = None,
                         Outcome::Saved(config) => {
+                            let language = config.language();
+                            let changed = language != self.config.language();
                             self.config = *config;
                             self.config.apply_memory_budget();
                             self.save_config();
                             self.dialog = None;
+                            if changed {
+                                return Task::done(Message::LanguageChanged(language));
+                            }
                         }
                     }
                 }
+            }
+            Message::LanguageChanged(language) => {
+                veta_core::i18n::Translations::set_language(language);
             }
             Message::CloseDialog => {
                 self.dialog = None;

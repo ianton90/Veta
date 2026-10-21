@@ -7,6 +7,7 @@ use std::path::Path;
 
 use iced::widget::{button, checkbox, column, pick_list, row, text, text_input};
 use iced::{Alignment, Element, Length};
+use veta_core::i18n::{Translations, tr};
 use veta_core::{Compression, FormatVersion, StatisticsLevel, WriterSettings};
 
 use crate::dialogs::{Level, card, level_picker};
@@ -16,6 +17,7 @@ use crate::settings::theme::{Mode, Tokens, VetaTheme};
 /// Settings being edited; applied to [`Config`] on save.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Draft {
+    language: Language,
     mode: ModePreference,
     light_theme: String,
     dark_theme: String,
@@ -32,6 +34,7 @@ pub struct Draft {
 
 #[derive(Debug, Clone)]
 pub enum SettingsMessage {
+    Language(Language),
     Mode(ModePreference),
     LightTheme(String),
     DarkTheme(String),
@@ -48,6 +51,35 @@ pub enum SettingsMessage {
     Cancel,
 }
 
+/// A language in the picker: its locale, shown by its own name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Language {
+    pub locale: &'static str,
+    name: String,
+}
+
+impl Language {
+    pub fn all() -> Vec<Language> {
+        Translations::global()
+            .languages()
+            .into_iter()
+            .map(|(locale, name)| Language { locale, name })
+            .collect()
+    }
+
+    fn of(locale: &str) -> Language {
+        let all = Language::all();
+        let found = all.iter().find(|l| l.locale == locale).cloned();
+        found.unwrap_or_else(|| all[0].clone())
+    }
+}
+
+impl std::fmt::Display for Language {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
 /// Result of a settings message.
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
@@ -60,6 +92,7 @@ impl Draft {
     pub fn new(config: &Config) -> Self {
         let a = &config.appearance;
         Self {
+            language: Language::of(config.language()),
             mode: a.mode,
             light_theme: a.light_theme.clone(),
             dark_theme: a.dark_theme.clone(),
@@ -82,6 +115,7 @@ impl Draft {
 
     pub fn update(&mut self, message: SettingsMessage, config: &Config) -> Outcome {
         match message {
+            SettingsMessage::Language(language) => self.language = language,
             SettingsMessage::Mode(mode) => self.mode = mode,
             SettingsMessage::LightTheme(name) => self.light_theme = name,
             SettingsMessage::DarkTheme(name) => self.dark_theme = name,
@@ -148,6 +182,7 @@ impl Draft {
 
         let mut config = config.clone();
         let a = &mut config.appearance;
+        a.language = Some(self.language.locale.to_owned());
         a.mode = self.mode;
         a.light_theme = self.light_theme.clone();
         a.dark_theme = self.dark_theme.clone();
@@ -179,8 +214,20 @@ pub fn view<'a>(
     };
     let note = |s: String| text(s).color(tokens.muted_text);
 
+    let language = tr("ST_SETTINGS_LANGUAGE");
     let appearance = column![
         section("Appearance"),
+        row![
+            text(language).width(160),
+            pick_list(
+                Language::all(),
+                Some(draft.language.clone()),
+                SettingsMessage::Language
+            )
+            .width(220)
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
         field_row(
             "Mode",
             pick_list(ModePreference::ALL, Some(draft.mode), SettingsMessage::Mode)
@@ -378,6 +425,20 @@ mod tests {
         assert_eq!(saved.appearance.font_family, None);
         assert_eq!(saved.appearance.mode, ModePreference::Dark);
         assert_eq!(saved.data.memory_budget_mib, Some(512));
+    }
+
+    #[test]
+    fn language_is_saved_by_locale() {
+        let config = Config::default();
+        let mut draft = Draft::new(&config);
+        let spanish = Language::of("es-ES");
+        assert_eq!(spanish.to_string(), "Español (España)");
+        draft.update(SettingsMessage::Language(spanish), &config);
+        let Outcome::Saved(saved) = draft.update(SettingsMessage::Save, &config) else {
+            panic!("expected save");
+        };
+        assert_eq!(saved.appearance.language.as_deref(), Some("es-ES"));
+        assert_eq!(saved.language(), "es-ES");
     }
 
     #[test]

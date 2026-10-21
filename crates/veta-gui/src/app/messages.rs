@@ -23,6 +23,8 @@ pub(crate) enum Message {
     Grid(DocumentId, GridEvent),
     DismissError(usize),
     Settings(SettingsMessage),
+    /// The language changed in Settings: read its texts and redraw.
+    LanguageChanged(&'static str),
     CloseDialog,
     CloseRequested,
     CloseAnswer(CloseAnswer),
