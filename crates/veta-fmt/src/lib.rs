@@ -3,7 +3,9 @@
 //! model and its data; how it reads on screen lives here or in each front
 //! end (DECISIONS 53, 54).
 
+use veta_core::arrow::array::ArrayRef;
 use veta_core::arrow::datatypes::DataType;
+use veta_core::arrow::util::display::array_value_to_string;
 use veta_core::stats::ColumnStats;
 
 /// Whether values of this type read best right-aligned.
@@ -51,6 +53,11 @@ pub fn format_float(x: f64) -> String {
     } else {
         text.into()
     }
+}
+
+/// A statistics min or max (a one-value array) for display.
+pub fn format_stat_value(value: &ArrayRef) -> String {
+    array_value_to_string(value.as_ref(), 0).unwrap_or_default()
 }
 
 /// The distinct count for display (`~` when estimated).

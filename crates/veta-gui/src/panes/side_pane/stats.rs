@@ -17,7 +17,7 @@ pub struct StatsView {
 
 /// Statistics of the selected columns.
 pub(super) fn stats_pane<'a>(view: StatsView, ui: Ui) -> Element<'a, Message> {
-    use veta_fmt::{format_distinct, format_float};
+    use veta_fmt::{format_distinct, format_float, format_stat_value};
     let t = ui.tokens;
     let mut content = column![].spacing(10).padding([0, 12]);
     if let Some(reason) = view.waiting {
@@ -83,8 +83,8 @@ pub(super) fn stats_pane<'a>(view: StatsView, ui: Ui) -> Element<'a, Message> {
                     Some(s.count.to_string()),
                     Some(format!("{}{percent}", s.nulls)),
                     later(format_distinct(s)),
-                    s.min.clone(),
-                    s.max.clone(),
+                    s.min.as_ref().map(format_stat_value),
+                    s.max.as_ref().map(format_stat_value),
                     later(s.mean.map(format_float)),
                     later(s.std_dev.map(format_float)),
                 )

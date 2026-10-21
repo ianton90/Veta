@@ -145,7 +145,7 @@ pub(crate) fn stats(
     json: bool,
     out: &mut impl Write,
 ) -> Result<(), Error> {
-    use veta_fmt::{format_distinct, format_float};
+    use veta_fmt::{format_distinct, format_float, format_stat_value};
     let stats = doc.stats_job(columns)?.run(&mut |_| true)?;
     if json {
         writeln!(out, "{}", veta_core::stats::to_json(&stats)?)?;
@@ -165,8 +165,8 @@ pub(crate) fn stats(
                 Some(s.count.to_string()),
                 Some(s.nulls.to_string()),
                 format_distinct(s),
-                s.min.clone(),
-                s.max.clone(),
+                s.min.as_ref().map(format_stat_value),
+                s.max.as_ref().map(format_stat_value),
                 s.mean.map(format_float),
                 s.std_dev.map(format_float),
             ]

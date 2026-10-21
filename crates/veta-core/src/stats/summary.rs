@@ -38,11 +38,14 @@ pub struct ColumnStats {
     pub distinct: Option<u64>,
     /// Whether `distinct` is an estimate (too many values to count).
     pub distinct_estimated: bool,
-    /// Smallest and largest non-null values, as text; only for numbers,
-    /// dates, times and durations (the order of text or booleans says
-    /// nothing about the data).
-    pub min: Option<String>,
-    pub max: Option<String>,
+    /// Smallest and largest non-null values, as one-value arrays of the
+    /// column's type; only for numbers, dates, times and durations (the
+    /// order of text or booleans says nothing about the data). Written as
+    /// text in JSON; front ends format them for display.
+    #[serde(serialize_with = "value_as_text")]
+    pub min: Option<ArrayRef>,
+    #[serde(serialize_with = "value_as_text")]
+    pub max: Option<ArrayRef>,
     /// Numeric columns only.
     pub mean: Option<f64>,
     /// Sample standard deviation; numeric columns only.
@@ -204,10 +207,6 @@ impl Accumulator {
     }
 
     fn finish(self) -> ColumnStats {
-        let text = |a: &Option<ArrayRef>| {
-            a.as_ref()
-                .and_then(|a| array_value_to_string(a.as_ref(), 0).ok())
-        };
         let (distinct, distinct_estimated) = match &self.distinct {
             Some(d) => (Some(d.count()), d.estimated()),
             None => (None, false),
@@ -219,8 +218,8 @@ impl Accumulator {
             nulls: self.nulls,
             distinct,
             distinct_estimated,
-            min: text(&self.min),
-            max: text(&self.max),
+            min: self.min,
+            max: self.max,
             mean: numeric.then_some(self.mean),
             std_dev: (numeric && self.n > 1).then(|| (self.m2 / (self.n - 1) as f64).sqrt()),
             column: self.column,
@@ -638,6 +637,17 @@ pub fn quick_stats(
     Some(stats)
 }
 
+/// A min or max in JSON: its text.
+fn value_as_text<S: serde::Serializer>(
+    value: &Option<ArrayRef>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    let text = value
+        .as_ref()
+        .and_then(|a| array_value_to_string(a.as_ref(), 0).ok());
+    serializer.serialize_some(&text)
+}
+
 /// Statistics as pretty JSON (for `veta-cli stats --json`).
 pub fn to_json(stats: &[ColumnStats]) -> Result<String> {
     serde_json::to_string_pretty(stats).map_err(|e| Error::InvalidCommand(e.to_string()))
@@ -694,18 +704,22 @@ mod tests {
             (id.count, id.nulls, id.distinct),
             (200_000, 0, Some(200_000))
         );
-        assert_eq!(id.min.as_deref(), Some("0"));
-        assert_eq!(id.max.as_deref(), Some("199999"));
+        let text = |v: &Option<ArrayRef>| array_value_to_string(v.as_ref().unwrap(), 0).unwrap();
+        assert_eq!(text(&id.min), "0");
+        assert_eq!(text(&id.max), "199999");
         assert!((id.mean.unwrap() - 99_999.5).abs() < 1e-6);
         // Standard deviation of 0..n is about n / sqrt(12).
         assert!((id.std_dev.unwrap() - 57_735.17).abs() < 1.0);
         let name = &stats[1];
         assert_eq!(name.nulls, 50_000);
         assert_eq!(name.distinct, Some(3));
-        assert_eq!((&name.min, &name.max), (&None, &None), "text has no range");
+        assert!(
+            name.min.is_none() && name.max.is_none(),
+            "text has no range"
+        );
         assert_eq!((name.mean, name.std_dev), (None, None));
         assert_eq!(stats[2].nulls, 200_000);
-        assert_eq!(stats[2].min, None);
+        assert!(stats[2].min.is_none());
     }
 
     #[test]
@@ -734,8 +748,8 @@ mod tests {
                 "{column}"
             );
         }
-        assert_eq!(doc.quick_stats("name").unwrap().min, None);
-        assert_eq!(full[3].max, None, "booleans have no range");
+        assert!(doc.quick_stats("name").unwrap().min.is_none());
+        assert!(full[3].max.is_none(), "booleans have no range");
         // Written without statistics.
         assert!(doc.quick_stats("score").is_none());
     }

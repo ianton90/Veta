@@ -295,7 +295,13 @@ fn statistics_pane_follows_selection_and_edits() {
     let (name, quick, partial) = &view.columns[0];
     assert_eq!(name, "id");
     assert!(*partial);
-    assert_eq!(quick.as_ref().unwrap().max.as_deref(), Some("999"));
+    let max = quick
+        .as_ref()
+        .unwrap()
+        .max
+        .as_ref()
+        .map(veta_fmt::format_stat_value);
+    assert_eq!(max.as_deref(), Some("999"));
     assert_eq!(app.stats.running.as_ref().unwrap().columns, ["id"]);
     finish_stats(&mut app);
     let view = app.stats_view(id);
