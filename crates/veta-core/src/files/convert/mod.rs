@@ -182,7 +182,7 @@ impl ImportReport {
 fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Imported".into())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn cancelled<T>(result: Result<T>, was_cancelled: bool) -> Result<T> {

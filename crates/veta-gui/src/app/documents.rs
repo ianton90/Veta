@@ -174,7 +174,9 @@ impl App {
                     if submitted {
                         let doc = self.workbook.get(id);
                         let name = doc
-                            .map(|d| files::suggested_name(&d.title(), kind))
+                            .map(|d| {
+                                files::suggested_name(&d.title_or(&tr("ST_DOC_UNTITLED")), kind)
+                            })
                             .unwrap_or_default();
                         let dir = doc
                             .and_then(Document::path)
@@ -239,7 +241,7 @@ impl App {
                         .workbook
                         .get(id)
                         .map(|d| {
-                            let title = d.title();
+                            let title = d.title_or(&tr("ST_DOC_UNTITLED"));
                             let stem = title.rsplit_once('.').map_or(title.as_str(), |(s, _)| s);
                             format!("{stem}-recipe.json")
                         })
@@ -440,7 +442,11 @@ impl App {
 
     /// Opens a blank document named `Untitled`, `Untitled 2`, … in a new tab.
     fn new_document(&mut self) {
-        let titles: Vec<String> = self.workbook.iter().map(|(_, d)| d.title()).collect();
+        let titles: Vec<String> = self
+            .workbook
+            .iter()
+            .map(|(_, d)| d.title_or(&tr("ST_DOC_UNTITLED")))
+            .collect();
         let name = (1..)
             .map(|n| {
                 if n == 1 {
@@ -529,7 +535,7 @@ impl App {
             return Task::none();
         };
         // Imported documents are saved as Parquet.
-        let name = files::suggested_name(&doc.title(), FileKind::Parquet);
+        let name = files::suggested_name(&doc.title_or(&tr("ST_DOC_UNTITLED")), FileKind::Parquet);
         let dir = doc.path().and_then(Path::parent).map(Path::to_path_buf);
         let save = files::save(tr("ST_RIBBON_BTN_SAVE_AS"), FileKind::Parquet, name, dir);
         Task::perform(save, move |path| Message::SaveTo(id, path))

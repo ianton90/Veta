@@ -168,9 +168,9 @@ impl App {
                 self.tabs.iter().filter_map(|t| {
                     let doc = self.workbook.get(t.id)?;
                     let title = if doc.is_modified() {
-                        format!("● {}", doc.title())
+                        format!("● {}", doc.title_or(&tr("ST_DOC_UNTITLED")))
                     } else {
-                        doc.title()
+                        doc.title_or(&tr("ST_DOC_UNTITLED"))
                     };
                     Some((t.id, title))
                 }),

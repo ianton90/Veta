@@ -254,8 +254,10 @@ impl App {
 
     fn title(&self) -> String {
         match self.active_document() {
-            Some((_, doc)) if doc.is_modified() => format!("● {} — Veta", doc.title()),
-            Some((_, doc)) => format!("{} — Veta", doc.title()),
+            Some((_, doc)) if doc.is_modified() => {
+                format!("● {} — Veta", doc.title_or(&tr("ST_DOC_UNTITLED")))
+            }
+            Some((_, doc)) => format!("{} — Veta", doc.title_or(&tr("ST_DOC_UNTITLED"))),
             None => "Veta".to_owned(),
         }
     }

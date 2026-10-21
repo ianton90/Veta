@@ -15,6 +15,9 @@ use crate::io::{OpenOptions, SaveJob, SaveResult, open_parquet, same_file};
 use crate::source::{MemorySource, SourceMode};
 use crate::steps::{ComputeJob, Computed, Pipeline, Status, Step};
 
+/// Name of a document without one, unless the front end gives its own.
+pub const DEFAULT_TITLE: &str = "Untitled";
+
 /// One open file (or a new, unsaved one): its source data, the steps applied
 /// to it, and file-level settings. See `docs/ARCHITECTURE.md`.
 #[derive(Debug)]
@@ -84,14 +87,21 @@ impl Document {
         self.path.as_deref()
     }
 
-    /// Name to show in tabs and window titles.
+    /// The document's name: its file name, or the name it was imported or
+    /// created with; [`DEFAULT_TITLE`] if it has none.
     pub fn title(&self) -> String {
+        self.title_or(DEFAULT_TITLE)
+    }
+
+    /// Like [`Self::title`], with `untitled` (e.g. in the front end's
+    /// language) for a document without a name.
+    pub fn title_or(&self, untitled: &str) -> String {
         self.path
             .as_deref()
             .and_then(Path::file_name)
             .map(|name| name.to_string_lossy().into_owned())
             .or_else(|| self.imported.clone())
-            .unwrap_or_else(|| "Untitled".to_owned())
+            .unwrap_or_else(|| untitled.to_owned())
     }
 
     /// A new, blank document shown as `name` until it is saved.
