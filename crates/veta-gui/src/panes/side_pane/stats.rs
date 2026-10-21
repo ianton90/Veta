@@ -12,7 +12,7 @@ pub struct StatsView {
     /// Progress of the pass computing the missing ones.
     pub progress: Option<f32>,
     /// Why statistics can't be computed right now.
-    pub waiting: Option<&'static str>,
+    pub waiting: Option<String>,
 }
 
 /// Statistics of the selected columns.
@@ -25,7 +25,7 @@ pub(super) fn stats_pane<'a>(view: StatsView, ui: Ui) -> Element<'a, Message> {
     }
     if view.columns.is_empty() {
         content = content.push(
-            text("Select one or more columns to see their statistics.")
+            text(tr("ST_STATS_SELECT"))
                 .size(ui.small())
                 .color(t.muted_text),
         );
@@ -33,9 +33,13 @@ pub(super) fn stats_pane<'a>(view: StatsView, ui: Ui) -> Element<'a, Message> {
     if let Some(progress) = view.progress {
         content = content.push(
             column![
-                text(format!("Computing… {:.0}%", progress * 100.0))
-                    .size(ui.small())
-                    .color(t.muted_text),
+                text(format!(
+                    "{} {:.0}%",
+                    tr("ST_PANE_COMPUTING"),
+                    progress * 100.0
+                ))
+                .size(ui.small())
+                .color(t.muted_text),
                 progress_bar(0.0..=1.0, progress).girth(4),
             ]
             .spacing(4),
@@ -58,9 +62,12 @@ pub(super) fn stats_pane<'a>(view: StatsView, ui: Ui) -> Element<'a, Message> {
             .align_y(Alignment::Center)
         ]
         .spacing(3);
-        let line = |label: &'static str, value: Option<String>| {
+        let line = |label: &str, value: Option<String>| {
             row![
-                text(label).size(ui.small()).color(t.muted_text).width(90),
+                text(tr(label))
+                    .size(ui.small())
+                    .color(t.muted_text)
+                    .width(90),
                 text(value.unwrap_or_else(|| "—".into())).size(ui.small()),
             ]
         };
@@ -96,13 +103,13 @@ pub(super) fn stats_pane<'a>(view: StatsView, ui: Ui) -> Element<'a, Message> {
             }
         };
         card = card
-            .push(line("Count", count))
-            .push(line("Nulls", nulls))
-            .push(line("Distinct", distinct))
-            .push(line("Min", min))
-            .push(line("Max", max))
-            .push(line("Mean", mean))
-            .push(line("Std dev", sd));
+            .push(line("ST_STATS_COUNT", count))
+            .push(line("ST_STATS_NULLS", nulls))
+            .push(line("ST_STATS_DISTINCT", distinct))
+            .push(line("ST_STATS_MIN", min))
+            .push(line("ST_STATS_MAX", max))
+            .push(line("ST_STATS_MEAN", mean))
+            .push(line("ST_STATS_STD_DEV", sd));
         content = content.push(container(card).padding(8).width(Length::Fill).style(
             move |_theme: &Theme| {
                 container::Style::default()

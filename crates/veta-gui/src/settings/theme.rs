@@ -246,7 +246,10 @@ pub fn load_all(dir: Option<&Path>) -> (Vec<VetaTheme>, Vec<String>) {
                 themes.retain(|t| t.name != theme.name);
                 themes.push(theme);
             }
-            Err(e) => errors.push(format!("Theme {}: {e}", path.display())),
+            Err(e) => errors.push(veta_core::i18n::tr_with(
+                "ST_MSG_THEME_ERROR",
+                &[("path", &path.display()), ("error", &e)],
+            )),
         }
     }
     (themes, errors)

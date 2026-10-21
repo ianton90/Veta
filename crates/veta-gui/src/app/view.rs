@@ -7,7 +7,7 @@ use iced::widget::column;
 pub(crate) fn computing_label(doc: &Document, c: &Computing) -> String {
     match (c.target, doc.steps().get(c.step)) {
         (Target::Document, Some(step)) => format!("{}. {}", c.step + 1, step.describe()),
-        _ => "Filtering rows".to_owned(),
+        _ => tr("ST_MSG_FILTERING_ROWS"),
     }
 }
 
@@ -196,7 +196,7 @@ impl App {
                 window,
                 opaque(
                     center(
-                        container(iced::widget::text("Saving…").size(ui.heading()))
+                        container(iced::widget::text(tr("ST_MSG_SAVING")).size(ui.heading()))
                             .padding(24)
                             .style(move |_theme: &Theme| {
                                 container::Style::default()

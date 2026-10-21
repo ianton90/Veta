@@ -24,7 +24,7 @@ impl MergeDialog {
     pub fn new(columns: Vec<String>, merge: Option<&Merge>) -> Self {
         Self {
             separator: merge.map_or_else(|| " ".into(), |m| m.separator.clone()),
-            name: merge.map_or_else(|| "Merged".into(), |m| m.name.clone()),
+            name: merge.map_or_else(|| tr("ST_DLG_MERGE_DEFAULT_NAME"), |m| m.name.clone()),
             columns,
             error: None,
         }
@@ -53,32 +53,36 @@ impl MergeDialog {
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, MergeMessage> {
         let mut body = column![
-            text("Merge columns").size(20),
+            text(tr("ST_DLG_MERGE_TITLE")).size(20),
             text(self.columns.join(", ")).color(tokens.muted_text),
             row![
-                text("Separator").width(90),
-                text_input("none", &self.separator)
+                text(tr("ST_DLG_CSV_SEPARATOR")).width(90),
+                text_input(&tr("ST_DLG_MERGE_NO_SEPARATOR"), &self.separator)
                     .on_input(MergeMessage::Separator)
                     .on_submit(MergeMessage::Apply),
             ]
             .spacing(12)
             .align_y(Alignment::Center),
             row![
-                text("New column").width(90),
-                text_input("Column name", &self.name)
+                text(tr("ST_DLG_NEW_COLUMN")).width(90),
+                text_input(&tr("ST_DLG_COLUMN_NAME_PLACEHOLDER"), &self.name)
                     .id(NAME_ID)
                     .on_input(MergeMessage::Name)
                     .on_submit(MergeMessage::Apply),
             ]
             .spacing(12)
             .align_y(Alignment::Center),
-            text("Nulls count as empty text.").color(tokens.muted_text),
+            text(tr("ST_DLG_MERGE_NULLS")).color(tokens.muted_text),
         ]
         .spacing(14);
         if let Some(error) = &self.error {
             body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
         }
-        body = body.push(buttons("OK", MergeMessage::Cancel, MergeMessage::Apply));
+        body = body.push(buttons(
+            "ST_COMMON_OK",
+            MergeMessage::Cancel,
+            MergeMessage::Apply,
+        ));
         card(body.into(), tokens, 440.0)
     }
 }

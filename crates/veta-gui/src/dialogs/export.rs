@@ -13,11 +13,11 @@ pub enum ExportChoice {
 
 impl std::fmt::Display for ExportChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Csv => "CSV",
-            Self::JsonLines => "JSON, one object per line",
-            Self::JsonArray => "JSON array",
-        })
+        f.write_str(&tr(match self {
+            Self::Csv => "ST_DLG_EXPORT_CSV",
+            Self::JsonLines => "ST_DLG_EXPORT_JSON_LINES",
+            Self::JsonArray => "ST_DLG_EXPORT_JSON_ARRAY",
+        }))
     }
 }
 
@@ -103,15 +103,15 @@ impl ExportDialog {
     }
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, ExportMessage> {
-        let labelled = |label: &'static str, control: Element<'static, ExportMessage>| {
-            row![text(label).width(110), control]
+        let labelled = |label: &str, control: Element<'static, ExportMessage>| {
+            row![text(tr(label)).width(110), control]
                 .spacing(12)
                 .align_y(Alignment::Center)
         };
         let mut body = column![
-            text("Export").size(20),
+            text(tr("ST_DLG_EXPORT_TITLE")).size(20),
             labelled(
-                "Format",
+                "ST_DLG_EXPORT_FORMAT",
                 pick_list(
                     [
                         ExportChoice::Csv,
@@ -129,7 +129,7 @@ impl ExportDialog {
         if self.choice == ExportChoice::Csv {
             body = body
                 .push(labelled(
-                    "Separator",
+                    "ST_DLG_CSV_SEPARATOR",
                     row![
                         pick_list(
                             Delimiter::ALL,
@@ -148,13 +148,13 @@ impl ExportDialog {
                     .into(),
                 ))
                 .push(labelled(
-                    "Quote",
+                    "ST_DLG_CSV_QUOTE",
                     pick_list(Quote::ALL, Some(self.quote), ExportMessage::Quote)
                         .width(Length::Fill)
                         .into(),
                 ))
                 .push(labelled(
-                    "Decimal",
+                    "ST_DLG_CSV_DECIMAL",
                     pick_list(
                         [DecimalMark::Dot, DecimalMark::Comma],
                         Some(self.decimal),
@@ -165,14 +165,14 @@ impl ExportDialog {
                 ))
                 .push(
                     checkbox(self.header)
-                        .label("Write column names in the first row")
+                        .label(tr("ST_DLG_EXPORT_HEADER"))
                         .on_toggle(ExportMessage::Header),
                 );
         }
         body = body
-            .push(text("Exports the data after all applied steps.").color(tokens.muted_text))
+            .push(text(tr("ST_DLG_EXPORT_NOTE")).color(tokens.muted_text))
             .push(buttons(
-                "Export…",
+                "ST_DLG_EXPORT_EXPORT",
                 ExportMessage::Cancel,
                 ExportMessage::Export,
             ));

@@ -16,6 +16,7 @@ mod eval;
 mod functions;
 mod parser;
 
+use crate::i18n::tr_with;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -282,7 +283,10 @@ pub struct CustomColumn {
 
 impl CustomColumn {
     pub fn describe(&self) -> String {
-        format!("Added column {} = {}", self.name, self.expression)
+        tr_with(
+            "ST_STEP_CUSTOM_COLUMN",
+            &[("name", &self.name), ("formula", &self.expression)],
+        )
     }
 
     /// The new column's type: a plain column reference keeps the column's

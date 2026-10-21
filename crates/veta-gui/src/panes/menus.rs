@@ -2,9 +2,12 @@
 
 use super::*;
 use iced::widget::column;
+use veta_core::i18n::{tr, tr_with};
 use veta_core::values::node::NodeKind;
 
-/// One entry of a right-click menu: icon, label, shortcut, action.
+/// One entry of a right-click menu: icon, label, shortcut, action. The
+/// shortcut is shown through `tr`: key names (`ST_KEY_ENTER`) are tags,
+/// key combinations ("Ctrl+X") show as they are.
 type MenuEntry = (Icon, String, &'static str, MenuItem);
 
 /// The right-click menu's sections for `target`: a title and its entries.
@@ -16,21 +19,27 @@ pub fn menu_sections(
     column_type: Option<&DataType>,
     line: Option<NodeKind>,
 ) -> Vec<(&'static str, Vec<MenuEntry>)> {
-    let entry = |icon, label: &str, shortcut, item| (icon, label.to_owned(), shortcut, item);
+    // Labels, titles and shortcut key names are tags.
+    let entry = |icon, label: &str, shortcut, item| (icon, tr(label), shortcut, item);
     let count = |n: usize, one: &str, many: &str| {
         if n == 1 {
-            one.to_owned()
+            tr(one)
         } else {
-            many.replace("{n}", &n.to_string())
+            tr_with(many, &[("n", &n)])
         }
     };
     let mut sections: Vec<(&'static str, Vec<MenuEntry>)> = Vec::new();
     if target == MenuTarget::Blank {
         sections.push((
-            "Add",
+            "ST_MENU_SECTION_ADD",
             vec![
-                entry(Icon::InsertRows, "Add row", "Ctrl++", MenuItem::AddRow),
-                entry(Icon::Plus, "Add column…", "", MenuItem::AddColumn),
+                entry(
+                    Icon::InsertRows,
+                    "ST_MENU_ADD_ROW",
+                    "Ctrl++",
+                    MenuItem::AddRow,
+                ),
+                entry(Icon::Plus, "ST_MENU_ADD_COLUMN", "", MenuItem::AddColumn),
             ],
         ));
         return sections;
@@ -39,16 +48,21 @@ pub fn menu_sections(
     let inside = |sections: &mut Vec<(&'static str, Vec<MenuEntry>)>| match line {
         Some(NodeKind::Struct) => {
             sections.push((
-                "Struct",
-                vec![entry(Icon::Plus, "Add field…", "", MenuItem::AddInside)],
+                "ST_MENU_SECTION_STRUCT",
+                vec![entry(
+                    Icon::Plus,
+                    "ST_MENU_ADD_FIELD",
+                    "",
+                    MenuItem::AddInside,
+                )],
             ));
         }
         Some(NodeKind::List) => {
             sections.push((
-                "List",
+                "ST_MENU_SECTION_LIST",
                 vec![entry(
                     Icon::Plus,
-                    "Add item at the end",
+                    "ST_MENU_ADD_ITEM_AT_THE_END",
                     "",
                     MenuItem::AddInside,
                 )],
@@ -56,10 +70,10 @@ pub fn menu_sections(
         }
         Some(NodeKind::Map) => {
             sections.push((
-                "Map",
+                "ST_MENU_SECTION_MAP",
                 vec![entry(
                     Icon::Plus,
-                    "Add entry at the end",
+                    "ST_MENU_ADD_ENTRY_AT_THE_END",
                     "",
                     MenuItem::AddInside,
                 )],
@@ -69,12 +83,27 @@ pub fn menu_sections(
     };
     if target == MenuTarget::Field {
         sections.push((
-            "Struct field",
+            "ST_MENU_SECTION_STRUCT_FIELD",
             vec![
-                entry(Icon::Rename, "Edit field", "Enter", MenuItem::EditCell),
-                entry(Icon::Eraser, "Set to null", "Delete", MenuItem::ClearCell),
-                entry(Icon::Plus, "Add field…", "", MenuItem::AddField),
-                entry(Icon::Trash, "Remove field", "", MenuItem::RemoveField),
+                entry(
+                    Icon::Rename,
+                    "ST_MENU_EDIT_FIELD",
+                    "ST_KEY_ENTER",
+                    MenuItem::EditCell,
+                ),
+                entry(
+                    Icon::Eraser,
+                    "ST_MENU_SET_TO_NULL",
+                    "ST_KEY_DELETE",
+                    MenuItem::ClearCell,
+                ),
+                entry(Icon::Plus, "ST_MENU_ADD_FIELD", "", MenuItem::AddField),
+                entry(
+                    Icon::Trash,
+                    "ST_MENU_REMOVE_FIELD",
+                    "",
+                    MenuItem::RemoveField,
+                ),
             ],
         ));
         inside(&mut sections);
@@ -82,27 +111,37 @@ pub fn menu_sections(
     }
     if target == MenuTarget::Entry {
         sections.push((
-            "Map entry",
+            "ST_MENU_SECTION_MAP_ENTRY",
             vec![
-                entry(Icon::Rename, "Edit value", "Enter", MenuItem::EditCell),
-                entry(Icon::Rename, "Edit key", "", MenuItem::EditKey),
+                entry(
+                    Icon::Rename,
+                    "ST_MENU_EDIT_VALUE",
+                    "ST_KEY_ENTER",
+                    MenuItem::EditCell,
+                ),
+                entry(Icon::Rename, "ST_MENU_EDIT_KEY", "", MenuItem::EditKey),
                 entry(
                     Icon::InsertRows,
-                    "Insert entry above",
+                    "ST_MENU_INSERT_ENTRY_ABOVE",
                     "Ctrl++",
                     MenuItem::InsertItem,
                 ),
                 entry(
                     Icon::InsertRows,
-                    "Insert entry below",
+                    "ST_MENU_INSERT_ENTRY_BELOW",
                     "",
                     MenuItem::InsertItemBelow,
                 ),
-                entry(Icon::Trash, "Delete entry", "Ctrl+-", MenuItem::DeleteItem),
+                entry(
+                    Icon::Trash,
+                    "ST_MENU_DELETE_ENTRY",
+                    "Ctrl+-",
+                    MenuItem::DeleteItem,
+                ),
                 entry(
                     Icon::Eraser,
-                    "Set value to null",
-                    "Delete",
+                    "ST_MENU_SET_VALUE_TO_NULL",
+                    "ST_KEY_DELETE",
                     MenuItem::ClearCell,
                 ),
             ],
@@ -112,55 +151,80 @@ pub fn menu_sections(
     }
     if target == MenuTarget::Item {
         sections.push((
-            "List item",
+            "ST_MENU_SECTION_LIST_ITEM",
             vec![
-                entry(Icon::Rename, "Edit item", "Enter", MenuItem::EditCell),
+                entry(
+                    Icon::Rename,
+                    "ST_MENU_EDIT_ITEM",
+                    "ST_KEY_ENTER",
+                    MenuItem::EditCell,
+                ),
                 entry(
                     Icon::InsertRows,
-                    "Insert item above",
+                    "ST_MENU_INSERT_ITEM_ABOVE",
                     "Ctrl++",
                     MenuItem::InsertItem,
                 ),
                 entry(
                     Icon::InsertRows,
-                    "Insert item below",
+                    "ST_MENU_INSERT_ITEM_BELOW",
                     "",
                     MenuItem::InsertItemBelow,
                 ),
-                entry(Icon::Trash, "Delete item", "Ctrl+-", MenuItem::DeleteItem),
-                entry(Icon::Eraser, "Set to null", "Delete", MenuItem::ClearCell),
+                entry(
+                    Icon::Trash,
+                    "ST_MENU_DELETE_ITEM",
+                    "Ctrl+-",
+                    MenuItem::DeleteItem,
+                ),
+                entry(
+                    Icon::Eraser,
+                    "ST_MENU_SET_TO_NULL",
+                    "ST_KEY_DELETE",
+                    MenuItem::ClearCell,
+                ),
             ],
         ));
         inside(&mut sections);
         return sections;
     }
     sections.push((
-        "Clipboard",
+        "ST_MENU_SECTION_CLIPBOARD",
         vec![
-            entry(Icon::Scissors, "Cut", "Ctrl+X", MenuItem::Cut),
-            entry(Icon::Copy, "Copy", "Ctrl+C", MenuItem::Copy),
-            entry(Icon::Paste, "Paste", "Ctrl+V", MenuItem::Paste),
+            entry(Icon::Scissors, "ST_MENU_CUT", "Ctrl+X", MenuItem::Cut),
+            entry(Icon::Copy, "ST_MENU_COPY", "Ctrl+C", MenuItem::Copy),
+            entry(Icon::Paste, "ST_MENU_PASTE", "Ctrl+V", MenuItem::Paste),
         ],
     ));
     if target == MenuTarget::Cell {
         let mut cell = vec![
-            entry(Icon::Rename, "Edit cell", "Enter", MenuItem::EditCell),
-            entry(Icon::Eraser, "Set to null", "Delete", MenuItem::ClearCell),
+            entry(
+                Icon::Rename,
+                "ST_MENU_EDIT_CELL",
+                "ST_KEY_ENTER",
+                MenuItem::EditCell,
+            ),
+            entry(
+                Icon::Eraser,
+                "ST_MENU_SET_TO_NULL",
+                "ST_KEY_DELETE",
+                MenuItem::ClearCell,
+            ),
         ];
         cell.extend(add_inside(column_type));
-        sections.push(("Cell", cell));
+        sections.push(("ST_MENU_SECTION_CELL", cell));
         sections.push((
-            "Filter",
+            "ST_MENU_SECTION_FILTER",
             vec![
                 entry(
                     Icon::Filter,
-                    "Filter by this value",
+                    "ST_MENU_FILTER_BY_THIS_VALUE",
                     "",
                     MenuItem::KeepValue,
                 ),
                 entry(
                     Icon::Filter,
-                    "Filter out this value",
+                    "ST_MENU_FILTER_OUT_THIS_VALUE",
                     "",
                     MenuItem::ExcludeValue,
                 ),
@@ -169,29 +233,41 @@ pub fn menu_sections(
     }
     if matches!(target, MenuTarget::Cell | MenuTarget::Rows) {
         sections.push((
-            "Rows",
+            "ST_MENU_SECTION_ROWS",
             vec![
                 (
                     Icon::InsertRows,
-                    count(rows, "Insert row above", "Insert {n} rows above"),
+                    count(
+                        rows,
+                        "ST_MENU_INSERT_ROW_ABOVE",
+                        "ST_MENU_INSERT_N_ROWS_ABOVE",
+                    ),
                     "Ctrl++",
                     MenuItem::InsertRowsAbove,
                 ),
                 (
                     Icon::InsertRows,
-                    count(rows, "Insert row below", "Insert {n} rows below"),
+                    count(
+                        rows,
+                        "ST_MENU_INSERT_ROW_BELOW",
+                        "ST_MENU_INSERT_N_ROWS_BELOW",
+                    ),
                     "",
                     MenuItem::InsertRowsBelow,
                 ),
                 (
                     Icon::FilterPlus,
-                    count(rows, "Keep only this row", "Keep only these {n} rows"),
+                    count(
+                        rows,
+                        "ST_MENU_KEEP_ONLY_THIS_ROW",
+                        "ST_MENU_KEEP_ONLY_THESE_N_ROWS",
+                    ),
                     "",
                     MenuItem::KeepRows,
                 ),
                 (
                     Icon::Trash,
-                    count(rows, "Delete row", "Delete {n} rows"),
+                    count(rows, "ST_MENU_DELETE_ROW", "ST_MENU_DELETE_N_ROWS"),
                     "Ctrl+-",
                     MenuItem::DeleteRows,
                 ),
@@ -202,22 +278,32 @@ pub fn menu_sections(
         let mut column = vec![
             entry(
                 Icon::Plus,
-                "Insert column left…",
+                "ST_MENU_INSERT_COLUMN_LEFT",
                 "",
                 MenuItem::InsertColumnLeft,
             ),
             entry(
                 Icon::Plus,
-                "Insert column right…",
+                "ST_MENU_INSERT_COLUMN_RIGHT",
                 "",
                 MenuItem::InsertColumnRight,
             ),
-            entry(Icon::Rename, "Rename…", "", MenuItem::RenameColumn),
-            entry(Icon::Copy, "Duplicate", "", MenuItem::DuplicateColumn),
-            entry(Icon::ArrowLeft, "Move left", "", MenuItem::MoveColumnLeft),
+            entry(Icon::Rename, "ST_MENU_RENAME", "", MenuItem::RenameColumn),
+            entry(
+                Icon::Copy,
+                "ST_MENU_DUPLICATE",
+                "",
+                MenuItem::DuplicateColumn,
+            ),
+            entry(
+                Icon::ArrowLeft,
+                "ST_MENU_MOVE_LEFT",
+                "",
+                MenuItem::MoveColumnLeft,
+            ),
             entry(
                 Icon::ArrowRight,
-                "Move right",
+                "ST_MENU_MOVE_RIGHT",
                 "",
                 MenuItem::MoveColumnRight,
             ),
@@ -225,42 +311,52 @@ pub fn menu_sections(
                 Icon::Columns,
                 count(
                     columns,
-                    "Keep only this column",
-                    "Keep only these {n} columns",
+                    "ST_MENU_KEEP_ONLY_THIS_COLUMN",
+                    "ST_MENU_KEEP_ONLY_THESE_N_COLUMNS",
                 ),
                 "",
                 MenuItem::KeepColumns,
             ),
             (
                 Icon::Trash,
-                count(columns, "Remove column", "Remove {n} columns"),
+                count(columns, "ST_MENU_REMOVE_COLUMN", "ST_MENU_REMOVE_N_COLUMNS"),
                 "",
                 MenuItem::RemoveColumns,
             ),
         ];
         column.extend(add_inside(column_type));
-        sections.push(("Column", column));
+        sections.push(("ST_MENU_SECTION_COLUMN", column));
         sections.push((
-            "Data",
+            "ST_MENU_SECTION_DATA",
             vec![
-                entry(Icon::Filter, "Filter…", "", MenuItem::FilterColumn),
-                entry(Icon::SortAsc, "Sort ascending", "", MenuItem::SortAscending),
+                entry(Icon::Filter, "ST_MENU_FILTER", "", MenuItem::FilterColumn),
+                entry(
+                    Icon::SortAsc,
+                    "ST_MENU_SORT_ASCENDING",
+                    "",
+                    MenuItem::SortAscending,
+                ),
                 entry(
                     Icon::SortDesc,
-                    "Sort descending",
+                    "ST_MENU_SORT_DESCENDING",
                     "",
                     MenuItem::SortDescending,
                 ),
-                entry(Icon::Type, "Change type…", "", MenuItem::ChangeType),
+                entry(Icon::Type, "ST_MENU_CHANGE_TYPE", "", MenuItem::ChangeType),
                 entry(
                     Icon::Replace,
-                    "Replace values…",
+                    "ST_MENU_REPLACE_VALUES",
                     "",
                     MenuItem::ReplaceValues,
                 ),
-                entry(Icon::CaseUpper, "Format text…", "", MenuItem::FormatText),
-                entry(Icon::FillDown, "Fill down", "", MenuItem::FillDown),
-                entry(Icon::FillUp, "Fill up", "", MenuItem::FillUp),
+                entry(
+                    Icon::CaseUpper,
+                    "ST_MENU_FORMAT_TEXT",
+                    "",
+                    MenuItem::FormatText,
+                ),
+                entry(Icon::FillDown, "ST_MENU_FILL_DOWN", "", MenuItem::FillDown),
+                entry(Icon::FillUp, "ST_MENU_FILL_UP", "", MenuItem::FillUp),
             ],
         ));
     }
@@ -290,7 +386,7 @@ pub fn context_menu<'a>(
     for (i, (title, entries)) in sections.into_iter().enumerate() {
         list = list.push(
             container(
-                text(title)
+                text(tr(title))
                     .size(ui.small() - 1.0)
                     .font(bold())
                     .color(t.muted_text),
@@ -303,7 +399,9 @@ pub fn context_menu<'a>(
                     row![
                         icon(glyph, ui.small()).color(t.muted_text),
                         text(label).size(ui.small()).width(Length::Fill),
-                        text(shortcut).size(ui.small() - 1.0).color(t.muted_text),
+                        text(tr(shortcut))
+                            .size(ui.small() - 1.0)
+                            .color(t.muted_text),
                     ]
                     .spacing(10)
                     .align_y(Alignment::Center),
@@ -349,15 +447,17 @@ pub fn context_menu<'a>(
         .into()
 }
 
-/// "Add field…" for a struct column, "Add item/entry at the end" for a list
+/// "ST_MENU_ADD_FIELD" for a struct column, "Add item/entry at the end" for a list
 /// or map column. The rest of the Nested and Split & Merge commands stay on
 /// the ribbon: the menu keeps to the basic, most used ones.
 fn add_inside(column_type: Option<&DataType>) -> Option<MenuEntry> {
     let (label, item) = match column_type? {
-        DataType::Struct(_) => ("Add field…", MenuItem::AddField),
-        DataType::List(_) | DataType::LargeList(_) => ("Add item at the end", MenuItem::AddInside),
-        DataType::Map(..) => ("Add entry at the end", MenuItem::AddInside),
+        DataType::Struct(_) => ("ST_MENU_ADD_FIELD", MenuItem::AddField),
+        DataType::List(_) | DataType::LargeList(_) => {
+            ("ST_MENU_ADD_ITEM_AT_THE_END", MenuItem::AddInside)
+        }
+        DataType::Map(..) => ("ST_MENU_ADD_ENTRY_AT_THE_END", MenuItem::AddInside),
         _ => return None,
     };
-    Some((Icon::Plus, label.to_owned(), "", item))
+    Some((Icon::Plus, tr(label), "", item))
 }

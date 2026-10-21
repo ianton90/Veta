@@ -297,7 +297,11 @@ impl GridView {
         };
         let display = match (kind, at.parent) {
             (None, NodeKind::Map) => {
-                format!("{}[new key]", self.display_path(row, column, &parent))
+                format!(
+                    "{}[{}]",
+                    self.display_path(row, column, &parent),
+                    tr("ST_GRID_NEW_KEY")
+                )
             }
             _ => self.display_path(row, column, &path),
         };

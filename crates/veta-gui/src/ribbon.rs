@@ -9,6 +9,8 @@
 use iced::widget::{Space, button, column, container, row, rule, text, tooltip};
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 
+use veta_core::i18n::tr;
+
 use crate::platform::icon::{Icon, icon};
 use crate::settings::config::ModePreference;
 use crate::settings::theme::Tokens;
@@ -97,34 +99,27 @@ impl Action {
         };
         match self {
             Action::ExpandStruct => help(
-                "Replaces a struct column with one column per field. This changes \
-                 the file; to just look at the fields, use the arrow in the column \
-                 header.",
+                "ST_RIBBON_HELP_EXPAND_STRUCT",
                 "point\n{x: 1, y: 2}",
                 "point.x  point.y\n1        2",
             ),
             Action::ExpandAll => help(
-                "Like Struct → Columns, and also flattens the structs inside it, \
-                 down to the last level.",
+                "ST_RIBBON_HELP_EXPAND_ALL",
                 "a\n{x: 1, b: {y: 2}}",
                 "a.x  a.b.y\n1    2",
             ),
             Action::ExplodeList => help(
-                "One row per item of a list column (or entry of a map); the other \
-                 columns repeat on each row. Empty and null lists keep one row.",
+                "ST_RIBBON_HELP_EXPLODE_LIST",
                 "id  tags\n1   [p, q]",
                 "id  tags\n1   p\n1   q",
             ),
             Action::CombineStruct => help(
-                "Puts the selected columns into one new struct column, each as a \
-                 field. Undoes Struct → Columns.",
+                "ST_RIBBON_HELP_COMBINE_STRUCT",
                 "point.x  point.y\n1        2",
                 "point\n{x: 1, y: 2}",
             ),
             Action::CollectList => help(
-                "Groups the rows with equal values in the columns you pick and turns \
-                 the selected columns into lists, one row per group. Other columns \
-                 are dropped. Undoes List → Rows.",
+                "ST_RIBBON_HELP_COLLECT_LIST",
                 "id  tags\n1   p\n1   q",
                 "id  tags\n1   [p, q]",
             ),
@@ -135,6 +130,7 @@ impl Action {
 
 /// What a command does, with a small example of a table before and after.
 struct Help {
+    /// Tag of the text.
     text: &'static str,
     before: &'static str,
     after: &'static str,
@@ -155,11 +151,11 @@ impl Tab {
 
     fn label(self) -> &'static str {
         match self {
-            Tab::Home => "Home",
-            Tab::Rows => "Rows",
-            Tab::Columns => "Columns",
-            Tab::Nested => "Nested",
-            Tab::View => "View",
+            Tab::Home => "ST_RIBBON_TAB_HOME",
+            Tab::Rows => "ST_RIBBON_TAB_ROWS",
+            Tab::Columns => "ST_RIBBON_TAB_COLUMNS",
+            Tab::Nested => "ST_RIBBON_TAB_NESTED",
+            Tab::View => "ST_RIBBON_TAB_VIEW",
         }
     }
 }
@@ -212,6 +208,7 @@ enum Size {
 #[derive(Debug, Clone, Copy)]
 struct Item {
     action: Action,
+    /// Tag of the label (see `veta_core::i18n`).
     label: &'static str,
     icon: Icon,
     size: Size,
@@ -236,6 +233,7 @@ const fn small(action: Action, label: &'static str, icon: Icon) -> Item {
 }
 
 struct Group {
+    /// Tag of the label.
     label: &'static str,
     items: Vec<Item>,
 }
@@ -249,168 +247,263 @@ fn groups(tab: Tab) -> Vec<Group> {
     match tab {
         Tab::Home => vec![
             group(
-                "File",
+                "ST_RIBBON_GROUP_FILE",
                 vec![
-                    large(A::New, "New", Icon::FilePlus),
-                    large(A::Open, "Open", Icon::FolderOpen),
-                    large(A::Save, "Save", Icon::Save),
-                    small(A::SaveAs, "Save As", Icon::SaveAll),
-                    small(A::Close, "Close", Icon::Close),
+                    large(A::New, "ST_RIBBON_BTN_NEW", Icon::FilePlus),
+                    large(A::Open, "ST_RIBBON_BTN_OPEN", Icon::FolderOpen),
+                    large(A::Save, "ST_RIBBON_BTN_SAVE", Icon::Save),
+                    small(A::SaveAs, "ST_RIBBON_BTN_SAVE_AS", Icon::SaveAll),
+                    small(A::Close, "ST_RIBBON_BTN_CLOSE", Icon::Close),
                 ],
             ),
             group(
-                "Properties",
+                "ST_RIBBON_GROUP_PROPERTIES",
                 vec![
-                    small(A::FileMetadata, "Metadata", Icon::TableProperties),
-                    small(A::WriterSettings, "Writer Settings", Icon::Sliders),
+                    small(
+                        A::FileMetadata,
+                        "ST_RIBBON_BTN_METADATA",
+                        Icon::TableProperties,
+                    ),
+                    small(
+                        A::WriterSettings,
+                        "ST_RIBBON_BTN_WRITER_SETTINGS",
+                        Icon::Sliders,
+                    ),
                 ],
             ),
             group(
-                "Import / Export",
+                "ST_RIBBON_GROUP_IMPORT_EXPORT",
                 vec![
-                    small(A::Import, "Import", Icon::FileDown),
-                    small(A::Export, "Export", Icon::FileUp),
+                    small(A::Import, "ST_RIBBON_BTN_IMPORT", Icon::FileDown),
+                    small(A::Export, "ST_RIBBON_BTN_EXPORT", Icon::FileUp),
                 ],
             ),
             group(
-                "Recipe",
+                "ST_RIBBON_GROUP_RECIPE",
                 vec![
-                    small(A::LoadRecipe, "Load Recipe", Icon::RecipeLoad),
-                    small(A::SaveRecipe, "Save Recipe", Icon::RecipeSave),
+                    small(A::LoadRecipe, "ST_RIBBON_BTN_LOAD_RECIPE", Icon::RecipeLoad),
+                    small(A::SaveRecipe, "ST_RIBBON_BTN_SAVE_RECIPE", Icon::RecipeSave),
                 ],
             ),
             group(
-                "Clipboard",
+                "ST_RIBBON_GROUP_CLIPBOARD",
                 vec![
-                    large(A::Paste, "Paste", Icon::Paste),
-                    small(A::Cut, "Cut", Icon::Scissors),
-                    small(A::Copy, "Copy", Icon::Copy),
+                    large(A::Paste, "ST_RIBBON_BTN_PASTE", Icon::Paste),
+                    small(A::Cut, "ST_RIBBON_BTN_CUT", Icon::Scissors),
+                    small(A::Copy, "ST_RIBBON_BTN_COPY", Icon::Copy),
                 ],
             ),
             group(
-                "Edit",
+                "ST_RIBBON_GROUP_EDIT",
                 vec![
-                    small(A::Undo, "Undo", Icon::Undo),
-                    small(A::Redo, "Redo", Icon::Redo),
+                    small(A::Undo, "ST_RIBBON_BTN_UNDO", Icon::Undo),
+                    small(A::Redo, "ST_RIBBON_BTN_REDO", Icon::Redo),
                 ],
             ),
             group(
-                "Data",
+                "ST_RIBBON_GROUP_DATA",
                 vec![
-                    large(A::FilterRows, "Filter", Icon::Filter),
-                    small(A::KeepRows, "Keep Rows", Icon::FilterPlus),
-                    small(A::RemoveRows, "Remove Rows", Icon::Eraser),
-                    small(A::ReplaceValues, "Replace Values", Icon::Replace),
-                    small(A::SortAscending, "Sort Ascending", Icon::SortAsc),
-                    small(A::CustomSort, "Custom Sort", Icon::Sliders),
-                    small(A::SortDescending, "Sort Descending", Icon::SortDesc),
+                    large(A::FilterRows, "ST_RIBBON_BTN_FILTER", Icon::Filter),
+                    small(A::KeepRows, "ST_RIBBON_BTN_KEEP_ROWS", Icon::FilterPlus),
+                    small(A::RemoveRows, "ST_RIBBON_BTN_REMOVE_ROWS", Icon::Eraser),
+                    small(
+                        A::ReplaceValues,
+                        "ST_RIBBON_BTN_REPLACE_VALUES",
+                        Icon::Replace,
+                    ),
+                    small(
+                        A::SortAscending,
+                        "ST_RIBBON_BTN_SORT_ASCENDING",
+                        Icon::SortAsc,
+                    ),
+                    small(A::CustomSort, "ST_RIBBON_BTN_CUSTOM_SORT", Icon::Sliders),
+                    small(
+                        A::SortDescending,
+                        "ST_RIBBON_BTN_SORT_DESCENDING",
+                        Icon::SortDesc,
+                    ),
                 ],
             ),
         ],
         Tab::Rows => vec![
             group(
-                "Rows",
+                "ST_RIBBON_GROUP_ROWS",
                 vec![
-                    large(A::FilterRows, "Filter", Icon::Filter),
-                    large(A::KeepRows, "Keep Rows", Icon::FilterPlus),
-                    large(A::RemoveRows, "Remove Rows", Icon::Eraser),
-                    large(A::InsertRowsAt, "Insert Rows", Icon::InsertRows),
+                    large(A::FilterRows, "ST_RIBBON_BTN_FILTER", Icon::Filter),
+                    large(A::KeepRows, "ST_RIBBON_BTN_KEEP_ROWS", Icon::FilterPlus),
+                    large(A::RemoveRows, "ST_RIBBON_BTN_REMOVE_ROWS", Icon::Eraser),
+                    large(
+                        A::InsertRowsAt,
+                        "ST_RIBBON_BTN_INSERT_ROWS",
+                        Icon::InsertRows,
+                    ),
                 ],
             ),
             group(
-                "Sort",
+                "ST_RIBBON_GROUP_SORT",
                 vec![
-                    small(A::SortAscending, "Sort Ascending", Icon::SortAsc),
-                    small(A::SortDescending, "Sort Descending", Icon::SortDesc),
-                    small(A::CustomSort, "Custom Sort", Icon::Sliders),
+                    small(
+                        A::SortAscending,
+                        "ST_RIBBON_BTN_SORT_ASCENDING",
+                        Icon::SortAsc,
+                    ),
+                    small(
+                        A::SortDescending,
+                        "ST_RIBBON_BTN_SORT_DESCENDING",
+                        Icon::SortDesc,
+                    ),
+                    small(A::CustomSort, "ST_RIBBON_BTN_CUSTOM_SORT", Icon::Sliders),
                 ],
             ),
             group(
-                "Fill",
+                "ST_RIBBON_GROUP_FILL",
                 vec![
-                    small(A::FillDown, "Fill Down", Icon::FillDown),
-                    small(A::FillUp, "Fill Up", Icon::FillUp),
+                    small(A::FillDown, "ST_RIBBON_BTN_FILL_DOWN", Icon::FillDown),
+                    small(A::FillUp, "ST_RIBBON_BTN_FILL_UP", Icon::FillUp),
                 ],
             ),
         ],
         Tab::Columns => vec![
             group(
-                "Manage",
+                "ST_RIBBON_GROUP_MANAGE",
                 vec![
-                    small(A::RenameColumn, "Rename", Icon::Rename),
-                    small(A::MoveColumnLeft, "Move Left", Icon::ArrowLeft),
-                    small(A::MoveColumnRight, "Move Right", Icon::ArrowRight),
-                    large(A::KeepColumns, "Keep Columns", Icon::Columns),
-                    large(A::RemoveColumns, "Remove Columns", Icon::Trash),
+                    small(A::RenameColumn, "ST_RIBBON_BTN_RENAME", Icon::Rename),
+                    small(
+                        A::MoveColumnLeft,
+                        "ST_RIBBON_BTN_MOVE_LEFT",
+                        Icon::ArrowLeft,
+                    ),
+                    small(
+                        A::MoveColumnRight,
+                        "ST_RIBBON_BTN_MOVE_RIGHT",
+                        Icon::ArrowRight,
+                    ),
+                    large(A::KeepColumns, "ST_RIBBON_BTN_KEEP_COLUMNS", Icon::Columns),
+                    large(
+                        A::RemoveColumns,
+                        "ST_RIBBON_BTN_REMOVE_COLUMNS",
+                        Icon::Trash,
+                    ),
                 ],
             ),
             group(
-                "Add",
+                "ST_RIBBON_GROUP_ADD",
                 vec![
-                    large(A::AddColumn, "Empty Column", Icon::Plus),
-                    large(A::CustomColumn, "Formula Column", Icon::MathSymbols),
-                    small(A::IndexColumn, "Index Column", Icon::ListOrdered),
-                    small(A::DuplicateColumn, "Duplicate", Icon::Copy),
+                    large(A::AddColumn, "ST_RIBBON_BTN_EMPTY_COLUMN", Icon::Plus),
+                    large(
+                        A::CustomColumn,
+                        "ST_RIBBON_BTN_FORMULA_COLUMN",
+                        Icon::MathSymbols,
+                    ),
+                    small(
+                        A::IndexColumn,
+                        "ST_RIBBON_BTN_INDEX_COLUMN",
+                        Icon::ListOrdered,
+                    ),
+                    small(A::DuplicateColumn, "ST_RIBBON_BTN_DUPLICATE", Icon::Copy),
                 ],
             ),
             group(
-                "Transform",
+                "ST_RIBBON_GROUP_TRANSFORM",
                 vec![
-                    large(A::DataType, "Data Type", Icon::Type),
-                    small(A::ReplaceValues, "Replace Values", Icon::Replace),
-                    small(A::FormatText, "Format", Icon::CaseUpper),
-                    small(A::SplitColumn, "Split Column", Icon::Split),
-                    small(A::MergeColumns, "Merge Columns", Icon::Merge),
+                    large(A::DataType, "ST_RIBBON_BTN_DATA_TYPE", Icon::Type),
+                    small(
+                        A::ReplaceValues,
+                        "ST_RIBBON_BTN_REPLACE_VALUES",
+                        Icon::Replace,
+                    ),
+                    small(A::FormatText, "ST_RIBBON_BTN_FORMAT", Icon::CaseUpper),
+                    small(A::SplitColumn, "ST_RIBBON_BTN_SPLIT_COLUMN", Icon::Split),
+                    small(A::MergeColumns, "ST_RIBBON_BTN_MERGE_COLUMNS", Icon::Merge),
                 ],
             ),
             // Empty until the function library (#74).
-            group("Calculate", vec![]),
+            group("ST_RIBBON_GROUP_CALCULATE", vec![]),
         ],
         // Each command is named by what it turns into what; "Nest" undoes
         // "Flatten" in the same order.
         Tab::Nested => vec![
             group(
-                "Flatten",
+                "ST_RIBBON_GROUP_FLATTEN",
                 vec![
-                    large(A::ExpandStruct, "Struct → Columns", Icon::ListTree),
-                    large(A::ExplodeList, "List → Rows", Icon::Rows),
-                    large(A::ExpandAll, "All Levels → Columns", Icon::Layers),
+                    large(
+                        A::ExpandStruct,
+                        "ST_RIBBON_BTN_STRUCT_TO_COLUMNS",
+                        Icon::ListTree,
+                    ),
+                    large(A::ExplodeList, "ST_RIBBON_BTN_LIST_TO_ROWS", Icon::Rows),
+                    large(
+                        A::ExpandAll,
+                        "ST_RIBBON_BTN_ALL_LEVELS_TO_COLUMNS",
+                        Icon::Layers,
+                    ),
                 ],
             ),
             group(
-                "Nest",
+                "ST_RIBBON_GROUP_NEST",
                 vec![
-                    large(A::CombineStruct, "Columns → Struct", Icon::Group),
-                    large(A::CollectList, "Rows → Lists", Icon::ListCollapse),
+                    large(
+                        A::CombineStruct,
+                        "ST_RIBBON_BTN_COLUMNS_TO_STRUCT",
+                        Icon::Group,
+                    ),
+                    large(
+                        A::CollectList,
+                        "ST_RIBBON_BTN_ROWS_TO_LISTS",
+                        Icon::ListCollapse,
+                    ),
                 ],
             ),
         ],
         Tab::View => vec![
             group(
-                "Layout",
+                "ST_RIBBON_GROUP_LAYOUT",
                 vec![
-                    large(A::ToggleDetails, "Details Pane", Icon::PanelRight),
-                    small(A::AppliedSteps, "Applied Steps", Icon::ListTree),
-                    small(A::StatisticsPane, "Statistics", Icon::ChartColumn),
+                    large(
+                        A::ToggleDetails,
+                        "ST_RIBBON_BTN_DETAILS_PANE",
+                        Icon::PanelRight,
+                    ),
+                    small(
+                        A::AppliedSteps,
+                        "ST_RIBBON_BTN_APPLIED_STEPS",
+                        Icon::ListTree,
+                    ),
+                    small(
+                        A::StatisticsPane,
+                        "ST_RIBBON_BTN_STATISTICS",
+                        Icon::ChartColumn,
+                    ),
                 ],
             ),
             group(
-                "Theme",
+                "ST_RIBBON_GROUP_THEME",
                 vec![
-                    small(A::Mode(ModePreference::Light), "Light", Icon::Sun),
-                    small(A::Mode(ModePreference::Dark), "Dark", Icon::Moon),
+                    small(
+                        A::Mode(ModePreference::Light),
+                        "ST_RIBBON_BTN_LIGHT",
+                        Icon::Sun,
+                    ),
+                    small(
+                        A::Mode(ModePreference::Dark),
+                        "ST_RIBBON_BTN_DARK",
+                        Icon::Moon,
+                    ),
                     small(
                         A::Mode(ModePreference::System),
-                        "Follow System",
+                        "ST_RIBBON_BTN_FOLLOW_SYSTEM",
                         Icon::Monitor,
                     ),
                 ],
             ),
             group(
-                "Options",
-                vec![large(A::Settings, "Settings", Icon::Settings)],
+                "ST_RIBBON_GROUP_OPTIONS",
+                vec![large(A::Settings, "ST_RIBBON_BTN_SETTINGS", Icon::Settings)],
             ),
-            group("Help", vec![large(A::About, "About", Icon::Info)]),
+            group(
+                "ST_RIBBON_GROUP_HELP",
+                vec![large(A::About, "ST_RIBBON_BTN_ABOUT", Icon::Info)],
+            ),
         ],
     }
 }
@@ -516,7 +609,7 @@ pub fn view<'a, Message: Clone + 'a>(
     for tab in Tab::ALL {
         let selected = ribbon.tab == tab && !ribbon.collapsed;
         strip = strip.push(
-            button(text(tab.label()).size(context.text_size - 1.0))
+            button(text(tr(tab.label())).size(context.text_size - 1.0))
                 .padding([5, 14])
                 .style(move |_theme: &Theme, status| tab_style(tokens, selected, status))
                 .on_press(on_message(RibbonMessage::SelectTab(tab))),
@@ -533,11 +626,11 @@ pub fn view<'a, Message: Clone + 'a>(
                 .padding([5, 8])
                 .style(move |_theme: &Theme, status| item_style(tokens, false, status))
                 .on_press(on_message(RibbonMessage::ToggleCollapsed)),
-            tip(if ribbon.collapsed {
-                "Show the ribbon"
+            tip(tr(if ribbon.collapsed {
+                "ST_RIBBON_SHOW"
             } else {
-                "Hide the ribbon"
-            }),
+                "ST_RIBBON_HIDE"
+            })),
             tooltip::Position::Left,
         )
         .padding(6)
@@ -618,7 +711,7 @@ fn group_view<'a, Message: Clone + 'a>(
 
     column![
         items,
-        text(group.label)
+        text(tr(group.label))
             .size(context.text_size - 3.0)
             .color(tokens.muted_text)
             .wrapping(text::Wrapping::None),
@@ -650,7 +743,7 @@ fn item_button<'a, Message: Clone + 'a>(
     let content: Element<'a, Message> = match item.size {
         Size::Large => column![
             icon(item.icon, (size * 1.85).round()).color(color),
-            text(item.label)
+            text(tr(item.label))
                 .size(size - 2.0)
                 .color(color)
                 .align_x(Alignment::Center)
@@ -662,7 +755,7 @@ fn item_button<'a, Message: Clone + 'a>(
         .into(),
         Size::Small => row![
             icon(item.icon, size).color(color),
-            text(item.label)
+            text(tr(item.label))
                 .size(size - 2.0)
                 .color(color)
                 .wrapping(text::Wrapping::None),
@@ -687,8 +780,8 @@ fn item_button<'a, Message: Clone + 'a>(
     }
 
     let tip_text = match item.action.shortcut() {
-        Some(shortcut) => format!("{} ({shortcut})", item.label),
-        None => item.label.to_owned(),
+        Some(shortcut) => format!("{} ({shortcut})", tr(item.label)),
+        None => tr(item.label),
     };
     let content: Element<'a, Message> = match item.action.help() {
         Some(help) => help_view(tip_text, help, tokens),
@@ -719,7 +812,7 @@ fn help_view<'a, Message: 'a>(title: String, help: Help, tokens: Tokens) -> Elem
     };
     column![
         tip(title).font(crate::app::bold()),
-        tip(help.text).width(300).color(tokens.muted_text),
+        tip(tr(help.text)).width(300).color(tokens.muted_text),
         row![
             table(help.before),
             tip("→").color(tokens.muted_text),
@@ -840,7 +933,7 @@ mod tests {
         for tab in Tab::ALL {
             for group in groups(tab) {
                 assert!(
-                    !group.items.is_empty() || group.label == "Calculate",
+                    !group.items.is_empty() || group.label == "ST_RIBBON_GROUP_CALCULATE",
                     "{} is empty",
                     group.label
                 );

@@ -74,33 +74,36 @@ impl CollectDialog {
         }))
         .spacing(6);
         let mut body = column![
-            text("Rows → Lists").size(20),
-            text(format!("Collect into lists: {}", self.columns.join(", ")))
-                .color(tokens.muted_text),
-            text("Group by"),
+            text(tr("ST_DLG_COLLECT_TITLE")).size(20),
+            text(tr_with(
+                "ST_DLG_COLLECT_COLUMNS",
+                &[("columns", &self.columns.join(", "))]
+            ))
+            .color(tokens.muted_text),
+            text(tr("ST_DLG_COLLECT_GROUP_BY")),
             iced::widget::container(scrollable(list)).max_height(220.0),
-            text("One row per group of equal values, ordered by the group columns.")
-                .color(tokens.muted_text),
+            text(tr("ST_DLG_COLLECT_NOTE")).color(tokens.muted_text),
         ]
         .spacing(14);
         let dropped = self.dropped();
         if !dropped.is_empty() {
             body = body.push(
                 row![
-                    text("Dropped:").font(crate::app::bold()),
+                    text(tr("ST_DLG_COLLECT_DROPPED")).font(crate::app::bold()),
                     text(dropped.join(", ")).width(Length::Fill),
                 ]
                 .spacing(6),
             );
-            body = body.push(
-                text("Columns neither grouped by nor collected are left out.")
-                    .color(tokens.muted_text),
-            );
+            body = body.push(text(tr("ST_DLG_COLLECT_DROPPED_NOTE")).color(tokens.muted_text));
         }
         if let Some(error) = &self.error {
             body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
         }
-        body = body.push(buttons("OK", CollectMessage::Cancel, CollectMessage::Apply));
+        body = body.push(buttons(
+            "ST_COMMON_OK",
+            CollectMessage::Cancel,
+            CollectMessage::Apply,
+        ));
         card(body.into(), tokens, 440.0)
     }
 }

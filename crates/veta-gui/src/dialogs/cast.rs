@@ -51,18 +51,18 @@ impl CastTarget {
 
 impl std::fmt::Display for CastTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Text => "Text (string)",
-            Self::Int64 => "Whole number (int64)",
-            Self::Int32 => "Whole number (int32)",
-            Self::Float64 => "Decimal number (float64)",
-            Self::Float32 => "Decimal number (float32)",
-            Self::Boolean => "True/false (bool)",
-            Self::Date => "Date",
-            Self::Timestamp => "Date and time (timestamp)",
-            Self::Time => "Time of day (time)",
-            Self::Other => "Other type…",
-        })
+        f.write_str(&tr(match self {
+            Self::Text => "ST_TYPE_TEXT",
+            Self::Int64 => "ST_TYPE_INTEGER",
+            Self::Int32 => "ST_TYPE_INT32",
+            Self::Float64 => "ST_TYPE_DECIMAL",
+            Self::Float32 => "ST_TYPE_FLOAT32",
+            Self::Boolean => "ST_TYPE_BOOLEAN",
+            Self::Date => "ST_TYPE_DATE",
+            Self::Timestamp => "ST_TYPE_TIMESTAMP",
+            Self::Time => "ST_TYPE_TIME",
+            Self::Other => "ST_TYPE_OTHER",
+        }))
     }
 }
 
@@ -100,13 +100,13 @@ impl Separator {
 
 impl std::fmt::Display for Separator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::None => "none",
-            Self::Dot => "dot (1.5)",
-            Self::Comma => "comma (1,5)",
-            Self::Space => "space",
-            Self::Apostrophe => "apostrophe",
-        })
+        f.write_str(&tr(match self {
+            Self::None => "ST_DLG_CAST_SEPARATOR_NONE",
+            Self::Dot => "ST_DLG_CAST_SEPARATOR_DOT",
+            Self::Comma => "ST_DLG_CAST_SEPARATOR_COMMA",
+            Self::Space => "ST_DLG_CAST_SEPARATOR_SPACE",
+            Self::Apostrophe => "ST_DLG_CAST_SEPARATOR_APOSTROPHE",
+        }))
     }
 }
 
@@ -246,15 +246,15 @@ impl CastDialog {
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, CastMessage> {
         const LABEL: f32 = 130.0;
-        let labelled = |label: &'static str, control: Element<'static, CastMessage>| {
-            row![text(label).width(LABEL), control]
+        let labelled = |label: &str, control: Element<'static, CastMessage>| {
+            row![text(tr(label)).width(LABEL), control]
                 .spacing(12)
                 .align_y(Alignment::Center)
         };
         let mut body = column![
-            text(format!("Change type of {}", self.column)).size(20),
+            text(tr_with("ST_DLG_CAST_TITLE", &[("column", &self.column)])).size(20),
             labelled(
-                "Type",
+                "ST_DLG_CAST_TYPE",
                 pick_list(CastTarget::ALL, Some(self.target), CastMessage::Type)
                     .width(Length::Fill)
                     .into()
@@ -263,30 +263,23 @@ impl CastDialog {
         .spacing(14);
         if self.target == CastTarget::Other {
             body = body.push(labelled(
-                "Type name",
-                text_input(
-                    "e.g. decimal(10, 2), timestamp[ms, UTC], list<int64>",
-                    &self.other,
-                )
-                .on_input(CastMessage::Other)
-                .on_submit(CastMessage::Apply)
-                .into(),
+                "ST_DLG_CAST_TYPE_NAME",
+                text_input(&tr("ST_DLG_CAST_TYPE_NAME_EXAMPLE"), &self.other)
+                    .on_input(CastMessage::Other)
+                    .on_submit(CastMessage::Apply)
+                    .into(),
             ));
             if self.data_type().is_none() {
                 body = body.push(
-                    text(
-                        "Types: int8-64, uint8-64, float32/64, decimal(p, s), bool, string, \
-                         binary, date, time[s|ms|us|ns], timestamp[unit] or \
-                         timestamp[unit, zone], duration[unit], list<type>.",
-                    )
-                    .size(12)
-                    .color(tokens.muted_text),
+                    text(tr("ST_DLG_CAST_TYPE_NAMES"))
+                        .size(12)
+                        .color(tokens.muted_text),
                 );
             }
         }
         if self.uses_separators() {
             body = body.push(labelled(
-                "Decimal separator",
+                "ST_DLG_CAST_DECIMAL",
                 pick_list(
                     [Separator::Dot, Separator::Comma],
                     Some(self.decimal),
@@ -296,7 +289,7 @@ impl CastDialog {
                 .into(),
             ));
             body = body.push(labelled(
-                "Thousands",
+                "ST_DLG_CAST_THOUSANDS",
                 pick_list(
                     [
                         Separator::None,
@@ -314,34 +307,40 @@ impl CastDialog {
         }
         if self.uses_format() {
             body = body.push(labelled(
-                "Format",
-                text_input("Automatic (ISO 8601: 2024-12-31)", &self.format)
+                "ST_DLG_CAST_FORMAT",
+                text_input(&tr("ST_DLG_CAST_FORMAT_AUTOMATIC"), &self.format)
                     .on_input(CastMessage::Format)
                     .on_submit(CastMessage::Apply)
                     .into(),
             ));
-            body = body.push(text(FORMAT_CODES).size(12).color(tokens.muted_text));
+            body = body.push(
+                text(tr("ST_HELP_FORMAT_CODES"))
+                    .size(12)
+                    .color(tokens.muted_text),
+            );
         }
         body = body.push(labelled(
-            "Invalid values",
+            "ST_DLG_CAST_INVALID",
             pick_list(OnError::ALL, Some(self.on_error), CastMessage::OnError)
                 .width(Length::Fill)
                 .into(),
         ));
         let p = &self.preview;
         let summary = if self.data_type().is_none() {
-            "Enter a type name.".to_owned()
+            tr("ST_DLG_CAST_ENTER_TYPE")
         } else if p.checked == 0 {
-            "No rows to check.".to_owned()
+            tr("ST_DLG_CAST_NO_ROWS")
         } else if p.failed == 0 {
-            format!("All of the first {} rows convert.", p.checked)
+            tr_with("ST_DLG_CAST_ALL_CONVERT", &[("n", &p.checked)])
         } else {
             let examples: Vec<String> = p.examples.iter().map(|e| format!("{e:?}")).collect();
-            format!(
-                "{} of the first {} rows can't be converted, e.g. {}.",
-                p.failed,
-                p.checked,
-                examples.join(", ")
+            tr_with(
+                "ST_DLG_CAST_SOME_FAIL",
+                &[
+                    ("failed", &p.failed),
+                    ("n", &p.checked),
+                    ("examples", &examples.join(", ")),
+                ],
             )
         };
         let color = if p.failed == 0 {
@@ -350,7 +349,11 @@ impl CastDialog {
             iced::Color::from_rgb8(0xd1, 0x43, 0x43)
         };
         body = body.push(text(summary).color(color));
-        body = body.push(buttons("OK", CastMessage::Cancel, CastMessage::Apply));
+        body = body.push(buttons(
+            "ST_COMMON_OK",
+            CastMessage::Cancel,
+            CastMessage::Apply,
+        ));
         card(body.into(), tokens, 520.0)
     }
 }

@@ -41,10 +41,10 @@ pub enum Matching {
 
 impl std::fmt::Display for Matching {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::All => "all conditions",
-            Self::Any => "any condition",
-        })
+        f.write_str(&tr(match self {
+            Self::All => "ST_DLG_FILTER_ALL",
+            Self::Any => "ST_DLG_FILTER_ANY",
+        }))
     }
 }
 
@@ -163,8 +163,12 @@ impl FilterDialog {
         let mut list = column![].spacing(8);
         for (i, c) in self.conditions.iter().enumerate() {
             let nested = self.is_nested(&c.column);
-            let placeholder = if nested { "JSON, e.g. [1, 2]" } else { "Value" };
-            let mut value = text_input(placeholder, &c.value).width(Length::Fill);
+            let placeholder = tr(if nested {
+                "ST_DLG_FILTER_JSON_VALUE"
+            } else {
+                "ST_DLG_FILTER_VALUE"
+            });
+            let mut value = text_input(&placeholder, &c.value).width(Length::Fill);
             if i == 0 {
                 value = value.id(FILTER_VALUE_ID);
             }
@@ -200,9 +204,9 @@ impl FilterDialog {
             );
         }
         let mut body = column![
-            text("Filter rows").size(20),
+            text(tr("ST_DLG_FILTER_TITLE")).size(20),
             row![
-                text("Keep rows that match"),
+                text(tr("ST_DLG_FILTER_KEEP_MATCHING")),
                 pick_list(
                     [Matching::All, Matching::Any],
                     Some(self.matching),
@@ -212,20 +216,20 @@ impl FilterDialog {
             .spacing(8)
             .align_y(Alignment::Center),
             scrollable(list).height(Length::Shrink),
-            button(text("+ Add condition"))
+            button(text(tr("ST_DLG_FILTER_ADD")))
                 .style(button::text)
                 .on_press(FilterMessage::Add),
-            text(
-                "Values are read as the column's type; nested columns compare as JSON. \
-                 \"Aa\" matches text case-sensitively."
-            )
-            .color(tokens.muted_text),
+            text(tr("ST_DLG_FILTER_NOTE")).color(tokens.muted_text),
         ]
         .spacing(14);
         if let Some(error) = &self.error {
             body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
         }
-        body = body.push(buttons("OK", FilterMessage::Cancel, FilterMessage::Apply));
+        body = body.push(buttons(
+            "ST_COMMON_OK",
+            FilterMessage::Cancel,
+            FilterMessage::Apply,
+        ));
         card(body.into(), tokens, 720.0)
     }
 }

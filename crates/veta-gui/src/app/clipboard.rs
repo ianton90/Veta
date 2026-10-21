@@ -72,7 +72,8 @@ impl App {
         let text = match text {
             Ok(text) => text,
             Err(e) => {
-                self.errors.push(format!("Could not copy: {e}"));
+                self.errors
+                    .push(tr_with("ST_MSG_COPY_FAILED", &[("error", &e)]));
                 return Task::none();
             }
         };
@@ -116,7 +117,8 @@ impl App {
         let text = match veta_core::clipboard::copy_fields(doc, rows, targets, header) {
             Ok(text) => text,
             Err(e) => {
-                self.errors.push(format!("Could not copy: {e}"));
+                self.errors
+                    .push(tr_with("ST_MSG_COPY_FAILED", &[("error", &e)]));
                 return Task::none();
             }
         };
@@ -154,8 +156,7 @@ impl App {
                         })
                         .collect();
                     if commands.len() < targets.len() {
-                        self.errors
-                            .push("Only fields of top-level struct columns can be cut.".into());
+                        self.errors.push(tr("ST_MSG_CUT_FIELDS"));
                     } else {
                         for command in commands {
                             if !self.execute(id, command) {
@@ -215,7 +216,7 @@ impl App {
         }
         let (row, column) = match tab.grid.selection() {
             Selection::None => {
-                self.errors.push("Select where to paste first.".into());
+                self.errors.push(tr("ST_MSG_PASTE_WHERE"));
                 return;
             }
             Selection::Cell(r, c) => (r, c),

@@ -22,9 +22,9 @@ pub fn side_pane<'a>(
     ui: Ui,
 ) -> Element<'a, Message> {
     let t = ui.tokens;
-    let tab_button = |label: &'static str, target: SideTab| {
+    let tab_button = |label: &str, target: SideTab| {
         let selected = side == target;
-        button(text(label).size(ui.small()))
+        button(text(tr(label)).size(ui.small()))
             .padding([4, 10])
             .style(move |_theme: &Theme, status| {
                 let mut style = subtle_button(t, status);
@@ -45,9 +45,9 @@ pub fn side_pane<'a>(
             .on_press(Message::SideTab(target))
     };
     let tabs = row![
-        tab_button("Steps", SideTab::Steps),
-        tab_button("Stats", SideTab::Stats),
-        tab_button("File", SideTab::File)
+        tab_button("ST_SIDE_TAB_STEPS", SideTab::Steps),
+        tab_button("ST_SIDE_TAB_STATS", SideTab::Stats),
+        tab_button("ST_SIDE_TAB_FILE", SideTab::File)
     ]
     .spacing(4);
     let body = match side {

@@ -11,15 +11,12 @@ pub fn status_bar(
 ) -> Element<'static, Message> {
     let mut parts: Vec<String> = Vec::new();
     if let Some((tab, doc)) = active {
-        parts.push(format!("{} rows", doc.num_rows()));
-        parts.push(format!("{} columns", doc.num_columns()));
-        parts.push(
-            match doc.source_mode() {
-                SourceMode::InMemory => "In memory",
-                SourceMode::Paged => "Paged",
-            }
-            .into(),
-        );
+        parts.push(tr_with("ST_STATUS_ROWS", &[("n", &doc.num_rows())]));
+        parts.push(tr_with("ST_STATUS_COLUMNS", &[("n", &doc.num_columns())]));
+        parts.push(tr(match doc.source_mode() {
+            SourceMode::InMemory => "ST_STATUS_IN_MEMORY",
+            SourceMode::Paged => "ST_STATUS_PAGED",
+        }));
         if let Some((r, c)) = tab.grid.selected() {
             let name = doc
                 .schema()
@@ -27,27 +24,31 @@ pub fn status_bar(
                 .get(c)
                 .map(|f| format!(", {}", f.name()))
                 .unwrap_or_default();
-            parts.push(format!("Row {}{name}", r + 1));
+            parts.push(format!(
+                "{}{name}",
+                tr_with("ST_STATUS_ROW", &[("n", &(r + 1))])
+            ));
         }
-        parts.push(
-            if doc.is_modified() {
-                "Unsaved changes"
-            } else {
-                "No changes"
-            }
-            .into(),
-        );
+        parts.push(tr(if doc.is_modified() {
+            "ST_STATUS_UNSAVED"
+        } else {
+            "ST_STATUS_NO_CHANGES"
+        }));
         match doc.status() {
-            Status::Broken { step, .. } => parts.push(format!("Step {} has an error", step + 1)),
-            Status::Computing { step } => parts.push(format!("Computing step {}…", step + 1)),
+            Status::Broken { step, .. } => {
+                parts.push(tr_with("ST_STATUS_STEP_ERROR", &[("n", &(step + 1))]));
+            }
+            Status::Computing { step } => {
+                parts.push(tr_with("ST_STATUS_COMPUTING_STEP", &[("n", &(step + 1))]));
+            }
             Status::Ready => {}
         }
         if let Some(e) = tab.grid.error() {
-            parts.push(format!("Read error: {e}"));
+            parts.push(tr_with("ST_STATUS_READ_ERROR", &[("error", &e)]));
         }
     }
     if opening > 0 {
-        parts.push(format!("Opening {opening} file(s)…"));
+        parts.push(tr_with("ST_STATUS_OPENING", &[("n", &opening)]));
     }
     if transfers.is_empty()
         && let Some(notice) = notice
@@ -73,7 +74,7 @@ pub fn status_bar(
             .color(t.text),
         );
         bar = bar.push(
-            button(text("Cancel").size(ui.small()))
+            button(text(tr("ST_COMMON_CANCEL")).size(ui.small()))
                 .padding([0, 8])
                 .style(move |_theme: &Theme, status| subtle_button(t, status))
                 .on_press(Message::CancelTransfer(transfer.id)),

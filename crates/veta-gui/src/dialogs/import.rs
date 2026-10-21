@@ -41,7 +41,7 @@ pub(super) fn separator(delimiter: Delimiter, other: &str) -> Result<u8, String>
     }
     match other.as_bytes() {
         [b] if b.is_ascii() && !b.is_ascii_alphanumeric() && *b != b'\n' => Ok(*b),
-        _ => Err("Type one punctuation character as the separator.".into()),
+        _ => Err(tr("ST_DLG_CSV_SEPARATOR_INVALID")),
     }
 }
 
@@ -67,23 +67,23 @@ impl Quote {
 
 impl std::fmt::Display for Quote {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Double => "double ( \" )",
-            Self::Single => "single ( ' )",
-            Self::None => "none",
-        })
+        f.write_str(&tr(match self {
+            Self::Double => "ST_DLG_CSV_QUOTE_DOUBLE",
+            Self::Single => "ST_DLG_CSV_QUOTE_SINGLE",
+            Self::None => "ST_DLG_CSV_QUOTE_NONE",
+        }))
     }
 }
 
 impl std::fmt::Display for Delimiter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Comma => "comma ( , )",
-            Self::Semicolon => "semicolon ( ; )",
-            Self::Tab => "tab",
-            Self::Pipe => "pipe ( | )",
-            Self::Other => "other…",
-        })
+        f.write_str(&tr(match self {
+            Self::Comma => "ST_DLG_CSV_DELIMITER_COMMA",
+            Self::Semicolon => "ST_DLG_CSV_DELIMITER_SEMICOLON",
+            Self::Tab => "ST_DLG_CSV_DELIMITER_TAB",
+            Self::Pipe => "ST_DLG_CSV_DELIMITER_PIPE",
+            Self::Other => "ST_DLG_CSV_DELIMITER_OTHER",
+        }))
     }
 }
 
@@ -105,10 +105,10 @@ impl DecimalMark {
 
 impl std::fmt::Display for DecimalMark {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Dot => "dot (1.5)",
-            Self::Comma => "comma (1,5)",
-        })
+        f.write_str(&tr(match self {
+            Self::Dot => "ST_DLG_CAST_SEPARATOR_DOT",
+            Self::Comma => "ST_DLG_CAST_SEPARATOR_COMMA",
+        }))
     }
 }
 
@@ -307,7 +307,7 @@ impl ImportDialog {
             .unwrap_or_default();
         let options = row![
             column![
-                text("Separator").size(13),
+                text(tr("ST_DLG_CSV_SEPARATOR")).size(13),
                 row![
                     pick_list(
                         Delimiter::ALL,
@@ -326,12 +326,12 @@ impl ImportDialog {
             ]
             .spacing(4),
             column![
-                text("Quote").size(13),
+                text(tr("ST_DLG_CSV_QUOTE")).size(13),
                 pick_list(Quote::ALL, Some(self.quote), ImportMessage::Quote).width(130),
             ]
             .spacing(4),
             column![
-                text("Decimal").size(13),
+                text(tr("ST_DLG_CSV_DECIMAL")).size(13),
                 pick_list(
                     [DecimalMark::Dot, DecimalMark::Comma],
                     Some(self.decimal),
@@ -341,7 +341,7 @@ impl ImportDialog {
             ]
             .spacing(4),
             column![
-                text("Encoding").size(13),
+                text(tr("ST_DLG_WRITER_ENCODING")).size(13),
                 pick_list(
                     TextEncoding::ALL,
                     Some(self.encoding),
@@ -353,7 +353,7 @@ impl ImportDialog {
             column![
                 text(" ").size(13),
                 checkbox(self.header)
-                    .label("Header row")
+                    .label(tr("ST_DLG_IMPORT_HEADER"))
                     .on_toggle(ImportMessage::Header),
             ]
             .spacing(8),
@@ -362,9 +362,9 @@ impl ImportDialog {
         .align_y(Alignment::End);
         let preview: Element<'_, ImportMessage> = match &self.preview {
             Err(e) => text(if e.is_empty() {
-                "Reading…"
+                tr("ST_DLG_IMPORT_READING")
             } else {
-                e.as_str()
+                e.clone()
             })
             .color(iced::Color::from_rgb8(0xd1, 0x43, 0x43))
             .into(),
@@ -393,7 +393,7 @@ impl ImportDialog {
                     };
                     let failed = preview.failures.get(i).copied().unwrap_or(0);
                     let note = if failed > 0 {
-                        text(format!("{failed} don't fit"))
+                        text(tr_with("ST_DLG_IMPORT_DONT_FIT", &[("n", &failed)]))
                             .size(11)
                             .color(iced::Color::from_rgb8(0xd1, 0x43, 0x43))
                     } else {
@@ -432,28 +432,30 @@ impl ImportDialog {
         let date_format: Option<Element<'_, ImportMessage>> = self.has_dates().then(|| {
             column![
                 row![
-                    text("Date format"),
-                    text_input("Automatic (ISO 8601: 2024-12-31)", &self.date_format)
+                    text(tr("ST_DLG_IMPORT_DATE_FORMAT")),
+                    text_input(&tr("ST_DLG_CAST_FORMAT_AUTOMATIC"), &self.date_format)
                         .on_input(ImportMessage::DateFormat)
                         .width(Length::Fill),
                 ]
                 .spacing(12)
                 .align_y(Alignment::Center),
-                text(FORMAT_CODES).size(12).color(tokens.muted_text),
+                text(tr("ST_HELP_FORMAT_CODES"))
+                    .size(12)
+                    .color(tokens.muted_text),
             ]
             .spacing(4)
             .into()
         });
         let body = column![
-            text(format!("Import {name}")).size(20),
+            text(tr_with("ST_DLG_IMPORT_TITLE", &[("name", &name)])).size(20),
             options,
-            text("Preview").size(15),
+            text(tr("ST_DLG_IMPORT_PREVIEW")).size(15),
             preview,
         ]
         .extend(date_format)
         .push(
             row![
-                text("Values that don't fit their column's type:"),
+                text(tr("ST_DLG_IMPORT_ON_ERROR")),
                 pick_list(OnError::ALL, Some(self.on_error), ImportMessage::OnError)
                     .width(Length::Fill),
             ]
@@ -461,12 +463,12 @@ impl ImportDialog {
             .align_y(Alignment::Center),
         )
         .push(
-            text("You'll be told how many values didn't fit after importing.")
+            text(tr("ST_DLG_IMPORT_ON_ERROR_NOTE"))
                 .size(12)
                 .color(tokens.muted_text),
         )
         .push(buttons(
-            "Import",
+            "ST_DLG_IMPORT_IMPORT",
             ImportMessage::Cancel,
             ImportMessage::Import,
         ))

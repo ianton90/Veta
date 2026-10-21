@@ -7,18 +7,14 @@ use iced::widget::column;
 pub fn confirm_step<'a>(tokens: Tokens) -> Element<'a, crate::app::Message> {
     use crate::app::Message;
     let body = column![
-        text("Change this step?").size(20),
-        text(
-            "Later steps edit, insert or delete rows by their position. After this \
-             change they may apply to different rows."
-        )
-        .color(tokens.muted_text),
+        text(tr("ST_DLG_CONFIRM_STEP_TITLE")).size(20),
+        text(tr("ST_DLG_CONFIRM_STEP_TEXT")).color(tokens.muted_text),
         row![
             iced::widget::Space::new().width(Length::Fill),
-            button(text("Cancel"))
+            button(text(tr("ST_COMMON_CANCEL")))
                 .style(button::secondary)
                 .on_press(Message::ConfirmStep(false)),
-            button(text("Change it")).on_press(Message::ConfirmStep(true)),
+            button(text(tr("ST_DLG_CONFIRM_STEP_CHANGE"))).on_press(Message::ConfirmStep(true)),
         ]
         .spacing(8),
     ]
@@ -29,27 +25,24 @@ pub fn confirm_step<'a>(tokens: Tokens) -> Element<'a, crate::app::Message> {
 /// Asked when loading a recipe into a document that has `steps` steps.
 pub fn confirm_recipe<'a>(steps: usize, tokens: Tokens) -> Element<'a, crate::app::Message> {
     use crate::app::Message;
-    let have = if steps == 1 {
-        "This file already has 1 applied step.".to_owned()
+    let question = if steps == 1 {
+        tr("ST_DLG_CONFIRM_RECIPE_ONE")
     } else {
-        format!("This file already has {steps} applied steps.")
+        tr_with("ST_DLG_CONFIRM_RECIPE_MANY", &[("n", &steps)])
     };
     let body = column![
-        text("Load recipe").size(20),
-        text(format!(
-            "{have} Replace them with the recipe's, which then applies to the original \
-             data, or add the recipe's steps after them?"
-        ))
-        .color(tokens.muted_text),
+        text(tr("ST_DLG_CONFIRM_RECIPE_TITLE")).size(20),
+        text(question).color(tokens.muted_text),
         row![
             iced::widget::Space::new().width(Length::Fill),
-            button(text("Cancel"))
+            button(text(tr("ST_COMMON_CANCEL")))
                 .style(button::secondary)
                 .on_press(Message::RecipeChoice(None)),
-            button(text("Add after"))
+            button(text(tr("ST_DLG_CONFIRM_RECIPE_ADD")))
                 .style(button::secondary)
                 .on_press(Message::RecipeChoice(Some(false))),
-            button(text("Replace")).on_press(Message::RecipeChoice(Some(true))),
+            button(text(tr("ST_DLG_CONFIRM_RECIPE_REPLACE")))
+                .on_press(Message::RecipeChoice(Some(true))),
         ]
         .spacing(8),
     ]
@@ -61,17 +54,17 @@ pub fn confirm_recipe<'a>(steps: usize, tokens: Tokens) -> Element<'a, crate::ap
 pub fn confirm_close<'a>(name: String, tokens: Tokens) -> Element<'a, crate::app::Message> {
     use crate::app::{CloseAnswer, Message};
     let body = column![
-        text(format!("Save changes to {name}?")).size(20),
-        text("Your changes will be lost if you don't save them.").color(tokens.muted_text),
+        text(tr_with("ST_DLG_CONFIRM_CLOSE_TITLE", &[("name", &name)])).size(20),
+        text(tr("ST_DLG_CONFIRM_CLOSE_TEXT")).color(tokens.muted_text),
         row![
-            button(text("Don't save"))
+            button(text(tr("ST_DLG_CONFIRM_CLOSE_DISCARD")))
                 .style(button::danger)
                 .on_press(Message::CloseAnswer(CloseAnswer::Discard)),
             iced::widget::Space::new().width(Length::Fill),
-            button(text("Cancel"))
+            button(text(tr("ST_COMMON_CANCEL")))
                 .style(button::secondary)
                 .on_press(Message::CloseAnswer(CloseAnswer::Cancel)),
-            button(text("Save")).on_press(Message::CloseAnswer(CloseAnswer::Save)),
+            button(text(tr("ST_COMMON_SAVE"))).on_press(Message::CloseAnswer(CloseAnswer::Save)),
         ]
         .spacing(8),
     ]

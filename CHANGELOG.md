@@ -13,6 +13,8 @@ use all cores (on a 10 GB file, faster than polars at sort, formula, edit,
 CSV import and export).
 
 **Desktop app (`veta`)**
+- In English and Spanish: Settings → Language; the first start follows the
+  system language, and switching applies at once.
 - Open several Parquet files as tabs, including files larger than memory
   (paged reading). Opening a file while Veta runs adds it to the open
   window. New, blank files.

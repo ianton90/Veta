@@ -126,7 +126,7 @@ impl App {
     /// column into rows.
     pub(crate) fn nested_step(&mut self, id: DocumentId, explode: bool, all_levels: bool) {
         let Some(column) = self.selected_column_names(id).into_iter().next() else {
-            self.errors.push("Select a column first.".into());
+            self.errors.push(tr("ST_MSG_SELECT_COLUMN"));
             return;
         };
         let command = if explode {
@@ -172,7 +172,7 @@ impl App {
                 self.open_column_dialog(id, ColumnDialog::add_field(column, path))
             }
             _ => {
-                self.errors.push("Select a struct first.".into());
+                self.errors.push(tr("ST_MSG_SELECT_STRUCT"));
                 Task::none()
             }
         }
@@ -357,8 +357,7 @@ impl App {
             return Task::none();
         }
         if it.fixed {
-            self.errors
-                .push("Items of a fixed-size list can't be added or removed.".into());
+            self.errors.push(tr("ST_MSG_FIXED_LIST"));
             return Task::none();
         }
         // A map entry needs its key first: the slot for it opens there.

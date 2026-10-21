@@ -76,7 +76,8 @@ impl App {
                             Ok(None) => {}
                             Err(e) => {
                                 tab.grid.set_filter(None, doc);
-                                self.errors.push(format!("Could not filter: {e}"));
+                                self.errors
+                                    .push(tr_with("ST_MSG_FILTER_FAILED", &[("error", &e)]));
                             }
                         }
                     }
@@ -102,7 +103,7 @@ impl App {
                         self.clear_filter(c.document);
                     } else if let Some(doc) = self.workbook.get_mut(c.document) {
                         if !controller::undo(doc) {
-                            doc.fail_compute(&c.key, "Cancelled".into());
+                            doc.fail_compute(&c.key, tr("ST_MSG_CANCELLED"));
                         }
                         self.refresh(c.document);
                     }
@@ -313,9 +314,9 @@ impl App {
                     let count = error
                         .split_once(": ")
                         .map_or(String::new(), |(_, rest)| format!(" ({rest})"));
-                    self.errors.push(format!(
-                        "Some values couldn't be converted{count}. They're kept in column \
-                         {column}."
+                    self.errors.push(tr_with(
+                        "ST_MSG_VALUES_KEPT",
+                        &[("count", &count), ("column", &column)],
                     ));
                 }
             }
@@ -325,8 +326,10 @@ impl App {
                     .get(step)
                     .map(Step::describe)
                     .unwrap_or_default();
-                self.errors
-                    .push(format!("Stopped at step {} ({label}): {error}", step + 1));
+                self.errors.push(tr_with(
+                    "ST_MSG_STOPPED_AT_STEP",
+                    &[("n", &(step + 1)), ("step", &label), ("error", &error)],
+                ));
             }
             Status::Ready if check.is_some() => self.error_check = None,
             _ => {}

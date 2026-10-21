@@ -12,10 +12,10 @@ pub enum SplitMode {
 
 impl std::fmt::Display for SplitMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Delimiter => "by delimiter",
-            Self::Positions => "at character positions",
-        })
+        f.write_str(&tr(match self {
+            Self::Delimiter => "ST_DLG_SPLIT_BY_DELIMITER",
+            Self::Positions => "ST_DLG_SPLIT_AT_POSITIONS",
+        }))
     }
 }
 
@@ -98,7 +98,7 @@ impl SplitDialog {
                             parts,
                         },
                         Err(_) => {
-                            self.error = Some("Columns must be a whole number.".into());
+                            self.error = Some(tr("ST_DLG_SPLIT_COLUMNS_INVALID"));
                             return None;
                         }
                     },
@@ -112,8 +112,7 @@ impl SplitDialog {
                         match parsed {
                             Ok(positions) => SplitBy::Positions(positions),
                             Err(_) => {
-                                self.error =
-                                    Some("Positions must be whole numbers, like 2, 5.".into());
+                                self.error = Some(tr("ST_DLG_SPLIT_POSITIONS_INVALID"));
                                 return None;
                             }
                         }
@@ -129,15 +128,15 @@ impl SplitDialog {
     }
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, SplitMessage> {
-        let labelled = |label: &'static str, control: Element<'static, SplitMessage>| {
-            row![text(label).width(90), control]
+        let labelled = |label: &str, control: Element<'static, SplitMessage>| {
+            row![text(tr(label)).width(90), control]
                 .spacing(12)
                 .align_y(Alignment::Center)
         };
         let mut body = column![
-            text(format!("Split {}", self.column)).size(20),
+            text(tr_with("ST_DLG_SPLIT_TITLE", &[("column", &self.column)])).size(20),
             labelled(
-                "Split",
+                "ST_DLG_SPLIT_SPLIT",
                 pick_list(
                     [SplitMode::Delimiter, SplitMode::Positions],
                     Some(self.mode),
@@ -151,7 +150,7 @@ impl SplitDialog {
         match self.mode {
             SplitMode::Delimiter => {
                 body = body.push(labelled(
-                    "Delimiter",
+                    "ST_DLG_SPLIT_DELIMITER",
                     text_input(",", &self.delimiter)
                         .id(NAME_ID)
                         .on_input(SplitMessage::Delimiter)
@@ -159,36 +158,35 @@ impl SplitDialog {
                         .into(),
                 ));
                 body = body.push(labelled(
-                    "Columns",
+                    "ST_DLG_SPLIT_COLUMNS",
                     text_input("2", &self.parts)
                         .on_input(SplitMessage::Parts)
                         .on_submit(SplitMessage::Apply)
                         .width(80)
                         .into(),
                 ));
-                body = body.push(
-                    text("The last column keeps any text left over.").color(tokens.muted_text),
-                );
+                body = body.push(text(tr("ST_DLG_SPLIT_LAST_KEEPS_REST")).color(tokens.muted_text));
             }
             SplitMode::Positions => {
                 body = body.push(labelled(
-                    "Positions",
-                    text_input("e.g. 2, 5", &self.positions)
+                    "ST_DLG_SPLIT_POSITIONS",
+                    text_input(&tr("ST_DLG_SPLIT_POSITIONS_EXAMPLE"), &self.positions)
                         .id(NAME_ID)
                         .on_input(SplitMessage::Positions)
                         .on_submit(SplitMessage::Apply)
                         .into(),
                 ));
-                body = body.push(
-                    text("Character counts from the start where each new column begins.")
-                        .color(tokens.muted_text),
-                );
+                body = body.push(text(tr("ST_DLG_SPLIT_POSITIONS_NOTE")).color(tokens.muted_text));
             }
         }
         if let Some(error) = &self.error {
             body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
         }
-        body = body.push(buttons("OK", SplitMessage::Cancel, SplitMessage::Apply));
+        body = body.push(buttons(
+            "ST_COMMON_OK",
+            SplitMessage::Cancel,
+            SplitMessage::Apply,
+        ));
         card(body.into(), tokens, 440.0)
     }
 }

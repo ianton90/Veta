@@ -81,7 +81,9 @@ impl CustomDialog {
     pub fn view(&self, tokens: Tokens) -> Element<'_, CustomMessage> {
         let danger = iced::Color::from_rgb8(0xd1, 0x43, 0x43);
         let status: Element<'_, CustomMessage> = match &self.check {
-            Ok(t) => text(format!("Result: {t}")).color(tokens.muted_text).into(),
+            Ok(t) => text(tr_with("ST_DLG_CUSTOM_RESULT", &[("type", &t)]))
+                .color(tokens.muted_text)
+                .into(),
             Err(e) if e.is_empty() => text("").into(),
             Err(e) => text(e).color(danger).into(),
         };
@@ -98,10 +100,10 @@ impl CustomDialog {
             })
             .collect();
         let mut body = column![
-            text("Custom column").size(20),
+            text(tr("ST_DLG_CUSTOM_TITLE")).size(20),
             row![
-                text("Name").width(90),
-                text_input("Column name", &self.name)
+                text(tr("ST_DLG_COLUMN_NAME")).width(90),
+                text_input(&tr("ST_DLG_COLUMN_NAME_PLACEHOLDER"), &self.name)
                     .id(NAME_ID)
                     .on_input(CustomMessage::Name)
                     .on_submit(CustomMessage::Apply),
@@ -109,8 +111,8 @@ impl CustomDialog {
             .spacing(12)
             .align_y(Alignment::Center),
             row![
-                text("Formula").width(90),
-                text_input("e.g. [Unit price] * qty", &self.expression)
+                text(tr("ST_DLG_CUSTOM_FORMULA")).width(90),
+                text_input(&tr("ST_DLG_CUSTOM_FORMULA_EXAMPLE"), &self.expression)
                     .id(EXPRESSION_ID)
                     .on_input(CustomMessage::Expression)
                     .on_submit(CustomMessage::Apply),
@@ -118,16 +120,23 @@ impl CustomDialog {
             .spacing(12)
             .align_y(Alignment::Center),
             status,
-            text(format!("Columns: {}", columns.join(", ")))
-                .size(12)
-                .color(tokens.muted_text),
+            text(tr_with(
+                "ST_DLG_CUSTOM_COLUMNS",
+                &[("columns", &columns.join(", "))]
+            ))
+            .size(12)
+            .color(tokens.muted_text),
             text(expression_help()).size(12).color(tokens.muted_text),
         ]
         .spacing(12);
         if let Some(error) = &self.error {
             body = body.push(text(error).color(danger));
         }
-        body = body.push(buttons("OK", CustomMessage::Cancel, CustomMessage::Apply));
+        body = body.push(buttons(
+            "ST_COMMON_OK",
+            CustomMessage::Cancel,
+            CustomMessage::Apply,
+        ));
         card(body.into(), tokens, 620.0)
     }
 }

@@ -22,7 +22,7 @@ impl std::fmt::Display for Level {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             Some(level) => write!(f, "{level}"),
-            None => f.write_str("default"),
+            None => f.write_str(&tr("ST_COMMON_DEFAULT")),
         }
     }
 }
@@ -90,7 +90,7 @@ impl WriterDialog {
                     settings.max_row_group_rows = rows;
                     return Some(Command::SetWriterSettings(settings));
                 }
-                _ => self.error = Some("Rows per row group must be a whole number above 0.".into()),
+                _ => self.error = Some(tr("ST_SETTINGS_ROW_GROUP_INVALID")),
             },
         }
         None
@@ -125,13 +125,13 @@ impl WriterDialog {
         const FLAG: f32 = 85.0;
 
         let header = row![
-            text("Column").width(NAME),
-            text("Compression").width(COMPRESSION),
-            text("Level").width(LEVEL),
-            text("Encoding").width(ENCODING),
-            text("Dictionary").width(FLAG),
-            text("Statistics").width(STATISTICS),
-            text("Bloom").width(FLAG),
+            text(tr("ST_DLG_WRITER_COLUMN")).width(NAME),
+            text(tr("ST_SETTINGS_COMPRESSION")).width(COMPRESSION),
+            text(tr("ST_DLG_WRITER_LEVEL")).width(LEVEL),
+            text(tr("ST_DLG_WRITER_ENCODING")).width(ENCODING),
+            text(tr("ST_SETTINGS_DICTIONARY")).width(FLAG),
+            text(tr("ST_SETTINGS_STATISTICS")).width(STATISTICS),
+            text(tr("ST_DLG_WRITER_BLOOM")).width(FLAG),
         ]
         .spacing(8);
 
@@ -185,11 +185,10 @@ impl WriterDialog {
         }
 
         let mut body = column![
-            text("Writer settings").size(20),
-            text("Used when saving. Opened files keep the settings they were written with.")
-                .color(tokens.muted_text),
+            text(tr("ST_DLG_WRITER_TITLE")).size(20),
+            text(tr("ST_DLG_WRITER_NOTE")).color(tokens.muted_text),
             row![
-                text("Format version").width(NAME),
+                text(tr("ST_SETTINGS_FORMAT_VERSION")).width(NAME),
                 pick_list(
                     FormatVersion::ALL,
                     Some(self.settings.format_version),
@@ -197,30 +196,26 @@ impl WriterDialog {
                 )
                 .width(COMPRESSION),
                 Space::new().width(24),
-                text("Rows per row group"),
+                text(tr("ST_SETTINGS_ROW_GROUP")),
                 text_input("1048576", &self.row_group)
                     .on_input(WriterMessage::RowGroup)
                     .width(140),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            text("Columns").size(16),
+            text(tr("ST_DLG_WRITER_COLUMNS")).size(16),
             scrollable(columns.padding(iced::Padding::ZERO.right(16))).height(Length::Fixed(260.0)),
-            settings_row(None, "New columns".into(), None),
-            text(
-                "Nested columns are listed per leaf. With a dictionary, the encoding is used \
-                 only if the dictionary grows too large; files record it only then, so it \
-                 shows as plain after reopening."
-            )
-            .size(13)
-            .color(tokens.muted_text),
+            settings_row(None, tr("ST_DLG_WRITER_NEW_COLUMNS"), None),
+            text(tr("ST_DLG_WRITER_NESTED_NOTE"))
+                .size(13)
+                .color(tokens.muted_text),
         ]
         .spacing(14);
         if let Some(error) = &self.error {
             body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
         }
         body = body.push(buttons(
-            "Apply",
+            "ST_COMMON_APPLY",
             WriterMessage::Cancel,
             WriterMessage::Apply,
         ));

@@ -14,11 +14,12 @@ use veta_core::convert::{
     CsvExportOptions, CsvOptions, CsvPreview, ExportFormat, TextEncoding, preview_csv,
 };
 use veta_core::display::type_name;
+use veta_core::i18n::{tr, tr_with};
 use veta_core::io::ARROW_SCHEMA_KEY;
 use veta_core::model::KeyValue;
 use veta_core::steps::{
-    Cast, CastOptions, CastPreview, Condition, FORMAT_CODES, Filter, FilterOp, OnError, Replace,
-    Sort, SortKey, TextOp,
+    Cast, CastOptions, CastPreview, Condition, Filter, FilterOp, OnError, Replace, Sort, SortKey,
+    TextOp,
 };
 use veta_core::steps::{CustomColumn, Merge, Split, SplitBy, Step, count_parts, expression_help};
 use veta_core::values::is_text;
@@ -126,13 +127,14 @@ pub(crate) fn card<'a, Message: 'a>(
         .into()
 }
 
-fn buttons<'a, M: Clone + 'a>(action: &'a str, cancel: M, submit: M) -> Element<'a, M> {
+/// Cancel and the dialog's action; `action` is the tag of its label.
+fn buttons<'a, M: Clone + 'a>(action: &str, cancel: M, submit: M) -> Element<'a, M> {
     row![
         Space::new().width(Length::Fill),
-        button(text("Cancel"))
+        button(text(tr("ST_COMMON_CANCEL")))
             .style(button::secondary)
             .on_press(cancel),
-        button(text(action)).on_press(submit),
+        button(text(tr(action))).on_press(submit),
     ]
     .spacing(8)
     .into()

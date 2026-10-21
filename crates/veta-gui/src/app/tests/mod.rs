@@ -124,15 +124,27 @@ fn menu_sections_follow_the_target() {
             .collect()
     };
     let point = DataType::Struct(Fields::from(vec![Field::new("x", DataType::Int64, true)]));
-    assert_eq!(titles(MenuTarget::Blank, None), ["Add"]);
-    assert_eq!(titles(MenuTarget::Rows, None), ["Clipboard", "Rows"]);
+    assert_eq!(titles(MenuTarget::Blank, None), ["ST_MENU_SECTION_ADD"]);
+    assert_eq!(
+        titles(MenuTarget::Rows, None),
+        ["ST_MENU_SECTION_CLIPBOARD", "ST_MENU_SECTION_ROWS"]
+    );
     assert_eq!(
         titles(MenuTarget::Cell, Some(&DataType::Int64)),
-        ["Clipboard", "Cell", "Filter", "Rows"]
+        [
+            "ST_MENU_SECTION_CLIPBOARD",
+            "ST_MENU_SECTION_CELL",
+            "ST_MENU_SECTION_FILTER",
+            "ST_MENU_SECTION_ROWS"
+        ]
     );
     assert_eq!(
         titles(MenuTarget::Column(0), Some(&point)),
-        ["Clipboard", "Column", "Data"]
+        [
+            "ST_MENU_SECTION_CLIPBOARD",
+            "ST_MENU_SECTION_COLUMN",
+            "ST_MENU_SECTION_DATA"
+        ]
     );
     // Adding inside a struct or list stays, in the Column or Cell section.
     let last = |target, column_type: &DataType| {

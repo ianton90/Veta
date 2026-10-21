@@ -15,14 +15,14 @@ pub enum FileKind {
 }
 
 impl FileKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Parquet => "Parquet file",
-            Self::Csv => "CSV file",
-            Self::Json => "JSON file",
-            Self::JsonLines => "JSON lines file",
-            Self::Recipe => "Veta recipe (JSON)",
-        }
+    pub fn label(self) -> String {
+        veta_core::i18n::tr(match self {
+            Self::Parquet => "ST_FILE_KIND_PARQUET",
+            Self::Csv => "ST_FILE_KIND_CSV",
+            Self::Json => "ST_FILE_KIND_JSON",
+            Self::JsonLines => "ST_FILE_KIND_JSON_LINES",
+            Self::Recipe => "ST_FILE_KIND_RECIPE",
+        })
     }
 
     /// Extensions, the preferred one first.
@@ -81,7 +81,7 @@ fn dialog(title: &str, kinds: &[FileKind], dir: Option<&Path>) -> rfd::AsyncFile
     if let Some(dir) = dir {
         dialog = dialog.set_directory(dir);
     }
-    dialog.add_filter("All files (*.*)", &["*"])
+    dialog.add_filter(veta_core::i18n::tr("ST_FILE_KIND_ALL"), &["*"])
 }
 
 /// Asks where to save a file of `kind`.

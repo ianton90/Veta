@@ -83,8 +83,8 @@ impl MetadataDialog {
             .enumerate()
             .map(|(i, scope)| {
                 let label = match &scope.column {
-                    None => "File".to_owned(),
-                    Some(name) => format!("Column: {name}"),
+                    None => tr("ST_DLG_METADATA_FILE"),
+                    Some(name) => tr_with("ST_DLG_METADATA_COLUMN", &[("name", name)]),
                 };
                 ScopeChoice(i, label)
             })
@@ -141,8 +141,10 @@ impl MetadataDialog {
                     match &scope.column {
                         None => {
                             if entries.iter().any(|kv| kv.key == ARROW_SCHEMA_KEY) {
-                                self.error =
-                                    Some(format!("{ARROW_SCHEMA_KEY} is managed automatically."));
+                                self.error = Some(tr_with(
+                                    "ST_DLG_METADATA_MANAGED",
+                                    &[("key", &ARROW_SCHEMA_KEY)],
+                                ));
                                 return None;
                             }
                             entries.extend(self.arrow_schema.clone());
@@ -167,19 +169,24 @@ impl MetadataDialog {
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, MetadataMessage> {
         let scope = &self.scopes[self.current];
-        let mut rows =
-            column![row![text("Key").width(220), text("Value").width(Length::Fill)].spacing(8)]
-                .spacing(6);
+        let mut rows = column![
+            row![
+                text(tr("ST_DLG_METADATA_KEY")).width(220),
+                text(tr("ST_DLG_METADATA_VALUE")).width(Length::Fill)
+            ]
+            .spacing(8)
+        ]
+        .spacing(6);
         for (i, (key, value)) in scope.entries.iter().enumerate() {
             rows = rows.push(
                 row![
-                    text_input("key", key)
+                    text_input(&tr("ST_DLG_METADATA_KEY_PLACEHOLDER"), key)
                         .on_input(move |k| MetadataMessage::Key(i, k))
                         .width(220),
-                    text_input("value", value)
+                    text_input(&tr("ST_DLG_METADATA_VALUE_PLACEHOLDER"), value)
                         .on_input(move |v| MetadataMessage::Value(i, v))
                         .width(Length::Fill),
-                    button(text("Remove"))
+                    button(text(tr("ST_DLG_METADATA_REMOVE")))
                         .style(button::text)
                         .on_press(MetadataMessage::Remove(i)),
                 ]
@@ -188,32 +195,33 @@ impl MetadataDialog {
             );
         }
         if scope.entries.is_empty() {
-            rows = rows.push(text("No metadata.").color(tokens.muted_text));
+            rows = rows.push(text(tr("ST_DLG_METADATA_NONE")).color(tokens.muted_text));
         }
         let choices = self.choices();
         let selected = choices.get(self.current).cloned();
         let mut body = column![
-            text("Metadata").size(20),
+            text(tr("ST_DLG_METADATA_TITLE")).size(20),
             row![
                 pick_list(choices, selected, MetadataMessage::Scope).width(300),
-                text(match scope.column {
-                    None => "Key/value pairs stored in the file's footer.",
-                    Some(_) => "Key/value pairs stored with the column in the schema.",
-                })
+                text(tr(match scope.column {
+                    None => "ST_DLG_METADATA_FILE_NOTE",
+                    Some(_) => "ST_DLG_METADATA_COLUMN_NOTE",
+                }))
                 .color(tokens.muted_text),
             ]
             .spacing(12)
             .align_y(Alignment::Center),
             scrollable(rows).height(Length::Fixed(280.0)),
-            button(text("Add entry"))
+            button(text(tr("ST_DLG_METADATA_ADD")))
                 .style(button::secondary)
                 .on_press(MetadataMessage::Add),
         ]
         .spacing(14);
         if self.arrow_schema.is_some() && scope.column.is_none() {
             body = body.push(
-                text(format!(
-                    "{ARROW_SCHEMA_KEY} (the Arrow schema) is not shown: it is rewritten on save."
+                text(tr_with(
+                    "ST_DLG_METADATA_ARROW_HIDDEN",
+                    &[("key", &ARROW_SCHEMA_KEY)],
                 ))
                 .color(tokens.muted_text),
             );
@@ -222,7 +230,7 @@ impl MetadataDialog {
             body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
         }
         body = body.push(buttons(
-            "Apply",
+            "ST_COMMON_APPLY",
             MetadataMessage::Cancel,
             MetadataMessage::Apply,
         ));

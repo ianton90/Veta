@@ -53,7 +53,11 @@ impl App {
         match action {
             Action::InsertRowsAt => {
                 if let Some(id) = self.active {
-                    return self.open_rows_dialog(id, dialogs::RowAction::Insert, "Insert rows");
+                    return self.open_rows_dialog(
+                        id,
+                        dialogs::RowAction::Insert,
+                        "ST_DLG_ROWS_INSERT_TITLE",
+                    );
                 }
             }
             Action::KeepRows | Action::RemoveRows => {
@@ -74,10 +78,14 @@ impl App {
                         return self.open_rows_dialog(
                             id,
                             dialogs::RowAction::Delete,
-                            "Remove rows",
+                            "ST_DLG_ROWS_REMOVE_TITLE",
                         );
                     } else {
-                        return self.open_rows_dialog(id, dialogs::RowAction::Keep, "Keep rows");
+                        return self.open_rows_dialog(
+                            id,
+                            dialogs::RowAction::Keep,
+                            "ST_DLG_ROWS_KEEP_TITLE",
+                        );
                     }
                 }
             }

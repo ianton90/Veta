@@ -82,23 +82,29 @@ impl ChooseColumns {
         let checked = self.columns.iter().filter(|(_, on)| *on).count();
         let (title, summary) = if self.keep {
             (
-                "Keep columns",
-                format!("{checked} of {} columns kept", self.columns.len()),
+                tr("ST_DLG_CHOOSE_KEEP_TITLE"),
+                tr_with(
+                    "ST_DLG_CHOOSE_KEPT",
+                    &[("n", &checked), ("total", &self.columns.len())],
+                ),
             )
         } else {
             (
-                "Remove columns",
-                format!("{checked} of {} columns removed", self.columns.len()),
+                tr("ST_DLG_CHOOSE_REMOVE_TITLE"),
+                tr_with(
+                    "ST_DLG_CHOOSE_REMOVED",
+                    &[("n", &checked), ("total", &self.columns.len())],
+                ),
             )
         };
         let body = column![
             text(title).size(20),
             checkbox(all)
-                .label("Select all")
+                .label(tr("ST_DLG_CHOOSE_ALL"))
                 .on_toggle(ChooseMessage::All),
             scrollable(list).height(Length::Fixed(320.0)),
             text(summary).color(tokens.muted_text),
-            buttons("OK", ChooseMessage::Cancel, ChooseMessage::Apply),
+            buttons("ST_COMMON_OK", ChooseMessage::Cancel, ChooseMessage::Apply),
         ]
         .spacing(14);
         card(body.into(), tokens, 420.0)

@@ -53,6 +53,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use veta_core::arrow::array::ArrayRef;
 use veta_core::convert::ImportReport;
+use veta_core::i18n::{tr, tr_with};
 use veta_core::stats::ColumnStats;
 use veta_core::steps::{
     Cast, ComputeJob, Computed, Condition, CustomColumn, Fill, Filter, FilterOp, Merge, OnError,
@@ -153,6 +154,8 @@ impl Startup {
             Some(path) => Config::load(path),
             None => (Config::default(), None),
         };
+        // Messages from here on are in the chosen language.
+        veta_core::i18n::Translations::set_language(config.language());
         let (themes, mut errors) = theme::load_all(themes_dir.as_deref());
         errors.extend(config_error);
         Self {
@@ -571,6 +574,12 @@ impl App {
             }
             Message::LanguageChanged(language) => {
                 veta_core::i18n::Translations::set_language(language);
+                // The grid keeps the text of the rows it read ("[2 items]").
+                for tab in &mut self.tabs {
+                    if let Some(doc) = self.workbook.get(tab.id) {
+                        tab.grid.refresh(doc);
+                    }
+                }
             }
             Message::CloseDialog => {
                 self.dialog = None;
@@ -647,27 +656,19 @@ impl App {
     fn not_editable(&mut self, id: DocumentId) {
         let message = match self.workbook.get(id).map(Document::status) {
             Some(Status::Broken { step, .. }) => {
-                format!(
-                    "Step {} has an error. Fix or remove it to make changes.",
-                    step + 1
-                )
+                tr_with("ST_MSG_STEP_BROKEN", &[("n", &(step + 1))])
             }
             Some(Status::Computing { step }) => {
-                format!(
-                    "Step {} is still being computed. Wait for it, or cancel it.",
-                    step + 1
-                )
+                tr_with("ST_MSG_STEP_COMPUTING", &[("n", &(step + 1))])
             }
             _ if self
                 .tabs
                 .iter()
                 .any(|t| t.id == id && t.grid.filter().is_some()) =>
             {
-                "A filter is on. Keep or remove the filtered rows, or clear the filter, to make \
-                 changes."
-                    .into()
+                tr("ST_MSG_FILTER_ON")
             }
-            _ => "You're viewing an earlier step. Select the last step to make changes.".into(),
+            _ => tr("ST_MSG_EARLIER_STEP"),
         };
         if !self.errors.contains(&message) {
             self.errors.push(message);
@@ -687,7 +688,8 @@ impl App {
         if let Some(path) = &self.config_path
             && let Err(e) = self.config.save(path)
         {
-            self.errors.push(format!("Could not save settings: {e}"));
+            self.errors
+                .push(tr_with("ST_MSG_SETTINGS_SAVE_FAILED", &[("error", &e)]));
         }
     }
 

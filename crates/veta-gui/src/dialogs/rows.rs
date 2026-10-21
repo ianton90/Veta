@@ -17,11 +17,11 @@ impl RowPlace {
 
 impl std::fmt::Display for RowPlace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Top => "At the top",
-            Self::Bottom => "At the bottom",
-            Self::At => "From row number…",
-        })
+        f.write_str(&tr(match self {
+            Self::Top => "ST_DLG_ROWS_TOP",
+            Self::Bottom => "ST_DLG_ROWS_BOTTOM",
+            Self::At => "ST_DLG_ROWS_AT",
+        }))
     }
 }
 
@@ -88,7 +88,7 @@ impl RowsDialog {
             .parse()
             .ok()
             .filter(|&n| n > 0)
-            .ok_or("The number of rows must be a whole number above 0.")?;
+            .ok_or_else(|| tr("ST_DLG_ROWS_COUNT_INVALID"))?;
         let place = match self.place {
             RowPlace::Top => Place::Top,
             RowPlace::Bottom => Place::Bottom,
@@ -99,7 +99,7 @@ impl RowsDialog {
                     .parse()
                     .ok()
                     .filter(|&n| n >= 1)
-                    .ok_or("Row numbers start at 1.")?;
+                    .ok_or_else(|| tr("ST_DLG_ROWS_START_AT_1"))?;
                 Place::At(at - 1)
             }
         };
@@ -124,14 +124,14 @@ impl RowsDialog {
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, RowsMessage> {
         let action = match self.action {
-            RowAction::Insert => "Insert",
-            RowAction::Delete => "Remove",
-            RowAction::Keep => "Keep",
+            RowAction::Insert => "ST_DLG_ROWS_INSERT",
+            RowAction::Delete => "ST_DLG_ROWS_REMOVE",
+            RowAction::Keep => "ST_DLG_ROWS_KEEP",
         };
         let mut body = column![
-            text(self.title).size(20),
+            text(tr(self.title)).size(20),
             row![
-                text("Rows").width(90),
+                text(tr("ST_DLG_ROWS_ROWS")).width(90),
                 text_input("1", &self.count)
                     .id(NAME_ID)
                     .on_input(RowsMessage::Count)
@@ -140,7 +140,7 @@ impl RowsDialog {
             .spacing(12)
             .align_y(Alignment::Center),
             row![
-                text("Where").width(90),
+                text(tr("ST_DLG_ROWS_WHERE")).width(90),
                 pick_list(RowPlace::ALL, Some(self.place), RowsMessage::Place).width(Length::Fill),
             ]
             .spacing(12)
@@ -150,7 +150,7 @@ impl RowsDialog {
         if self.place == RowPlace::At {
             body = body.push(
                 row![
-                    text("Row number").width(90),
+                    text(tr("ST_DLG_ROWS_ROW_NUMBER")).width(90),
                     text_input("1", &self.at)
                         .on_input(RowsMessage::At)
                         .on_submit(RowsMessage::Apply),
@@ -160,18 +160,11 @@ impl RowsDialog {
             );
         }
         let note = match self.action {
-            RowAction::Insert => format!(
-                "Empty rows go before that row ({} for the end).",
-                self.num_rows + 1
-            ),
-            RowAction::Delete => format!(
-                "Removes from that row down. The table has {} rows.",
-                self.num_rows
-            ),
-            RowAction::Keep => format!(
-                "Keeps from that row down and deletes the rest. The table has {} rows.",
-                self.num_rows
-            ),
+            RowAction::Insert => {
+                tr_with("ST_DLG_ROWS_INSERT_NOTE", &[("end", &(self.num_rows + 1))])
+            }
+            RowAction::Delete => tr_with("ST_DLG_ROWS_REMOVE_NOTE", &[("n", &self.num_rows)]),
+            RowAction::Keep => tr_with("ST_DLG_ROWS_KEEP_NOTE", &[("n", &self.num_rows)]),
         };
         body = body.push(text(note).color(tokens.muted_text));
         if let Some(error) = &self.error {

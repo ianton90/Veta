@@ -66,7 +66,7 @@ pub(super) fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element
         };
         let mut line = row![toggle, select].spacing(2).align_y(Alignment::Center);
         if let Some(i) = index {
-            let small = |glyph: Icon, message: Option<Message>, tip: &'static str| {
+            let small = |glyph: Icon, message: Option<Message>, tip: &str| {
                 let color = if message.is_some() {
                     t.muted_text
                 } else {
@@ -80,7 +80,7 @@ pub(super) fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element
                 }
                 iced::widget::tooltip(
                     b,
-                    text(tip).size(ui.small() - 1.0),
+                    text(tr(tip)).size(ui.small() - 1.0),
                     iced::widget::tooltip::Position::Top,
                 )
             };
@@ -89,32 +89,36 @@ pub(super) fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element
                 .push(small(
                     Icon::ChevronUp,
                     i.checked_sub(1).map(|up| Message::MoveStep(i, up)),
-                    "Move up",
+                    "ST_STEPS_MOVE_UP",
                 ))
                 .push(small(
                     Icon::ChevronDown,
                     (i + 1 < steps.len()).then_some(Message::MoveStep(i, i + 1)),
-                    "Move down",
+                    "ST_STEPS_MOVE_DOWN",
                 ))
                 .push(small(
                     Icon::Rename,
                     editable.then_some(Message::EditStep(i)),
-                    "Edit",
+                    "ST_STEPS_EDIT",
                 ))
-                .push(small(Icon::Trash, Some(Message::RemoveStep(i)), "Remove"));
+                .push(small(
+                    Icon::Trash,
+                    Some(Message::RemoveStep(i)),
+                    "ST_STEPS_REMOVE",
+                ));
         }
         line.into()
     };
 
-    let mut list: Vec<Element<'a, Message>> = vec![item(None, "Source".into(), None, None)];
+    let mut list: Vec<Element<'a, Message>> = vec![item(None, tr("ST_STEPS_SOURCE"), None, None)];
     for (i, step) in steps.iter().enumerate() {
         let note = match doc.status() {
             Status::Broken { step, error } if *step == i => Some((error.clone(), red)),
             Status::Broken { step, .. } if i > *step => {
-                Some(("Not evaluated".into(), t.muted_text))
+                Some((tr("ST_STEPS_NOT_EVALUATED"), t.muted_text))
             }
-            Status::Computing { step } if *step == i => Some(("Computing…".into(), t.primary)),
-            Status::Computing { step } if i > *step => Some(("Waiting".into(), t.muted_text)),
+            Status::Computing { step } if *step == i => Some((tr("ST_PANE_COMPUTING"), t.primary)),
+            Status::Computing { step } if i > *step => Some((tr("ST_STEPS_WAITING"), t.muted_text)),
             _ => None,
         };
         let edits = match step {
@@ -135,13 +139,13 @@ pub(super) fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element
     let mut content = column(list).spacing(2).padding([0, 8]);
     if steps.is_empty() {
         content = content.push(
-            text("Changes you make appear here as steps.")
+            text(tr("ST_STEPS_EMPTY"))
                 .size(ui.small())
                 .color(t.muted_text),
         );
     }
-    let footer_button = |label: &'static str, message: Option<Message>| {
-        let mut b = button(text(label).size(ui.small()))
+    let footer_button = |label: &str, message: Option<Message>| {
+        let mut b = button(text(tr(label)).size(ui.small()))
             .padding([4, 8])
             .style(move |_theme: &Theme, status| subtle_button(t, status));
         if let Some(message) = message {
@@ -151,10 +155,10 @@ pub(super) fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element
     };
     let footer = row![
         footer_button(
-            "Save recipe…",
+            "ST_STEPS_SAVE_RECIPE",
             (!steps.is_empty()).then_some(Message::SaveRecipe)
         ),
-        footer_button("Load recipe…", Some(Message::LoadRecipe)),
+        footer_button("ST_STEPS_LOAD_RECIPE", Some(Message::LoadRecipe)),
     ]
     .spacing(4)
     .padding([4, 8]);
@@ -175,15 +179,21 @@ fn edit_lines<'a>(edits: &CellEdits, ui: Ui) -> Element<'a, Message> {
         .iter()
         .take(LISTED_EDITS)
         .map(|(column, row, value)| {
-            line(format!(
-                "{column} · row {} → {}",
-                row + 1,
-                abbreviate(&value_text(value), 40)
+            line(tr_with(
+                "ST_STEPS_EDIT_LINE",
+                &[
+                    ("column", &column),
+                    ("n", &(row + 1)),
+                    ("value", &abbreviate(&value_text(value), 40)),
+                ],
             ))
         })
         .collect();
     if edits.len() > LISTED_EDITS {
-        lines.push(line(format!("… and {} more", edits.len() - LISTED_EDITS)));
+        lines.push(line(tr_with(
+            "ST_STEPS_MORE_EDITS",
+            &[("n", &(edits.len() - LISTED_EDITS))],
+        )));
     }
     column(lines).spacing(2).padding([2, 30]).into()
 }

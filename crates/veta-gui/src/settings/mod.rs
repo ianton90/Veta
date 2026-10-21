@@ -7,7 +7,7 @@ use std::path::Path;
 
 use iced::widget::{button, checkbox, column, pick_list, row, text, text_input};
 use iced::{Alignment, Element, Length};
-use veta_core::i18n::{Translations, tr};
+use veta_core::i18n::{Translations, tr, tr_with};
 use veta_core::{Compression, FormatVersion, StatisticsLevel, WriterSettings};
 
 use crate::dialogs::{Level, card, level_picker};
@@ -98,9 +98,12 @@ impl Draft {
             dark_theme: a.dark_theme.clone(),
             font_family: a.font_family.clone().unwrap_or_default(),
             font_size: a.font_size.map(|s| s.to_string()).unwrap_or_default(),
-            memory_placeholder: format!(
-                "Automatic ({} MiB)",
-                veta_core::memory::default_budget() / (1024 * 1024)
+            memory_placeholder: tr_with(
+                "ST_SETTINGS_MEMORY_AUTOMATIC",
+                &[(
+                    "mib",
+                    &(veta_core::memory::default_budget() / (1024 * 1024)),
+                )],
             ),
             memory_mib: config
                 .data
@@ -153,9 +156,9 @@ impl Draft {
             s => {
                 let size: f32 = s
                     .parse()
-                    .map_err(|_| format!("Font size {s:?} is not a number."))?;
+                    .map_err(|_| tr_with("ST_SETTINGS_FONT_SIZE_NOT_NUMBER", &[("value", &s)]))?;
                 if !(6.0..=48.0).contains(&size) {
-                    return Err("Font size must be between 6 and 48.".into());
+                    return Err(tr("ST_SETTINGS_FONT_SIZE_RANGE"));
                 }
                 Some(size)
             }
@@ -164,18 +167,18 @@ impl Draft {
         let memory = match self.memory_mib.trim() {
             "" => None,
             text => {
-                let mib: u64 = text.parse().map_err(|_| {
-                    format!("Memory budget {:?} is not a whole number.", self.memory_mib)
-                })?;
+                let mib: u64 = text
+                    .parse()
+                    .map_err(|_| tr_with("ST_SETTINGS_MEMORY_NOT_NUMBER", &[("value", &text)]))?;
                 if mib < 64 {
-                    return Err("Memory budget must be at least 64 MiB.".into());
+                    return Err(tr("ST_SETTINGS_MEMORY_MINIMUM"));
                 }
                 Some(mib)
             }
         };
         let row_group: usize = match self.row_group.trim().parse() {
             Ok(rows) if rows > 0 => rows,
-            _ => return Err("Rows per row group must be a whole number above 0.".into()),
+            _ => return Err(tr("ST_SETTINGS_ROW_GROUP_INVALID")),
         };
         let mut new_files = self.new_files.clone();
         new_files.max_row_group_rows = row_group;
@@ -208,34 +211,32 @@ pub fn view<'a>(
             .collect()
     };
 
-    let label = |s: &'a str| text(s).width(160);
-    let field_row = |l: &'a str, input: Element<'a, SettingsMessage>| {
+    let label = |s: String| text(s).width(160);
+    let field_row = |l: String, input: Element<'a, SettingsMessage>| {
         row![label(l), input].spacing(12).align_y(Alignment::Center)
     };
     let note = |s: String| text(s).color(tokens.muted_text);
 
-    let language = tr("ST_SETTINGS_LANGUAGE");
     let appearance = column![
-        section("Appearance"),
-        row![
-            text(language).width(160),
+        section(tr("ST_SETTINGS_SECTION_APPEARANCE")),
+        field_row(
+            tr("ST_SETTINGS_LANGUAGE"),
             pick_list(
                 Language::all(),
                 Some(draft.language.clone()),
                 SettingsMessage::Language
             )
             .width(220)
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
+            .into()
+        ),
         field_row(
-            "Mode",
+            tr("ST_SETTINGS_MODE"),
             pick_list(ModePreference::ALL, Some(draft.mode), SettingsMessage::Mode)
                 .width(220)
                 .into()
         ),
         field_row(
-            "Light theme",
+            tr("ST_SETTINGS_LIGHT_THEME"),
             pick_list(
                 names(Mode::Light),
                 Some(draft.light_theme.clone()),
@@ -245,7 +246,7 @@ pub fn view<'a>(
             .into()
         ),
         field_row(
-            "Dark theme",
+            tr("ST_SETTINGS_DARK_THEME"),
             pick_list(
                 names(Mode::Dark),
                 Some(draft.dark_theme.clone()),
@@ -255,50 +256,45 @@ pub fn view<'a>(
             .into()
         ),
         field_row(
-            "Font family",
-            text_input("Theme default", &draft.font_family)
+            tr("ST_SETTINGS_FONT_FAMILY"),
+            text_input(&tr("ST_SETTINGS_THEME_DEFAULT"), &draft.font_family)
                 .on_input(SettingsMessage::FontFamily)
                 .width(220)
                 .into()
         ),
         field_row(
-            "Font size",
-            text_input("Theme default", &draft.font_size)
+            tr("ST_SETTINGS_FONT_SIZE"),
+            text_input(&tr("ST_SETTINGS_THEME_DEFAULT"), &draft.font_size)
                 .on_input(SettingsMessage::FontSize)
                 .width(220)
                 .into()
         ),
-        note("Font changes apply after restarting Veta.".into()),
+        note(tr("ST_SETTINGS_FONT_RESTART")),
         note(match themes_dir {
-            Some(dir) => format!("Custom themes: put .toml files in {}", dir.display()),
-            None => "Custom themes: no config directory found.".into(),
+            Some(dir) => tr_with("ST_SETTINGS_THEMES_DIR", &[("dir", &dir.display())]),
+            None => tr("ST_SETTINGS_THEMES_NO_DIR"),
         }),
     ]
     .spacing(10);
 
     let data = column![
-        section("Data"),
+        section(tr("ST_SETTINGS_SECTION_DATA")),
         field_row(
-            "Memory budget (MiB)",
+            tr("ST_SETTINGS_MEMORY"),
             text_input(&draft.memory_placeholder, &draft.memory_mib)
                 .on_input(SettingsMessage::Memory)
                 .width(220)
                 .into()
         ),
-        note(
-            "Memory Veta may use for data: files up to this size open in memory, \
-             larger ones are read from disk as needed. Empty: half of this \
-             machine's RAM. Open files keep the budget they were opened with."
-                .into()
-        ),
+        note(tr("ST_SETTINGS_MEMORY_NOTE")),
     ]
     .spacing(10);
 
     let d = &draft.new_files.default_column;
     let new_files = column![
-        section("New files"),
+        section(tr("ST_SETTINGS_SECTION_NEW_FILES")),
         field_row(
-            "Compression",
+            tr("ST_SETTINGS_COMPRESSION"),
             row![
                 pick_list(
                     Compression::CHOICES,
@@ -313,7 +309,7 @@ pub fn view<'a>(
             .into()
         ),
         field_row(
-            "Statistics",
+            tr("ST_SETTINGS_STATISTICS"),
             pick_list(
                 StatisticsLevel::ALL,
                 Some(d.statistics),
@@ -323,7 +319,7 @@ pub fn view<'a>(
             .into()
         ),
         field_row(
-            "Format version",
+            tr("ST_SETTINGS_FORMAT_VERSION"),
             pick_list(
                 FormatVersion::ALL,
                 Some(draft.new_files.format_version),
@@ -333,24 +329,24 @@ pub fn view<'a>(
             .into()
         ),
         field_row(
-            "Rows per row group",
+            tr("ST_SETTINGS_ROW_GROUP"),
             text_input("1048576", &draft.row_group)
                 .on_input(SettingsMessage::RowGroup)
                 .width(220)
                 .into()
         ),
         field_row(
-            "Dictionary",
+            tr("ST_SETTINGS_DICTIONARY"),
             checkbox(d.dictionary)
                 .on_toggle(SettingsMessage::Dictionary)
                 .into()
         ),
-        note("Writer settings for new and imported files. Opened files keep their own.".into()),
+        note(tr("ST_SETTINGS_NEW_FILES_NOTE")),
     ]
     .spacing(10);
 
     let mut body = column![
-        text("Settings").size(20),
+        text(tr("ST_SETTINGS_TITLE")).size(20),
         iced::widget::scrollable(
             column![appearance, data, new_files]
                 .spacing(22)
@@ -365,10 +361,10 @@ pub fn view<'a>(
     body = body.push(
         row![
             iced::widget::Space::new().width(Length::Fill),
-            button(text("Cancel"))
+            button(text(tr("ST_COMMON_CANCEL")))
                 .style(button::secondary)
                 .on_press(SettingsMessage::Cancel),
-            button(text("Save")).on_press(SettingsMessage::Save),
+            button(text(tr("ST_COMMON_SAVE"))).on_press(SettingsMessage::Save),
         ]
         .spacing(8),
     );
@@ -379,20 +375,22 @@ pub fn view<'a>(
 pub fn about<'a, Message: Clone + 'a>(close: Message, tokens: Tokens) -> Element<'a, Message> {
     let body = column![
         text("Veta").size(22),
-        text(format!("Version {}", veta_core::version::LONG)),
-        text("A Parquet viewer and editor."),
-        text("Licensed under Apache-2.0. Icons from Lucide (ISC License).")
-            .color(tokens.muted_text),
+        text(tr_with(
+            "ST_ABOUT_VERSION",
+            &[("version", &veta_core::version::LONG)]
+        )),
+        text(tr("ST_ABOUT_TAGLINE")),
+        text(tr("ST_ABOUT_LICENSE")).color(tokens.muted_text),
         row![
             iced::widget::Space::new().width(Length::Fill),
-            button(text("Close")).on_press(close),
+            button(text(tr("ST_COMMON_CLOSE"))).on_press(close),
         ],
     ]
     .spacing(12);
     card(body.into(), tokens, 380.0)
 }
 
-fn section<'a, Message: 'a>(title: &'a str) -> Element<'a, Message> {
+fn section<'a, Message: 'a>(title: String) -> Element<'a, Message> {
     text(title).size(15).font(crate::app::bold()).into()
 }
 

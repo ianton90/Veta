@@ -123,7 +123,7 @@ impl App {
             Action::IndexColumn => {
                 if let Some(id) = self.active {
                     let at = self.column_count(id);
-                    let name = self.unique_name(id, "Index");
+                    let name = self.unique_name(id, &tr("ST_COLUMN_NAME_INDEX"));
                     self.execute(
                         id,
                         Command::CustomColumn(CustomColumn {
@@ -234,7 +234,7 @@ impl App {
         let custom = match &step {
             Some((_, c)) => c.clone(),
             None => CustomColumn {
-                name: self.unique_name(id, "Custom"),
+                name: self.unique_name(id, &tr("ST_COLUMN_NAME_CUSTOM")),
                 expression,
                 at: self
                     .selected_columns(id)
@@ -259,13 +259,13 @@ impl App {
             let (_, c) = self.tabs.iter().find(|t| t.id == id)?.grid.selected()?;
             Some(c..c + 1)
         }) else {
-            self.errors.push("Select a column to duplicate.".into());
+            self.errors.push(tr("ST_MSG_SELECT_COLUMN_DUPLICATE"));
             return;
         };
         let Some(column) = self.column_names(id, range.start..range.start + 1).pop() else {
             return;
         };
-        let name = self.unique_name(id, &format!("{column} - Copy"));
+        let name = self.unique_name(id, &tr_with("ST_COLUMN_NAME_COPY", &[("column", &column)]));
         self.execute(
             id,
             Command::CustomColumn(CustomColumn {
@@ -304,7 +304,7 @@ impl App {
             None => self.selected_column_names(id).into_iter().next(),
         };
         let Some(column) = column else {
-            self.errors.push("Select a column to split.".into());
+            self.errors.push(tr("ST_MSG_SELECT_COLUMN_SPLIT"));
             return Task::none();
         };
         let Some(sample) = self.sample(id, step.as_ref().map(|(i, _)| *i), &column) else {
@@ -335,8 +335,7 @@ impl App {
             None => self.selected_column_names(id),
         };
         if columns.len() < 2 {
-            self.errors
-                .push("Select two or more columns to merge (Shift+click the headers).".into());
+            self.errors.push(tr("ST_MSG_SELECT_COLUMNS_MERGE"));
             return Task::none();
         }
         self.edit = None;
@@ -369,8 +368,7 @@ impl App {
             }
         };
         if columns.is_empty() {
-            self.errors
-                .push("Select the columns to collect (Shift+click the headers).".into());
+            self.errors.push(tr("ST_MSG_SELECT_COLUMNS_COLLECT"));
             return;
         }
         let others = schema
@@ -417,13 +415,13 @@ impl App {
                                 .is_some_and(|r| r.starts_with('.'))
                         })
                     });
-                let name = prefix.unwrap_or_else(|| self.unique_name(id, "Struct"));
+                let name =
+                    prefix.unwrap_or_else(|| self.unique_name(id, &tr("ST_COLUMN_NAME_STRUCT")));
                 (None, columns, name)
             }
         };
         if columns.is_empty() {
-            self.errors
-                .push("Select the columns to combine (Shift+click the headers).".into());
+            self.errors.push(tr("ST_MSG_SELECT_COLUMNS_COMBINE"));
             return Task::none();
         }
         self.edit = None;
@@ -468,8 +466,7 @@ impl App {
             None => self.selected_column_names(id).into_iter().next(),
         };
         let Some(column) = column else {
-            self.errors
-                .push("Select a column to replace values in.".into());
+            self.errors.push(tr("ST_MSG_SELECT_COLUMN_REPLACE"));
             return Task::none();
         };
         let level = step.as_ref().map(|(i, _)| *i);
@@ -502,8 +499,7 @@ impl App {
     pub(crate) fn open_format_dialog(&mut self, id: DocumentId) {
         let columns = self.selected_column_names(id);
         if columns.is_empty() {
-            self.errors
-                .push("Select the text columns to format.".into());
+            self.errors.push(tr("ST_MSG_SELECT_COLUMNS_FORMAT"));
             return;
         }
         self.edit = None;
@@ -518,7 +514,7 @@ impl App {
     pub(crate) fn fill_selected(&mut self, id: DocumentId, up: bool) {
         let columns = self.selected_column_names(id);
         if columns.is_empty() {
-            self.errors.push("Select the columns to fill.".into());
+            self.errors.push(tr("ST_MSG_SELECT_COLUMNS_FILL"));
             return;
         }
         self.execute(id, Command::Fill(Fill { columns, up }));
@@ -546,8 +542,7 @@ impl App {
             }
         };
         let Some(column) = column else {
-            self.errors
-                .push("Select a column to change its type.".into());
+            self.errors.push(tr("ST_MSG_SELECT_COLUMN_CAST"));
             return;
         };
         let Some(sample) = self.sample(id, Some(level), &column) else {

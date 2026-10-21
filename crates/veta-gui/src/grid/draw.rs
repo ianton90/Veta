@@ -202,14 +202,19 @@ impl<Message> Grid<'_, Message> {
                         }
                         What::Slot(place) => {
                             let text = match (place.len, place.parent) {
-                                (0, _) => "empty".to_owned(),
-                                (_, NodeKind::Map) => "new entry".to_owned(),
+                                (0, _) => tr("ST_GRID_EMPTY"),
+                                (_, NodeKind::Map) => tr("ST_GRID_NEW_ENTRY"),
                                 (n, _) => n.to_string(),
                             };
                             muted_text(renderer, text, label, m.type_text_size);
                         }
                         What::More(n) => {
-                            muted_text(renderer, format!("… {n} more"), label, m.text_size);
+                            muted_text(
+                                renderer,
+                                tr_with("ST_GRID_MORE", &[("n", &n)]),
+                                label,
+                                m.text_size,
+                            );
                         }
                     }
                 }
@@ -479,7 +484,7 @@ impl<Message> Grid<'_, Message> {
         if view.columns.is_empty() {
             draw_text(
                 renderer,
-                "No columns yet. Right-click here to add one.".into(),
+                tr("ST_GRID_NO_COLUMNS"),
                 regions.body,
                 false,
                 m.text_size,

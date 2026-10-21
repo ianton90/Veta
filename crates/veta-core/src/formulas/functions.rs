@@ -3,6 +3,7 @@
 
 use super::eval::*;
 use super::*;
+use crate::i18n::tr_with;
 
 /// Functions, with their argument counts (min, max).
 pub(super) const FUNCTIONS: &[(&str, usize, usize, &str)] = &[
@@ -39,11 +40,7 @@ pub(super) const FUNCTIONS: &[(&str, usize, usize, &str)] = &[
 /// Short help listing the syntax and functions.
 pub fn expression_help() -> String {
     let functions: Vec<&str> = FUNCTIONS.iter().map(|f| f.3).collect();
-    format!(
-        "Columns: [Name] or name. Operators: + - * / % & (join text) = <> < <= > >= and or not. \
-         Functions: {}.",
-        functions.join(", ")
-    )
+    tr_with("ST_FORMULA_HELP", &[("functions", &functions.join(", "))])
 }
 
 impl Expr {

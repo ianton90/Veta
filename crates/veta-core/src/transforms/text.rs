@@ -1,5 +1,6 @@
 //! Row-by-row value transforms: replacing values and formatting text.
 
+use crate::i18n::{tr, tr_with};
 use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, BooleanArray, Scalar, StringArray};
@@ -30,13 +31,16 @@ impl Replace {
     pub fn describe(&self) -> String {
         let find = match &self.find {
             Some(f) => format!("{f:?}"),
-            None => "nulls".into(),
+            None => tr("ST_STEP_REPLACE_NULLS"),
         };
         let with = match &self.with {
             Some(w) => format!("{w:?}"),
             None => "null".into(),
         };
-        format!("Replaced {find} with {with} in {}", self.column)
+        tr_with(
+            "ST_STEP_REPLACE",
+            &[("find", &find), ("with", &with), ("column", &self.column)],
+        )
     }
 
     fn substring(&self, data_type: &DataType) -> bool {
@@ -103,12 +107,17 @@ pub enum TextOp {
 impl TextOp {
     pub const ALL: [TextOp; 4] = [Self::Trim, Self::Lower, Self::Upper, Self::Title];
 
-    pub fn verb(self) -> &'static str {
-        match self {
-            Self::Trim => "Trimmed",
-            Self::Lower => "Lowercased",
-            Self::Upper => "Uppercased",
-            Self::Title => "Capitalized",
+    /// Step name for one column (`{column}`) or several (`{n}`).
+    pub fn describe(self, columns: &[String]) -> String {
+        let (one, many) = match self {
+            Self::Trim => ("ST_STEP_TRIM_ONE", "ST_STEP_TRIM_MANY"),
+            Self::Lower => ("ST_STEP_LOWER_ONE", "ST_STEP_LOWER_MANY"),
+            Self::Upper => ("ST_STEP_UPPER_ONE", "ST_STEP_UPPER_MANY"),
+            Self::Title => ("ST_STEP_TITLE_ONE", "ST_STEP_TITLE_MANY"),
+        };
+        match columns {
+            [column] => tr_with(one, &[("column", column)]),
+            _ => tr_with(many, &[("n", &columns.len())]),
         }
     }
 
@@ -139,12 +148,12 @@ impl TextOp {
 
 impl std::fmt::Display for TextOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Trim => "Trim spaces",
-            Self::Lower => "lowercase",
-            Self::Upper => "UPPERCASE",
-            Self::Title => "Capitalize Each Word",
-        })
+        f.write_str(&tr(match self {
+            Self::Trim => "ST_TEXT_OP_TRIM",
+            Self::Lower => "ST_TEXT_OP_LOWER",
+            Self::Upper => "ST_TEXT_OP_UPPER",
+            Self::Title => "ST_TEXT_OP_TITLE",
+        }))
     }
 }
 

@@ -74,9 +74,10 @@ impl App {
                     Ok(Some(document)) => self.add_document(&path, document),
                     Ok(None) => {}
                     Err(e) if is_cancelled(&e) => {}
-                    Err(e) => self
-                        .errors
-                        .push(format!("Could not open {}: {e}", path.display())),
+                    Err(e) => self.errors.push(tr_with(
+                        "ST_MSG_OPEN_FAILED",
+                        &[("path", &path.display()), ("error", &e)],
+                    )),
                 }
             }
             Message::Imported(path, result) => {
@@ -90,9 +91,10 @@ impl App {
                     }
                     Ok(None) => {}
                     Err(e) if is_cancelled(&e) => {}
-                    Err(e) => self
-                        .errors
-                        .push(format!("Could not import {}: {e}", path.display())),
+                    Err(e) => self.errors.push(tr_with(
+                        "ST_MSG_IMPORT_FAILED",
+                        &[("path", &path.display()), ("error", &e)],
+                    )),
                 }
             }
             Message::SaveTo(id, Some(path)) => return self.start_save(id, Some(path)),
@@ -119,7 +121,8 @@ impl App {
                     }
                     Ok(None) => {}
                     Err(e) => {
-                        self.errors.push(format!("Could not save: {e}"));
+                        self.errors
+                            .push(tr_with("ST_MSG_SAVE_FAILED", &[("error", &e)]));
                         self.closing = None;
                     }
                 }
@@ -144,7 +147,7 @@ impl App {
                         let worker_path = path.clone();
                         return self.start_transfer(
                             Some(path.clone()),
-                            format!("Importing {}", file_label(&path)),
+                            tr_with("ST_MSG_IMPORTING", &[("name", &file_label(&path))]),
                             move |progress| {
                                 veta_core::convert::import_csv(
                                     &worker_path,
@@ -177,7 +180,7 @@ impl App {
                             .and_then(Document::path)
                             .and_then(Path::parent)
                             .map(Path::to_path_buf);
-                        let save = files::save("Export".into(), kind, name, dir);
+                        let save = files::save(tr("ST_DLG_EXPORT_TITLE"), kind, name, dir);
                         return Task::perform(save, move |p| Message::ExportTo(id, p));
                     } else if cancel {
                         self.dialog = None;
@@ -192,14 +195,15 @@ impl App {
                 let output = match self.workbook.get(id).map(Document::output) {
                     Some(Ok(output)) => output,
                     Some(Err(e)) => {
-                        self.errors.push(format!("Could not export: {e}"));
+                        self.errors
+                            .push(tr_with("ST_MSG_EXPORT_FAILED", &[("error", &e)]));
                         return Task::none();
                     }
                     None => return Task::none(),
                 };
                 return self.start_transfer(
                     None,
-                    format!("Exporting {}", file_label(&path)),
+                    tr_with("ST_MSG_EXPORTING", &[("name", &file_label(&path))]),
                     move |progress| {
                         veta_core::convert::export(&output, &path, &format, progress)
                             .map(|()| path)
@@ -210,9 +214,13 @@ impl App {
             }
             Message::ExportTo(_, None) => {}
             Message::Exported(result) => match result {
-                Ok(path) => self.notice = Some(format!("Exported {}", path.display())),
-                Err(e) if is_cancelled(&e) => self.notice = Some("Export cancelled".into()),
-                Err(e) => self.errors.push(format!("Could not export: {e}")),
+                Ok(path) => {
+                    self.notice = Some(tr_with("ST_MSG_EXPORTED", &[("path", &path.display())]));
+                }
+                Err(e) if is_cancelled(&e) => self.notice = Some(tr("ST_MSG_EXPORT_CANCELLED")),
+                Err(e) => self
+                    .errors
+                    .push(tr_with("ST_MSG_EXPORT_FAILED", &[("error", &e)])),
             },
             Message::TransferProgress(id, progress) => {
                 if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
@@ -236,7 +244,12 @@ impl App {
                             format!("{stem}-recipe.json")
                         })
                         .unwrap_or_default();
-                    let save = files::save("Save recipe".into(), FileKind::Recipe, name, None);
+                    let save = files::save(
+                        tr("ST_RIBBON_BTN_SAVE_RECIPE"),
+                        FileKind::Recipe,
+                        name,
+                        None,
+                    );
                     return Task::perform(save, move |path| Message::SaveRecipeTo(id, path));
                 }
             }
@@ -260,7 +273,8 @@ impl App {
                         .map_err(|e| e.to_string())
                         .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
                     if let Err(e) = result {
-                        self.errors.push(format!("Could not save the recipe: {e}"));
+                        self.errors
+                            .push(tr_with("ST_MSG_RECIPE_SAVE_FAILED", &[("error", &e)]));
                     }
                 }
             }
@@ -270,7 +284,8 @@ impl App {
                         self.not_editable(id);
                         return Task::none();
                     }
-                    let open = files::open_one("Load recipe".into(), vec![FileKind::Recipe]);
+                    let open =
+                        files::open_one(tr("ST_RIBBON_BTN_LOAD_RECIPE"), vec![FileKind::Recipe]);
                     return Task::perform(open, move |path| Message::LoadRecipeFrom(id, path));
                 }
             }
@@ -280,7 +295,9 @@ impl App {
                     self.dialog = Some(Dialog::ConfirmRecipe { document: id, text });
                 }
                 Ok(text) => self.apply_recipe(id, &text, false),
-                Err(e) => self.errors.push(format!("Could not load the recipe: {e}")),
+                Err(e) => self
+                    .errors
+                    .push(tr_with("ST_MSG_RECIPE_LOAD_FAILED", &[("error", &e)])),
             },
             Message::RecipeChoice(choice) => {
                 if let Some(Dialog::ConfirmRecipe { document, text }) = self.dialog.take()
@@ -333,7 +350,7 @@ impl App {
         match action {
             Action::Import => {
                 let open = files::open_one(
-                    "Import".into(),
+                    tr("ST_RIBBON_BTN_IMPORT"),
                     vec![FileKind::Csv, FileKind::Json, FileKind::JsonLines],
                 );
                 return Task::perform(open, Message::ImportPicked);
@@ -348,7 +365,10 @@ impl App {
                                 dialog: ExportDialog::default(),
                             });
                         }
-                        Some(Err(e)) => self.errors.push(format!("Could not export: {e}")),
+                        Some(Err(e)) => {
+                            self.errors
+                                .push(tr_with("ST_MSG_EXPORT_FAILED", &[("error", &e)]));
+                        }
                         None => {}
                     }
                 }
@@ -357,7 +377,7 @@ impl App {
             Action::LoadRecipe => return self.handle(Message::LoadRecipe),
             Action::SaveRecipe => return self.handle(Message::SaveRecipe),
             Action::Open => {
-                let open = files::open_many("Open".into(), vec![FileKind::Parquet]);
+                let open = files::open_many(tr("ST_RIBBON_BTN_OPEN"), vec![FileKind::Parquet]);
                 return Task::perform(open, |files| {
                     Message::FilesPicked(files.unwrap_or_default())
                 });
@@ -424,9 +444,9 @@ impl App {
         let name = (1..)
             .map(|n| {
                 if n == 1 {
-                    "Untitled".to_owned()
+                    tr("ST_DOC_UNTITLED")
                 } else {
-                    format!("Untitled {n}")
+                    tr_with("ST_DOC_UNTITLED_N", &[("n", &n)])
                 }
             })
             .find(|name| !titles.contains(name))
@@ -511,7 +531,7 @@ impl App {
         // Imported documents are saved as Parquet.
         let name = files::suggested_name(&doc.title(), FileKind::Parquet);
         let dir = doc.path().and_then(Path::parent).map(Path::to_path_buf);
-        let save = files::save("Save as".into(), FileKind::Parquet, name, dir);
+        let save = files::save(tr("ST_RIBBON_BTN_SAVE_AS"), FileKind::Parquet, name, dir);
         Task::perform(save, move |path| Message::SaveTo(id, path))
     }
 
@@ -530,7 +550,8 @@ impl App {
                 )
             }
             Err(e) => {
-                self.errors.push(format!("Could not save: {e}"));
+                self.errors
+                    .push(tr_with("ST_MSG_SAVE_FAILED", &[("error", &e)]));
                 Task::none()
             }
         }
@@ -549,7 +570,7 @@ impl App {
         };
         match veta_core::recipe::from_json(text, &schema) {
             Ok(steps) if steps.is_empty() => {
-                self.errors.push("The recipe has no steps.".into());
+                self.errors.push(tr("ST_MSG_RECIPE_EMPTY"));
             }
             Ok(steps) => {
                 let command = if replace {
@@ -561,7 +582,9 @@ impl App {
                     self.after_compute(id);
                 }
             }
-            Err(e) => self.errors.push(format!("Could not load the recipe: {e}")),
+            Err(e) => self
+                .errors
+                .push(tr_with("ST_MSG_RECIPE_LOAD_FAILED", &[("error", &e)])),
         }
     }
 
@@ -626,7 +649,7 @@ impl App {
             let worker_path = path.clone();
             let budget = options.memory_budget;
             if format == Some(veta_core::convert::ImportFormat::Json) {
-                let label = format!("Importing {}", file_label(&path));
+                let label = tr_with("ST_MSG_IMPORTING", &[("name", &file_label(&path))]);
                 tasks.push(self.start_transfer(
                     Some(path.clone()),
                     label,

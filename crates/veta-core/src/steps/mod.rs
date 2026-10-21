@@ -15,6 +15,7 @@ mod level;
 mod pipeline;
 mod rows;
 
+use crate::i18n::{tr, tr_with};
 use std::ops::Range;
 
 use arrow::datatypes::DataType;
@@ -161,83 +162,98 @@ impl Step {
 
     /// Short description for the applied steps list.
     pub fn describe(&self) -> String {
-        fn plural(n: usize, one: &str) -> String {
-            if n == 1 {
-                format!("1 {one}")
-            } else {
-                format!("{n} {one}s")
-            }
-        }
+        // One of two tags by count: `one` (for 1) or `many` (with `{n}`).
+        let count = |n: usize, one: &str, many: &str| match n {
+            1 => tr(one),
+            n => tr_with(many, &[("n", &n)]),
+        };
         match self {
-            Step::EditCells(edits) => format!("Edited {}", plural(edits.len(), "cell")),
-            Step::InsertRows { count, .. } => format!("Inserted {}", plural(*count, "row")),
+            Step::EditCells(edits) => count(edits.len(), "ST_STEP_EDIT_CELL", "ST_STEP_EDIT_CELLS"),
+            Step::InsertRows { count: n, .. } => {
+                count(*n, "ST_STEP_INSERT_ROW", "ST_STEP_INSERT_ROWS")
+            }
             Step::DeleteRows { rows } => {
                 let n = rows.iter().map(|r| r.len()).sum();
-                format!("Deleted {}", plural(n, "row"))
+                count(n, "ST_STEP_DELETE_ROW", "ST_STEP_DELETE_ROWS")
             }
             Step::AddColumn {
                 name, data_type, ..
-            } => {
-                format!("Added column {name} ({})", type_name(data_type))
-            }
+            } => tr_with(
+                "ST_STEP_ADD_COLUMN",
+                &[("name", name), ("type", &type_name(data_type))],
+            ),
             Step::KeepColumns { names } => match names.as_slice() {
-                [one] => format!("Kept column {one}"),
-                _ => format!("Kept {} columns", names.len()),
+                [one] => tr_with("ST_STEP_KEEP_COLUMN", &[("name", one)]),
+                _ => tr_with("ST_STEP_KEEP_COLUMNS", &[("n", &names.len())]),
             },
             Step::RemoveColumns { names } => match names.as_slice() {
-                [one] => format!("Removed column {one}"),
-                _ => format!("Removed {} columns", names.len()),
+                [one] => tr_with("ST_STEP_REMOVE_COLUMN", &[("name", one)]),
+                _ => tr_with("ST_STEP_REMOVE_COLUMNS", &[("n", &names.len())]),
             },
-            Step::RenameColumn { from, to } => format!("Renamed {from} to {to}"),
-            Step::MoveColumn { name, .. } => format!("Moved column {name}"),
+            Step::RenameColumn { from, to } => {
+                tr_with("ST_STEP_RENAME_COLUMN", &[("from", from), ("to", to)])
+            }
+            Step::MoveColumn { name, .. } => tr_with("ST_STEP_MOVE_COLUMN", &[("name", name)]),
             Step::Filter(filter) => filter.describe(),
             Step::Sort(sort) => sort.describe(),
             Step::Cast(cast) => cast.describe(),
             Step::Replace(replace) => replace.describe(),
-            Step::FormatText { columns, op } => match columns.as_slice() {
-                [one] => format!("{} {one}", op.verb()),
-                _ => format!("{} {} columns", op.verb(), columns.len()),
-            },
+            Step::FormatText { columns, op } => op.describe(columns),
             Step::Fill(fill) => fill.describe(),
             Step::Split(split) => split.describe(),
             Step::Merge(merge) => merge.describe(),
             Step::CustomColumn(custom) => custom.describe(),
-            Step::RemoveEmptyColumn { name } => format!("Removed column {name} if empty"),
+            Step::RemoveEmptyColumn { name } => {
+                tr_with("ST_STEP_REMOVE_EMPTY_COLUMN", &[("name", name)])
+            }
             Step::ExpandStruct {
                 column,
                 all_levels: false,
-            } => format!("Flattened {column} into columns"),
+            } => tr_with("ST_STEP_EXPAND_STRUCT", &[("column", column)]),
             Step::ExpandStruct {
                 column,
                 all_levels: true,
-            } => format!("Flattened {column} into columns (all levels)"),
-            Step::ExplodeList { column } => format!("Flattened {column} into rows"),
+            } => tr_with("ST_STEP_EXPAND_ALL", &[("column", column)]),
+            Step::ExplodeList { column } => tr_with("ST_STEP_EXPLODE_LIST", &[("column", column)]),
             Step::AddField {
                 column,
                 path,
                 name,
                 data_type,
-            } => format!(
-                "Added field {column}{}.{name} ({})",
-                type_path(path),
-                type_name(data_type)
+            } => tr_with(
+                "ST_STEP_ADD_FIELD",
+                &[
+                    ("field", &format!("{column}{}.{name}", type_path(path))),
+                    ("type", &type_name(data_type)),
+                ],
             ),
-            Step::RemoveField { column, path, name } => {
-                format!("Removed field {column}{}.{name}", type_path(path))
-            }
+            Step::RemoveField { column, path, name } => tr_with(
+                "ST_STEP_REMOVE_FIELD",
+                &[("field", &format!("{column}{}.{name}", type_path(path)))],
+            ),
             Step::CollectList { keys, columns } => {
                 let what = match columns.as_slice() {
                     [one] => one.clone(),
-                    _ => plural(columns.len(), "column"),
+                    _ => count(columns.len(), "ST_STEP_ONE_COLUMN", "ST_STEP_N_COLUMNS"),
                 };
                 match keys.as_slice() {
-                    [] => format!("Collected {what} into lists"),
-                    _ => format!("Collected {what} into lists by {}", keys.join(", ")),
+                    [] => tr_with("ST_STEP_COLLECT", &[("what", &what)]),
+                    _ => tr_with(
+                        "ST_STEP_COLLECT_BY",
+                        &[("what", &what), ("keys", &keys.join(", "))],
+                    ),
                 }
             }
-            Step::CombineStruct { columns, name } => {
-                format!("Combined {} into {name}", plural(columns.len(), "column"))
-            }
+            Step::CombineStruct { columns, name } => tr_with(
+                "ST_STEP_COMBINE",
+                &[
+                    (
+                        "what",
+                        &count(columns.len(), "ST_STEP_ONE_COLUMN", "ST_STEP_N_COLUMNS"),
+                    ),
+                    ("name", name),
+                ],
+            ),
         }
     }
 }

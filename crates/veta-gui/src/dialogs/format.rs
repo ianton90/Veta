@@ -34,10 +34,10 @@ impl FormatDialog {
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, FormatMessage> {
         let body = column![
-            text("Format text").size(20),
+            text(tr("ST_DLG_FORMAT_TITLE")).size(20),
             text(self.columns.join(", ")).color(tokens.muted_text),
             pick_list(TextOp::ALL, Some(self.op), FormatMessage::Op).width(Length::Fill),
-            buttons("OK", FormatMessage::Cancel, FormatMessage::Apply),
+            buttons("ST_COMMON_OK", FormatMessage::Cancel, FormatMessage::Apply),
         ]
         .spacing(14);
         card(body.into(), tokens, 400.0)

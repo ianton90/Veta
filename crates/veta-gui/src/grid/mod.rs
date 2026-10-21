@@ -29,6 +29,7 @@ use veta_core::Document;
 use veta_core::arrow::array::Array;
 use veta_core::arrow::datatypes::{DataType, Field, Schema};
 use veta_core::arrow::record_batch::{RecordBatch, RecordBatchOptions};
+use veta_core::i18n::{tr, tr_with};
 use veta_core::steps::{ComputeJob, Computed, Filter, Pipeline, Status};
 
 use crate::platform::icon::{self, Icon};

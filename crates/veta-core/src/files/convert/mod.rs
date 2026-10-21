@@ -166,13 +166,13 @@ impl ImportReport {
             .iter()
             .map(|(c, n)| format!("{c} ({n})"))
             .collect();
-        let fate = match self.on_error {
-            Some(OnError::ErrorColumn) => "kept as text in the matching \"errors\" columns",
-            _ => "imported as null",
+        let tag = match self.on_error {
+            Some(OnError::ErrorColumn) => "ST_IMPORT_REPORT_ERROR_COLUMNS",
+            _ => "ST_IMPORT_REPORT_NULL",
         };
-        Some(format!(
-            "{total} values didn't fit their column's type and were {fate}: {}.",
-            columns.join(", ")
+        Some(crate::i18n::tr_with(
+            tag,
+            &[("n", &total), ("columns", &columns.join(", "))],
         ))
     }
 }

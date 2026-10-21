@@ -46,28 +46,32 @@ impl CombineDialog {
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, CombineMessage> {
         let mut body = column![
-            text("Columns → Struct").size(20),
-            text(format!(
-                "Combine into a struct: {}",
-                self.columns.join(", ")
+            text(tr("ST_DLG_COMBINE_TITLE")).size(20),
+            text(tr_with(
+                "ST_DLG_COMBINE_COLUMNS",
+                &[("columns", &self.columns.join(", "))]
             ))
             .color(tokens.muted_text),
             row![
-                text("New column").width(90),
-                text_input("Column name", &self.name)
+                text(tr("ST_DLG_NEW_COLUMN")).width(90),
+                text_input(&tr("ST_DLG_COLUMN_NAME_PLACEHOLDER"), &self.name)
                     .id(NAME_ID)
                     .on_input(CombineMessage::Name)
                     .on_submit(CombineMessage::Apply),
             ]
             .spacing(12)
             .align_y(Alignment::Center),
-            text("The columns become its fields, in this order.").color(tokens.muted_text),
+            text(tr("ST_DLG_COMBINE_NOTE")).color(tokens.muted_text),
         ]
         .spacing(14);
         if let Some(error) = &self.error {
             body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
         }
-        body = body.push(buttons("OK", CombineMessage::Cancel, CombineMessage::Apply));
+        body = body.push(buttons(
+            "ST_COMMON_OK",
+            CombineMessage::Cancel,
+            CombineMessage::Apply,
+        ));
         card(body.into(), tokens, 440.0)
     }
 }

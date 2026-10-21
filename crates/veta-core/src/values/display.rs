@@ -210,6 +210,22 @@ pub fn has_items(data_type: &DataType) -> bool {
     )
 }
 
+/// `[1 item]`, `[3 items]` (in the current language).
+pub fn list_summary(n: usize) -> String {
+    match n {
+        1 => crate::i18n::tr("ST_VALUE_ONE_ITEM"),
+        n => crate::i18n::tr_with("ST_VALUE_ITEMS", &[("n", &n)]),
+    }
+}
+
+/// `{1 entry}`, `{2 entries}` (in the current language).
+pub fn map_summary(n: usize) -> String {
+    match n {
+        1 => crate::i18n::tr("ST_VALUE_ONE_ENTRY"),
+        n => crate::i18n::tr_with("ST_VALUE_ENTRIES", &[("n", &n)]),
+    }
+}
+
 /// A short summary of a list or map value: `[3 items]`, `{2 entries}`,
 /// `[]`; `None` for other types and nulls.
 pub fn items_summary(array: &dyn Array, row: usize) -> Option<String> {
@@ -217,10 +233,8 @@ pub fn items_summary(array: &dyn Array, row: usize) -> Option<String> {
     Some(match (range.len(), keys.is_some()) {
         (0, false) => "[]".into(),
         (0, true) => "{}".into(),
-        (1, false) => "[1 item]".into(),
-        (1, true) => "{1 entry}".into(),
-        (n, false) => format!("[{n} items]"),
-        (n, true) => format!("{{{n} entries}}"),
+        (n, false) => list_summary(n),
+        (n, true) => map_summary(n),
     })
 }
 

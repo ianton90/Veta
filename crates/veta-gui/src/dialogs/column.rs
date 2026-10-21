@@ -47,14 +47,14 @@ impl TypeChoice {
 
 impl std::fmt::Display for TypeChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Text => "Text (string)",
-            Self::Integer => "Whole number (int64)",
-            Self::Decimal => "Decimal number (float64)",
-            Self::Boolean => "True/false (bool)",
-            Self::Date => "Date",
-            Self::Timestamp => "Date and time (timestamp)",
-        })
+        f.write_str(&tr(match self {
+            Self::Text => "ST_TYPE_TEXT",
+            Self::Integer => "ST_TYPE_INTEGER",
+            Self::Decimal => "ST_TYPE_DECIMAL",
+            Self::Boolean => "ST_TYPE_BOOLEAN",
+            Self::Date => "ST_TYPE_DATE",
+            Self::Timestamp => "ST_TYPE_TIMESTAMP",
+        }))
     }
 }
 
@@ -81,10 +81,10 @@ impl std::fmt::Display for TypeOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Plain(choice) => choice.fmt(f),
-            Self::List => f.write_str("List of values"),
-            Self::FixedList => f.write_str("Fixed-size list"),
-            Self::Struct => f.write_str("Struct (named fields)"),
-            Self::Map => f.write_str("Map (keys → values)"),
+            Self::List => f.write_str(&tr("ST_TYPE_LIST")),
+            Self::FixedList => f.write_str(&tr("ST_TYPE_FIXED_LIST")),
+            Self::Struct => f.write_str(&tr("ST_TYPE_STRUCT")),
+            Self::Map => f.write_str(&tr("ST_TYPE_MAP")),
         }
     }
 }
@@ -168,7 +168,7 @@ impl TypeSpec {
                     .parse()
                     .ok()
                     .filter(|n| (1..=1_000_000).contains(n))
-                    .ok_or("A fixed-size list needs a length from 1 to 1,000,000.")?;
+                    .ok_or_else(|| tr("ST_DLG_COLUMN_FIXED_LIST_LENGTH"))?;
                 DataType::FixedSizeList(
                     std::sync::Arc::new(veta_core::arrow::datatypes::Field::new(
                         "item",
@@ -186,10 +186,10 @@ impl TypeSpec {
                 for (name, spec) in fields {
                     let name = name.trim();
                     if name.is_empty() {
-                        return Err("Every field needs a name.".into());
+                        return Err(tr("ST_DLG_COLUMN_FIELD_NEEDS_NAME"));
                     }
                     if out.iter().any(|f| f.name() == name) {
-                        return Err(format!("There are two fields named {name:?}."));
+                        return Err(tr_with("ST_DLG_COLUMN_FIELD_TWICE", &[("name", &name)]));
                     }
                     out.push(veta_core::arrow::datatypes::Field::new(
                         name,
@@ -198,7 +198,7 @@ impl TypeSpec {
                     ));
                 }
                 if out.is_empty() {
-                    return Err("A struct needs at least one field.".into());
+                    return Err(tr("ST_DLG_COLUMN_STRUCT_NO_FIELDS"));
                 }
                 DataType::Struct(out.into())
             }
@@ -398,21 +398,22 @@ impl ColumnDialog {
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, ColumnMessage> {
         let title = match &self.mode {
-            ColumnMode::Add { .. } => "Add column".to_owned(),
-            ColumnMode::Rename { .. } => "Rename column".to_owned(),
+            ColumnMode::Add { .. } => tr("ST_DLG_COLUMN_ADD_TITLE"),
+            ColumnMode::Rename { .. } => tr("ST_DLG_COLUMN_RENAME_TITLE"),
             ColumnMode::AddField { column, path } => {
-                format!("Add field to {column}{}", veta_core::steps::type_path(path))
+                let path = format!("{column}{}", veta_core::steps::type_path(path));
+                tr_with("ST_DLG_COLUMN_ADD_FIELD_TITLE", &[("path", &path)])
             }
         };
         let action = match &self.mode {
-            ColumnMode::Rename { .. } => "Rename",
-            _ => "Add",
+            ColumnMode::Rename { .. } => "ST_DLG_COLUMN_RENAME",
+            _ => "ST_DLG_COLUMN_ADD",
         };
         let mut body = column![
             text(title).size(20),
             row![
-                text("Name").width(70),
-                text_input("Name", &self.name)
+                text(tr("ST_DLG_COLUMN_NAME")).width(70),
+                text_input(&tr("ST_DLG_COLUMN_NAME"), &self.name)
                     .id(NAME_ID)
                     .on_input(ColumnMessage::Name)
                     .on_submit(ColumnMessage::Submit),
@@ -423,22 +424,23 @@ impl ColumnDialog {
         .spacing(16);
         if !matches!(self.mode, ColumnMode::Rename { .. }) {
             body = body.push(
-                row![text("Type").width(70), picker(&self.spec, Vec::new()),]
-                    .spacing(12)
-                    .align_y(Alignment::Center),
+                row![
+                    text(tr("ST_DLG_COLUMN_TYPE")).width(70),
+                    picker(&self.spec, Vec::new()),
+                ]
+                .spacing(12)
+                .align_y(Alignment::Center),
             );
             if let Some(inner) = inner_pickers(&self.spec, &[]) {
                 body = body
                     .push(iced::widget::container(scrollable(inner).spacing(4)).max_height(320.0));
             }
             let note = match self.mode {
-                ColumnMode::AddField { .. } => "The new field starts empty (null) in every row.",
-                _ if matches!(self.spec, TypeSpec::Map(..)) => {
-                    "The new column starts empty (null). Add entries to each row in the grid."
-                }
-                _ => "The new column starts empty (null).",
+                ColumnMode::AddField { .. } => "ST_DLG_COLUMN_FIELD_EMPTY",
+                _ if matches!(self.spec, TypeSpec::Map(..)) => "ST_DLG_COLUMN_MAP_EMPTY",
+                _ => "ST_DLG_COLUMN_EMPTY",
             };
-            body = body.push(text(note).color(tokens.muted_text));
+            body = body.push(text(tr(note)).color(tokens.muted_text));
         }
         if let Some(error) = &self.error {
             body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
@@ -467,8 +469,8 @@ fn picker(spec: &TypeSpec, path: TypePath) -> Element<'_, ColumnMessage> {
 fn inner_pickers<'a>(spec: &'a TypeSpec, path: &[TypeStep]) -> Option<Element<'a, ColumnMessage>> {
     let child = |step| [path, &[step]].concat();
     let labelled =
-        |label: &'a str, picker: Element<'a, ColumnMessage>| -> Element<'a, ColumnMessage> {
-            row![text(label).width(58), picker]
+        |label: &str, picker: Element<'a, ColumnMessage>| -> Element<'a, ColumnMessage> {
+            row![text(tr(label)).width(58), picker]
                 .spacing(12)
                 .align_y(Alignment::Center)
                 .into()
@@ -482,14 +484,20 @@ fn inner_pickers<'a>(spec: &'a TypeSpec, path: &[TypeStep]) -> Option<Element<'a
                 .on_input(move |l| ColumnMessage::Length(at.clone(), l))
                 .on_submit(ColumnMessage::Submit)
                 .width(80);
-            rows = rows.push(labelled("Length", length.into()));
-            rows = rows.push(labelled("Items", picker(item, child(TypeStep::Item))));
+            rows = rows.push(labelled("ST_DLG_COLUMN_LENGTH", length.into()));
+            rows = rows.push(labelled(
+                "ST_DLG_COLUMN_ITEMS",
+                picker(item, child(TypeStep::Item)),
+            ));
             if let Some(inner) = inner_pickers(item, &child(TypeStep::Item)) {
                 rows = rows.push(inner);
             }
         }
         TypeSpec::List(item) => {
-            rows = rows.push(labelled("Items", picker(item, child(TypeStep::Item))));
+            rows = rows.push(labelled(
+                "ST_DLG_COLUMN_ITEMS",
+                picker(item, child(TypeStep::Item)),
+            ));
             if let Some(inner) = inner_pickers(item, &child(TypeStep::Item)) {
                 rows = rows.push(inner);
             }
@@ -500,19 +508,22 @@ fn inner_pickers<'a>(spec: &'a TypeSpec, path: &[TypeStep]) -> Option<Element<'a
                 ColumnMessage::Key(at.clone(), k)
             })
             .width(Length::Fill);
-            rows = rows.push(labelled("Keys", keys.into()));
-            rows = rows.push(labelled("Values", picker(value, child(TypeStep::Item))));
+            rows = rows.push(labelled("ST_DLG_COLUMN_KEYS", keys.into()));
+            rows = rows.push(labelled(
+                "ST_DLG_COLUMN_VALUES",
+                picker(value, child(TypeStep::Item)),
+            ));
             if let Some(inner) = inner_pickers(value, &child(TypeStep::Item)) {
                 rows = rows.push(inner);
             }
         }
         TypeSpec::Struct(fields) => {
-            rows = rows.push(text("Fields"));
+            rows = rows.push(text(tr("ST_DLG_COLUMN_FIELDS")));
             for (i, (name, field)) in fields.iter().enumerate() {
                 let (at, again) = (path.to_vec(), path.to_vec());
                 rows = rows.push(
                     row![
-                        text_input("Field name", name)
+                        text_input(&tr("ST_DLG_COLUMN_FIELD_NAME"), name)
                             .on_input(move |n| ColumnMessage::FieldName(at.clone(), i, n))
                             .on_submit(ColumnMessage::Submit)
                             .width(Length::FillPortion(2)),
@@ -530,7 +541,7 @@ fn inner_pickers<'a>(spec: &'a TypeSpec, path: &[TypeStep]) -> Option<Element<'a
                 }
             }
             rows = rows.push(
-                button(text("Add field"))
+                button(text(tr("ST_DLG_COLUMN_ADD_FIELD")))
                     .style(button::secondary)
                     .on_press(ColumnMessage::AddField(path.to_vec())),
             );

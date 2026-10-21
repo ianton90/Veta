@@ -19,10 +19,10 @@ pub enum Direction {
 
 impl std::fmt::Display for Direction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Ascending => "ascending",
-            Self::Descending => "descending",
-        })
+        f.write_str(&tr(match self {
+            Self::Ascending => "ST_DLG_SORT_ASCENDING",
+            Self::Descending => "ST_DLG_SORT_DESCENDING",
+        }))
     }
 }
 
@@ -46,10 +46,10 @@ pub enum Nulls {
 
 impl std::fmt::Display for Nulls {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Last => "nulls last",
-            Self::First => "nulls first",
-        })
+        f.write_str(&tr(match self {
+            Self::Last => "ST_DLG_SORT_NULLS_LAST",
+            Self::First => "ST_DLG_SORT_NULLS_FIRST",
+        }))
     }
 }
 
@@ -122,7 +122,12 @@ impl SortDialog {
             }
             list = list.push(
                 row![
-                    text(if i == 0 { "Sort by" } else { "then by" }).width(60),
+                    text(tr(if i == 0 {
+                        "ST_DLG_SORT_BY"
+                    } else {
+                        "ST_DLG_SORT_THEN_BY"
+                    }))
+                    .width(60),
                     pick_list(self.columns.clone(), Some(key.column.clone()), move |c| {
                         SortMessage::Column(i, c)
                     })
@@ -150,13 +155,13 @@ impl SortDialog {
             );
         }
         let body = column![
-            text("Sort rows").size(20),
+            text(tr("ST_DLG_SORT_TITLE")).size(20),
             list,
-            button(text("+ Add column"))
+            button(text(tr("ST_DLG_SORT_ADD")))
                 .style(button::text)
                 .on_press(SortMessage::Add),
-            text("Rows that tie keep their order.").color(tokens.muted_text),
-            buttons("OK", SortMessage::Cancel, SortMessage::Apply),
+            text(tr("ST_DLG_SORT_NOTE")).color(tokens.muted_text),
+            buttons("ST_COMMON_OK", SortMessage::Cancel, SortMessage::Apply),
         ]
         .spacing(14);
         card(body.into(), tokens, 620.0)

@@ -7,6 +7,14 @@ use veta_core::WriterSettings;
 
 use crate::settings::theme::{self, Mode};
 
+/// "Settings file <path>: <error>".
+fn file_error(path: &Path, error: &dyn std::fmt::Display) -> String {
+    veta_core::i18n::tr_with(
+        "ST_MSG_SETTINGS_FILE_ERROR",
+        &[("path", &path.display()), ("error", error)],
+    )
+}
+
 /// Maximum entries kept in [`Config::recent_files`].
 pub const MAX_RECENT: usize = 10;
 const MIB: u64 = 1024 * 1024;
@@ -111,11 +119,11 @@ impl ModePreference {
 
 impl std::fmt::Display for ModePreference {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::System => "Follow system",
-            Self::Light => "Light",
-            Self::Dark => "Dark",
-        })
+        f.write_str(&veta_core::i18n::tr(match self {
+            Self::System => "ST_SETTINGS_MODE_SYSTEM",
+            Self::Light => "ST_SETTINGS_MODE_LIGHT",
+            Self::Dark => "ST_SETTINGS_MODE_DARK",
+        }))
     }
 }
 
@@ -175,16 +183,10 @@ impl Config {
         match std::fs::read_to_string(path) {
             Ok(text) => match toml::from_str(&text) {
                 Ok(config) => (config, None),
-                Err(e) => (
-                    Self::default(),
-                    Some(format!("Settings file {}: {}", path.display(), e.message())),
-                ),
+                Err(e) => (Self::default(), Some(file_error(path, &e.message()))),
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Self::default(), None),
-            Err(e) => (
-                Self::default(),
-                Some(format!("Settings file {}: {e}", path.display())),
-            ),
+            Err(e) => (Self::default(), Some(file_error(path, &e))),
         }
     }
 

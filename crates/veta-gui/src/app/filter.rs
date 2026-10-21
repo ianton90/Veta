@@ -106,7 +106,7 @@ impl App {
             return Ok(());
         };
         if doc.status() != &Status::Ready {
-            return Err("Wait until the steps are computed.".into());
+            return Err(tr("ST_MSG_WAIT_STEPS"));
         }
         let view = doc.filter_view(filter.clone()).map_err(|e| e.to_string())?;
         self.commit_edit_or_drop();
@@ -160,7 +160,7 @@ impl App {
                 .map(|s| s.1)
         });
         let Some(column) = column.and_then(|c| self.column_names(id, c..c + 1).pop()) else {
-            self.errors.push("Select a column to sort by.".into());
+            self.errors.push(tr("ST_MSG_SELECT_COLUMN_SORT"));
             return;
         };
         let sort = Sort {

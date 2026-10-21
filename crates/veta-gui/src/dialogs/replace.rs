@@ -67,22 +67,22 @@ impl ReplaceDialog {
     }
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, ReplaceMessage> {
-        let mut find = text_input("Value to find", &self.find).id(NAME_ID);
+        let mut find = text_input(&tr("ST_DLG_REPLACE_FIND_PLACEHOLDER"), &self.find).id(NAME_ID);
         if !self.find_null {
             find = find
                 .on_input(ReplaceMessage::Find)
                 .on_submit(ReplaceMessage::Apply);
         }
-        let mut with = text_input("Replace with", &self.with);
+        let mut with = text_input(&tr("ST_DLG_REPLACE_WITH"), &self.with);
         if !self.with_null {
             with = with
                 .on_input(ReplaceMessage::With)
                 .on_submit(ReplaceMessage::Apply);
         }
         let mut body = column![
-            text(format!("Replace values in {}", self.column)).size(20),
+            text(tr_with("ST_DLG_REPLACE_TITLE", &[("column", &self.column)])).size(20),
             row![
-                text("Find").width(80),
+                text(tr("ST_DLG_REPLACE_FIND")).width(80),
                 find,
                 checkbox(self.find_null)
                     .label("null")
@@ -91,7 +91,7 @@ impl ReplaceDialog {
             .spacing(12)
             .align_y(Alignment::Center),
             row![
-                text("Replace with").width(80),
+                text(tr("ST_DLG_REPLACE_WITH")).width(80),
                 with,
                 checkbox(self.with_null)
                     .label("null")
@@ -104,19 +104,20 @@ impl ReplaceDialog {
         if self.text_column && !self.find_null {
             body = body.push(
                 checkbox(self.whole_cell)
-                    .label("Match entire cell contents")
+                    .label(tr("ST_DLG_REPLACE_WHOLE_CELL"))
                     .on_toggle(ReplaceMessage::WholeCell),
             );
         }
         if let Some(error) = &self.error {
             body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
         } else if !self.text_column {
-            body = body.push(
-                text("Values are read as the column's type and match whole cells.")
-                    .color(tokens.muted_text),
-            );
+            body = body.push(text(tr("ST_DLG_REPLACE_TYPED_NOTE")).color(tokens.muted_text));
         }
-        body = body.push(buttons("OK", ReplaceMessage::Cancel, ReplaceMessage::Apply));
+        body = body.push(buttons(
+            "ST_COMMON_OK",
+            ReplaceMessage::Cancel,
+            ReplaceMessage::Apply,
+        ));
         card(body.into(), tokens, 480.0)
     }
 }

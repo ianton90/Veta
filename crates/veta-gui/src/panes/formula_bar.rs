@@ -12,16 +12,16 @@ pub fn formula_bar<'a>(
     let t = ui.tokens;
     if let Some(at) = tab.grid.preview() {
         let total = doc.steps().len();
-        let what = if at == 0 {
-            "the source data".to_owned()
+        let showing = if at == 0 {
+            tr("ST_FORMULA_PREVIEW_SOURCE")
         } else {
-            format!("the data after step {at} of {total}")
+            tr_with("ST_FORMULA_PREVIEW_STEP", &[("n", &at), ("total", &total)])
         };
         return container(
             row![
                 icon(Icon::Info, ui.size).color(t.primary),
-                text(format!("Showing {what}. Changes are disabled.")).size(ui.small()),
-                button(text("Show all steps").size(ui.small()))
+                text(showing).size(ui.small()),
+                button(text(tr("ST_FORMULA_SHOW_ALL")).size(ui.small()))
                     .padding([3, 10])
                     .on_press(Message::PreviewStep(tab.id, usize::MAX)),
             ]
@@ -55,13 +55,13 @@ pub fn formula_bar<'a>(
                         let key = edit.is_some_and(|e| e.key) && !item.is_slot();
                         name = format!("{name}{}", item.display);
                         if key {
-                            name.push_str(" key");
+                            name = format!("{name} {}", tr("ST_FORMULA_KEY"));
                         }
                     }
                     format!("{name} · ")
                 })
                 .unwrap_or_default();
-            format!("{name}row {}", row + 1)
+            format!("{name}{}", tr_with("ST_FORMULA_ROW", &[("n", &(row + 1))]))
         }
         None => String::new(),
     };
@@ -85,9 +85,9 @@ pub fn formula_bar<'a>(
     let (hint, hint_color) = match edit {
         Some(Edit {
             error: Some(error), ..
-        }) => (error.as_str(), Color::from_rgb8(0xd1, 0x43, 0x43)),
-        Some(_) => ("Enter to apply · Esc to cancel", t.muted_text),
-        None => ("", t.muted_text),
+        }) => (error.clone(), Color::from_rgb8(0xd1, 0x43, 0x43)),
+        Some(_) => (tr("ST_FORMULA_EDIT_HINT"), t.muted_text),
+        None => (String::new(), t.muted_text),
     };
     container(
         row![

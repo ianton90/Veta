@@ -37,7 +37,7 @@ impl App {
                     Ok(_) => {}
                     Err(e) => self
                         .errors
-                        .push(format!("Could not compute statistics: {e}")),
+                        .push(tr_with("ST_MSG_STATS_FAILED", &[("error", &e)])),
                 }
             }
             _ => unreachable!("not a stats message"),
@@ -146,8 +146,8 @@ impl App {
             .map(|r| r.progress);
         let waiting = match doc.status() {
             Status::Ready => None,
-            Status::Computing { .. } => Some("Waiting for the steps to be computed…"),
-            Status::Broken { .. } => Some("A step has an error; fix it to see statistics."),
+            Status::Computing { .. } => Some(tr("ST_STATS_WAITING")),
+            Status::Broken { .. } => Some(tr("ST_STATS_BROKEN")),
         };
         panes::StatsView {
             columns,
