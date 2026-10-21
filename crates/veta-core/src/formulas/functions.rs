@@ -8,12 +8,7 @@ use crate::error::invalid;
 /// Functions, with their argument counts (min, max).
 pub(super) const FUNCTIONS: &[(&str, usize, usize, &str)] = &[
     ("if", 3, 3, "if(condition, then, else)"),
-    (
-        "coalesce",
-        1,
-        usize::MAX,
-        "coalesce(a, b, …)",
-    ),
+    ("coalesce", 1, usize::MAX, "coalesce(a, b, …)"),
     ("text", 1, 1, "text(x)"),
     ("number", 1, 1, "number(x)"),
     ("upper", 1, 1, "upper(s)"),
