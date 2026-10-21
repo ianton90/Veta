@@ -53,3 +53,4 @@ Short log of project decisions. Newest last.
 | 47 | 2026-10-19 | Version 0.4.0. 0.3.0 was never tagged or released; the first release will be 0.4.0. | Owner: the switch to mimalloc (46) marks a milestone. |
 | 48 | 2026-10-20 | Version 0.5.0. 0.4.0 was never tagged or released; the first release will be 0.5.0. | Owner: parallel reads and saves (#128, #131) mark a milestone. |
 | 49 | 2026-10-21 | Right-click menu keeps to basic, most used commands (#134): Cut, Copy, Paste always come first; no Split & Merge or Nested sections (those commands are on the ribbon). Adding inside a struct, list or map stays, in the Column or Cell section. | Owner: people expect the clipboard there, and the column menu ran off the window. |
+| 50 | 2026-10-21 | Version 0.6.0. 0.5.0 was never tagged or released; the first release will be 0.6.0. | Owner. |

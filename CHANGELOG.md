@@ -4,9 +4,9 @@ Versions follow [Semantic Versioning](https://semver.org): `MAJOR.MINOR.PATCH`.
 Each build also carries a build number (shown in About and `--version`).
 While the major version is 0, minor versions may change behaviour.
 
-## 0.5.0 — first release
+## 0.6.0 — first release
 
-0.1.0 to 0.4.0 were never released; their work ships in 0.5.0. 0.4.0
+0.1.0 to 0.5.0 were never released; their work ships in 0.6.0. 0.4.0
 marked the switch to the mimalloc allocator, which made large operations
 several times faster on Windows; 0.5.0 marks full passes and saves that
 use all cores (on a 10 GB file, faster than polars at sort, formula, edit,

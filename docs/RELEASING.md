@@ -4,14 +4,14 @@
 
 - The version is `MAJOR.MINOR.PATCH` ([SemVer](https://semver.org)), set
   once in the root `Cargo.toml` (`[workspace.package] version`). It appears
-  in tags (`v0.5.0`), archive names, About and `--version`.
+  in tags (`v0.6.0`), archive names, About and `--version`.
   - PATCH: fixes only. MINOR: new features. MAJOR: breaking changes (file
     formats such as recipes, CLI options). While MAJOR is 0, MINOR may also
     break things.
-  - Pre-releases: `0.5.0-beta.1`.
+  - Pre-releases: `0.6.0-beta.1`.
 - Every build also has a **build number**: `$VETA_BUILD_NUMBER` if set,
   otherwise the commit count of the checkout. It and the short commit hash
-  are shown next to the version, e.g. `0.5.0 (build 51, 341f5c6)`, and will
+  are shown next to the version, e.g. `0.6.0 (build 51, 341f5c6)`, and will
   go into the Windows file version's fourth field and the macOS build
   number once installers exist (#51).
 
@@ -21,7 +21,7 @@
    (fmt, clippy, tests).
 2. Bump the version in `Cargo.toml` (and `Cargo.lock` via `cargo build`).
    Move the notes under a new heading in `CHANGELOG.md`.
-3. Commit (`Release 0.5.0`) and push to `dv`.
+3. Commit (`Release 0.6.0`) and push to `dv`.
 4. Push the tag `vX.Y.Z`. GitHub Actions (`.github/workflows/release.yml`;
    kept in `packaging/ci/release.yml` until it is copied there, since
    pushing workflow files needs a token with the `workflow` scope)
