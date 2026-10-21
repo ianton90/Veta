@@ -312,6 +312,7 @@
   "ST_MENU_SORT_DESCENDING": "Sort descending",
   "ST_MSG_CANCELLED": "Cancelled",
   "ST_MSG_COPY_FAILED": "Could not copy: {error}",
+  "ST_MSG_COPY_TOO_MANY": "That's {n} cells; at most {max} can be copied at once.",
   "ST_MSG_CUT_FIELDS": "Only fields of top-level struct columns can be cut.",
   "ST_MSG_EARLIER_STEP": "You're viewing an earlier step. Select the last step to make changes.",
   "ST_MSG_EXPORTED": "Exported {path}",

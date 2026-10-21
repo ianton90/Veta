@@ -9,9 +9,6 @@ use crate::display::{field_array, json_column};
 use crate::error::{Error, Result};
 use crate::model::Document;
 
-/// Most cells copied at once, to keep the clipboard (and memory) sane.
-pub const MAX_COPY_CELLS: usize = 1_000_000;
-
 /// The cells in `rows` × `columns` as tab-separated text, with the column
 /// names first if `header`. Nulls are empty; nested values are JSON.
 pub fn copy_text(
@@ -33,12 +30,6 @@ pub fn copy_fields(
     targets: &[(usize, Vec<String>)],
     header: bool,
 ) -> Result<String> {
-    let cells = rows.len().saturating_mul(targets.len());
-    if cells > MAX_COPY_CELLS {
-        return Err(Error::InvalidCommand(format!(
-            "that's {cells} cells; at most {MAX_COPY_CELLS} can be copied at once"
-        )));
-    }
     let schema = doc.schema();
     let mut lines: Vec<Vec<Option<String>>> = Vec::new();
     if header {

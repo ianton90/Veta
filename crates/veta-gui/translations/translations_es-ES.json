@@ -312,6 +312,7 @@
   "ST_MENU_SORT_DESCENDING": "Orden descendente",
   "ST_MSG_CANCELLED": "Cancelado",
   "ST_MSG_COPY_FAILED": "No se pudo copiar: {error}",
+  "ST_MSG_COPY_TOO_MANY": "Son {n} celdas; se pueden copiar como máximo {max} a la vez.",
   "ST_MSG_CUT_FIELDS": "Solo se pueden cortar campos de columnas de estructura de primer nivel.",
   "ST_MSG_EARLIER_STEP": "Estás viendo un paso anterior. Selecciona el último paso para hacer cambios.",
   "ST_MSG_EXPORTED": "Exportado {path}",

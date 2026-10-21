@@ -187,12 +187,15 @@ pub fn run(command: Command) -> ExitCode {
     let start = std::time::Instant::now();
     let result = execute(command, &mut out);
     // With VETA_PROFILE set: where the time went.
-    if let Some(report) = veta_core::profile::report() {
-        eprintln!(
-            "{report}  {:<40} {:>9.2} s",
-            "total",
-            start.elapsed().as_secs_f64()
-        );
+    if let Some(timings) = veta_core::profile::timings() {
+        eprintln!("VETA_PROFILE ({} threads)", veta_core::profile::threads());
+        for (name, elapsed, count) in timings {
+            eprintln!(
+                "  {name:<40} {:>9.2} s  ({count} times)",
+                elapsed.as_secs_f64()
+            );
+        }
+        eprintln!("  {:<40} {:>9.2} s", "total", start.elapsed().as_secs_f64());
     }
     match result {
         Ok(()) => ExitCode::SUCCESS,

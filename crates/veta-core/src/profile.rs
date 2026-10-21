@@ -1,6 +1,6 @@
 //! Timings of the slow parts of full passes and saves, for measuring Veta
 //! on other machines: when the `VETA_PROFILE` environment variable is set,
-//! time spent in each named part is added up and [`report`] prints it.
+//! time spent in each named part is added up and [`timings`] returns it.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
@@ -43,16 +43,22 @@ pub fn time<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
     result
 }
 
-/// The collected timings, one line per part, or `None` when not collecting.
-/// Parts done on several threads add up the time of all of them.
-pub fn report() -> Option<String> {
+/// One part's timing: its name, total time and how many times it ran.
+pub type Timing = (&'static str, Duration, u64);
+
+/// The collected timings by part name, or `None` when not collecting. Parts
+/// done on several threads add up the time of all of them.
+pub fn timings() -> Option<Vec<Timing>> {
     let totals = totals()?.lock().ok()?;
-    let mut text = format!("VETA_PROFILE ({} threads)\n", crate::parallel::threads());
-    for (name, (elapsed, count)) in totals.iter() {
-        text.push_str(&format!(
-            "  {name:<40} {:>9.2} s  ({count} times)\n",
-            elapsed.as_secs_f64()
-        ));
-    }
-    Some(text)
+    Some(
+        totals
+            .iter()
+            .map(|(name, (elapsed, count))| (*name, *elapsed, *count))
+            .collect(),
+    )
+}
+
+/// Threads the parts were spread over (to read the timings against).
+pub fn threads() -> usize {
+    crate::parallel::threads()
 }

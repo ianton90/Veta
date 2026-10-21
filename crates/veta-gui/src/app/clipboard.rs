@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// Most cells copied at once: copying builds the whole text in memory, and
+/// system clipboards struggle with hundreds of MB.
+const MAX_COPY_CELLS: usize = 1_000_000;
+
 impl App {
     /// Clipboard messages.
     pub(crate) fn clipboard_message(&mut self, message: Message) -> Task<Message> {
@@ -57,6 +61,16 @@ impl App {
         if let Some(targets) = fields {
             return self.copy_fields(id, &selection, &targets, cut);
         }
+        let cells = match &selection {
+            Selection::None => 0,
+            Selection::Cell(..) => 1,
+            Selection::Rows(rows) => rows.len() * doc.num_columns(),
+            Selection::Columns(cols) => doc.num_rows() * cols.len(),
+        };
+        if self.too_many_to_copy(cells) {
+            return Task::none();
+        }
+        let doc = self.workbook.get(id).expect("checked above");
         let text = match &selection {
             Selection::None => return Task::none(),
             Selection::Cell(r, c) => {
@@ -98,6 +112,18 @@ impl App {
         iced::clipboard::write(text)
     }
 
+    /// Refuses (with a message) to copy more than [`MAX_COPY_CELLS`] cells.
+    fn too_many_to_copy(&mut self, cells: usize) -> bool {
+        if cells <= MAX_COPY_CELLS {
+            return false;
+        }
+        self.errors.push(tr_with(
+            "ST_MSG_COPY_TOO_MANY",
+            &[("n", &cells), ("max", &MAX_COPY_CELLS)],
+        ));
+        true
+    }
+
     /// Copies fields of expanded struct columns (a cell or whole columns);
     /// with `cut`, then sets the field to null or removes the fields.
     fn copy_fields(
@@ -114,6 +140,10 @@ impl App {
             Selection::Cell(r, _) => (*r..r + 1, false),
             _ => (0..doc.num_rows(), true),
         };
+        if self.too_many_to_copy(rows.len() * targets.len()) {
+            return Task::none();
+        }
+        let doc = self.workbook.get(id).expect("checked above");
         let text = match veta_core::clipboard::copy_fields(doc, rows, targets, header) {
             Ok(text) => text,
             Err(e) => {
