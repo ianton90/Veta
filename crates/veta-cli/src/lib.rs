@@ -2,6 +2,7 @@
 //! with clap and runs headless commands through `veta-core`.
 
 mod commands;
+mod names;
 mod table;
 
 use commands::{apply, convert, edit, inspect, meta};

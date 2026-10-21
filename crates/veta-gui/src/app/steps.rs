@@ -422,6 +422,6 @@ fn step_command(step: Step) -> Command {
         Step::CombineStruct { columns, name } => Command::CombineStruct { columns, name },
         Step::CollectList { keys, columns } => Command::CollectList { keys, columns },
         Step::CustomColumn(custom) => Command::CustomColumn(custom),
-        step => unreachable!("no step dialog makes {}", step.describe()),
+        step => unreachable!("no step dialog makes {step:?}"),
     }
 }

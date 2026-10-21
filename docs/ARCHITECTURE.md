@@ -113,6 +113,7 @@ veta-cli/src/
   commands/              inspect, edit, meta, convert, apply; shared
                          helpers in mod.rs
   table.rs               text tables
+  names.rs               English names for steps (the core has none)
 veta-cli/tests/cli.rs    runs the real binary
 
 veta-fmt/src/lib.rs      display formatting both front ends share: sizes,
@@ -135,7 +136,7 @@ How a click becomes a change on screen, e.g. Rows → Remove Rows → OK:
    (most handlers do so through `App::execute`, which also refreshes the
    grid and reports errors).
 4. **Controller.** `plan()` hands it to `controller/rows.rs`, which checks it
-   and returns a label and a `Change` (here, push a `Step::DeleteRows`).
+   and returns a `Change` (here, push a `Step::DeleteRows`).
    `execute` applies the change to the `Document` and records it in the
    undo history.
 5. **Pipeline.** The document's `Pipeline` now has one more step. Nothing is
@@ -214,7 +215,7 @@ Document
   texts with `{n}` placeholders. Missing texts fall back to en-GB, then to
   the tag.
 - `i18n/model.rs` names the model's values in the app's language: step
-  names (from the `Step` data, matching `Step::describe` in English),
+  names (from the `Step` data; the core has no step names),
   filter / text / on-error options (`Labeled<T>` for pick lists), value
   summaries and the import report.
 - Saving a new language in Settings sends `Message::LanguageChanged`; it
@@ -335,9 +336,9 @@ veta-cli apply <recipe.json> <file>        # run steps saved from the GUI
 Rows and positions are numbered from 1, as in the GUI. Commands that modify
 write in place unless `-o FILE` is given. 
 Recipes (`veta_core::recipe`) are JSON: metadata (`format`, `version`, `name`,
-`description`, `created_with`, `source_file`) and a `steps` array; each step
-has `order`, `type`, a readable `description` (ignored on load) and
-`settings`.
+`created_with`, `source_file`) and a `steps` array; each step has `order`,
+`type` and `settings`. No descriptions: front ends name steps in their own
+language (older recipes' `description` fields are ignored).
 
 ## Testing
 

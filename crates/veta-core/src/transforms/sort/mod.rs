@@ -40,23 +40,6 @@ const OUTPUT_ROWS: usize = 64 * 1024;
 const SLICE_ROWS: usize = 64 * 1024;
 
 impl Sort {
-    pub fn describe(&self) -> String {
-        let keys: Vec<String> = self
-            .keys
-            .iter()
-            .map(|k| {
-                let order = if k.descending {
-                    "descending"
-                } else {
-                    "ascending"
-                };
-                let nulls = if k.nulls_first { ", nulls first" } else { "" };
-                format!("{} {order}{nulls}", k.column)
-            })
-            .collect();
-        format!("Sorted by {}", keys.join(", then "))
-    }
-
     /// Checks the sort against the input schema.
     pub(crate) fn validate(&self, schema: &Schema) -> Result<()> {
         self.converter(schema).map(|_| ())

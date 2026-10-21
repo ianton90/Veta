@@ -327,10 +327,7 @@ impl ComputeJob {
                 )))
             }
             other => {
-                return Err(invalid(format!(
-                    "{} doesn't need computing",
-                    other.describe()
-                )));
+                return Err(invalid(format!("{other:?} doesn't need computing")));
             }
         };
         Ok(Computed {

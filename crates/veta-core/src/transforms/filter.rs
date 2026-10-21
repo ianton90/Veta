@@ -105,27 +105,9 @@ impl FilterOp {
     }
 }
 
-impl Condition {
-    pub fn describe(&self) -> String {
-        if self.op.needs_value() && self.value.contains('"') {
-            // JSON values read better unescaped.
-            format!("{} {} {}", self.column, self.op.phrase(), self.value)
-        } else if self.op.needs_value() {
-            format!("{} {} {:?}", self.column, self.op.phrase(), self.value)
-        } else {
-            format!("{} {}", self.column, self.op.phrase())
-        }
-    }
-}
+impl Condition {}
 
 impl Filter {
-    pub fn describe(&self) -> String {
-        let parts: Vec<String> = self.conditions.iter().map(Condition::describe).collect();
-        let joined = parts.join(if self.match_all { " and " } else { " or " });
-        let verb = if self.exclude { "Removed" } else { "Kept" };
-        format!("{verb} rows where {joined}")
-    }
-
     /// Checks the filter against the input schema.
     pub(crate) fn validate(&self, schema: &Schema) -> Result<()> {
         if self.conditions.is_empty() {

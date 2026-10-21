@@ -21,7 +21,6 @@ use arrow::datatypes::DataType;
 
 use crate::display::PathPart;
 
-use crate::display::type_name;
 use crate::error::Error;
 
 pub use crate::formulas::{CustomColumn, function_signatures};
@@ -157,88 +156,6 @@ impl Step {
             self,
             Step::EditCells(_) | Step::InsertRows { .. } | Step::DeleteRows { .. }
         )
-    }
-
-    /// Short description for the applied steps list.
-    pub fn describe(&self) -> String {
-        fn plural(n: usize, one: &str) -> String {
-            if n == 1 {
-                format!("1 {one}")
-            } else {
-                format!("{n} {one}s")
-            }
-        }
-        match self {
-            Step::EditCells(edits) => format!("Edited {}", plural(edits.len(), "cell")),
-            Step::InsertRows { count, .. } => format!("Inserted {}", plural(*count, "row")),
-            Step::DeleteRows { rows } => {
-                let n = rows.iter().map(|r| r.len()).sum();
-                format!("Deleted {}", plural(n, "row"))
-            }
-            Step::AddColumn {
-                name, data_type, ..
-            } => {
-                format!("Added column {name} ({})", type_name(data_type))
-            }
-            Step::KeepColumns { names } => match names.as_slice() {
-                [one] => format!("Kept column {one}"),
-                _ => format!("Kept {} columns", names.len()),
-            },
-            Step::RemoveColumns { names } => match names.as_slice() {
-                [one] => format!("Removed column {one}"),
-                _ => format!("Removed {} columns", names.len()),
-            },
-            Step::RenameColumn { from, to } => format!("Renamed {from} to {to}"),
-            Step::MoveColumn { name, .. } => format!("Moved column {name}"),
-            Step::Filter(filter) => filter.describe(),
-            Step::Sort(sort) => sort.describe(),
-            Step::Cast(cast) => cast.describe(),
-            Step::Replace(replace) => replace.describe(),
-            Step::FormatText { columns, op } => match columns.as_slice() {
-                [one] => format!("{} {one}", op.verb()),
-                _ => format!("{} {} columns", op.verb(), columns.len()),
-            },
-            Step::Fill(fill) => fill.describe(),
-            Step::Split(split) => split.describe(),
-            Step::Merge(merge) => merge.describe(),
-            Step::CustomColumn(custom) => custom.describe(),
-            Step::RemoveEmptyColumn { name } => format!("Removed column {name} if empty"),
-            Step::ExpandStruct {
-                column,
-                all_levels: false,
-            } => format!("Flattened {column} into columns"),
-            Step::ExpandStruct {
-                column,
-                all_levels: true,
-            } => format!("Flattened {column} into columns (all levels)"),
-            Step::ExplodeList { column } => format!("Flattened {column} into rows"),
-            Step::AddField {
-                column,
-                path,
-                name,
-                data_type,
-            } => format!(
-                "Added field {column}{}.{name} ({})",
-                type_path(path),
-                type_name(data_type)
-            ),
-            Step::RemoveField { column, path, name } => {
-                format!("Removed field {column}{}.{name}", type_path(path))
-            }
-            Step::CollectList { keys, columns } => {
-                let what = match columns.as_slice() {
-                    [one] => one.clone(),
-                    _ => plural(columns.len(), "column"),
-                };
-                match keys.as_slice() {
-                    [] => format!("Collected {what} into lists"),
-                    _ => format!("Collected {what} into lists by {}", keys.join(", ")),
-                }
-            }
-            Step::CombineStruct { columns, name } => {
-                format!("Combined {} into {name}", plural(columns.len(), "column"))
-            }
-        }
     }
 }
 

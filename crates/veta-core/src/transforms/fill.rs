@@ -16,14 +16,6 @@ pub struct Fill {
 }
 
 impl Fill {
-    pub fn describe(&self) -> String {
-        let direction = if self.up { "up" } else { "down" };
-        match self.columns.as_slice() {
-            [one] => format!("Filled {direction} {one}"),
-            many => format!("Filled {direction} {} columns", many.len()),
-        }
-    }
-
     pub(crate) fn validate(&self, schema: &Schema) -> Result<()> {
         if self.columns.is_empty() {
             return Err(invalid("no columns to fill".into()));

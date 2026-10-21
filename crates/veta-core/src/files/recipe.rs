@@ -5,13 +5,11 @@
 //!   "format": "veta-recipe",
 //!   "version": 1,
 //!   "name": "sales",
-//!   "description": "",
 //!   "created_with": "veta 0.6.0",
 //!   "source_file": "sales.parquet",
 //!   "steps": [
 //!     {
 //!       "order": 1,
-//!       "description": "Renamed name to label",
 //!       "type": "rename_column",
 //!       "settings": { "from": "name", "to": "label" }
 //!     }
@@ -19,8 +17,9 @@
 //! }
 //! ```
 //!
-//! Steps run by `order`; `description` fields are for people and ignored
-//! when loading. Types are written as in `veta-cli schema` (`int64`,
+//! Steps run by `order`. Recipes hold no descriptions: front ends name each
+//! step from its type and settings, in their language (older recipes'
+//! `description` fields are ignored). Types are written as in `veta-cli schema` (`int64`,
 //! `timestamp[us]`, …) and edited cell values as text, read back with the
 //! column's type.
 
@@ -50,8 +49,6 @@ struct Recipe {
     #[serde(default)]
     name: String,
     #[serde(default)]
-    description: String,
-    #[serde(default)]
     created_with: String,
     #[serde(default)]
     source_file: Option<String>,
@@ -62,9 +59,6 @@ struct Recipe {
 #[derive(Debug, Serialize, Deserialize)]
 struct RecipeEntry {
     order: usize,
-    /// For people reading the file; ignored when loading.
-    #[serde(default)]
-    description: String,
     #[serde(flatten)]
     step: RecipeStep,
 }
@@ -73,7 +67,6 @@ struct RecipeEntry {
 #[derive(Debug, Clone, Default)]
 pub struct RecipeInfo {
     pub name: String,
-    pub description: String,
     /// File the steps were made on.
     pub source_file: Option<String>,
 }
@@ -622,7 +615,6 @@ pub fn to_json(steps: &[Step], info: &RecipeInfo) -> Result<String> {
         format: FORMAT.into(),
         version: VERSION,
         name: info.name.clone(),
-        description: info.description.clone(),
         created_with: format!("veta {}", env!("CARGO_PKG_VERSION")),
         source_file: info.source_file.clone(),
         steps: steps
@@ -631,7 +623,6 @@ pub fn to_json(steps: &[Step], info: &RecipeInfo) -> Result<String> {
             .map(|(i, step)| {
                 Ok(RecipeEntry {
                     order: i + 1,
-                    description: step.describe(),
                     step: RecipeStep::from_step(step)?,
                 })
             })
@@ -832,14 +823,15 @@ mod tests {
         let info = RecipeInfo {
             name: "test".into(),
             source_file: Some("a.parquet".into()),
-            ..RecipeInfo::default()
         };
         let text = to_json(&steps, &info).unwrap();
         assert!(text.contains("\"type\": \"edit_cells\""), "{text}");
-        assert!(
-            text.contains("\"description\": \"Renamed name to label\""),
-            "{text}"
-        );
+        assert!(!text.contains("description"), "{text}");
+        // Older recipes described the recipe and each step: ignored.
+        let old = text
+            .replacen("\"name\"", "\"description\": \"x\",\n  \"name\"", 1)
+            .replace("\"order\"", "\"description\": \"y\",\n      \"order\"");
+        assert_eq!(from_json(&old, &schema()).unwrap().len(), steps.len());
         let back = from_json(&text, &schema()).unwrap();
         assert_eq!(back.len(), steps.len());
         for (a, b) in steps.iter().zip(&back) {

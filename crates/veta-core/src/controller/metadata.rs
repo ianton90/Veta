@@ -3,7 +3,7 @@
 use super::*;
 
 /// Plans one of this area's commands (see `super::plan`).
-pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
+pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
     match command {
         Command::SetMetadata { key, value } => {
             if key.is_empty() {
@@ -17,13 +17,10 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
                     value,
                 }),
             }
-            Ok((
-                format!("Set metadata {key}"),
-                Change::Metadata {
-                    before: doc.metadata.clone(),
-                    after,
-                },
-            ))
+            Ok(Change::Metadata {
+                before: doc.metadata.clone(),
+                after,
+            })
         }
         Command::RemoveMetadata { key } => {
             let mut after = doc.metadata.clone();
@@ -31,13 +28,10 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
                 return Err(Error::InvalidCommand(format!("no metadata key {key:?}")));
             };
             after.key_value.remove(index);
-            Ok((
-                format!("Remove metadata {key}"),
-                Change::Metadata {
-                    before: doc.metadata.clone(),
-                    after,
-                },
-            ))
+            Ok(Change::Metadata {
+                before: doc.metadata.clone(),
+                after,
+            })
         }
         Command::ReplaceColumnMetadata { column, entries } => {
             if doc.schema().field_with_name(&column).is_err() {
@@ -47,37 +41,28 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
             let mut after = doc.metadata.clone();
             after.columns.retain(|(name, _)| *name != column);
             after.columns.push((column.clone(), entries));
-            Ok((
-                format!("Edit metadata of {column}"),
-                Change::Metadata {
-                    before: doc.metadata.clone(),
-                    after,
-                },
-            ))
+            Ok(Change::Metadata {
+                before: doc.metadata.clone(),
+                after,
+            })
         }
         Command::ReplaceMetadata(entries) => {
             check_keys(&entries)?;
             let mut after = doc.metadata.clone();
             after.key_value = entries;
-            Ok((
-                "Edit metadata".into(),
-                Change::Metadata {
-                    before: doc.metadata.clone(),
-                    after,
-                },
-            ))
+            Ok(Change::Metadata {
+                before: doc.metadata.clone(),
+                after,
+            })
         }
         Command::SetWriterSettings(settings) => {
             if settings.max_row_group_rows == 0 {
                 return Err(invalid("row group size must be at least 1".into()));
             }
-            Ok((
-                "Change writer settings".into(),
-                Change::Writer {
-                    before: doc.writer.clone(),
-                    after: settings,
-                },
-            ))
+            Ok(Change::Writer {
+                before: doc.writer.clone(),
+                after: settings,
+            })
         }
         other => Err(invalid(format!("not a {} command: {other:?}", "metadata"))),
     }

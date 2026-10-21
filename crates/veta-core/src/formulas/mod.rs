@@ -281,10 +281,6 @@ pub struct CustomColumn {
 }
 
 impl CustomColumn {
-    pub fn describe(&self) -> String {
-        format!("Added column {} = {}", self.name, self.expression)
-    }
-
     /// The new column's type: a plain column reference keeps the column's
     /// type (duplicating it); text when the expression is always null.
     pub fn data_type(&self, schema: &Schema) -> Result<DataType> {

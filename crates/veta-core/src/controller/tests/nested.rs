@@ -119,10 +119,11 @@ fn collect_values_into_lists() {
             .map(|r| crate::display::item_count(batch.column(0).as_ref(), r))
             .sum();
         assert_eq!(items, fixtures::MIXED_SETTINGS_ROWS);
-        assert_eq!(
-            doc.steps()[0].describe(),
-            "Collected 2 columns into lists by name"
-        );
+        assert!(matches!(
+            &doc.steps()[0],
+            crate::steps::Step::CollectList { keys, columns }
+                if keys == &["name"] && columns.len() == 2
+        ));
 
         assert!(execute(&mut doc, collect(&["name"], &[])).is_err());
         assert!(execute(&mut doc, collect(&["name"], &["name"])).is_err());
@@ -256,7 +257,11 @@ fn combine_columns_into_struct() {
             cell(&doc, 0, "rec").as_deref(),
             Some("{tags: [a, b], id: 0}")
         );
-        assert_eq!(doc.steps()[2].describe(), "Combined 2 columns into rec");
+        assert!(matches!(
+            &doc.steps()[2],
+            crate::steps::Step::CombineStruct { columns, name }
+                if columns.len() == 2 && name == "rec"
+        ));
 
         assert!(
             execute(&mut doc, combine(&["path"], "owner")).is_err(),
@@ -652,10 +657,10 @@ fn struct_fields_at_any_depth() {
         ] {
             assert!(execute(&mut doc, bad).is_err());
         }
-        assert_eq!(
-            doc.steps()[0].describe(),
-            "Added field orders[].discount (int64)"
-        );
+        assert!(matches!(
+            &doc.steps()[0],
+            crate::steps::Step::AddField { name, .. } if name == "discount"
+        ));
         let out = dir.join("deep-fields.parquet");
         doc.save(Some(out.clone())).unwrap();
         let saved = Document::open(&out, OpenOptions::default()).unwrap();

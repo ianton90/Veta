@@ -29,21 +29,6 @@ pub enum SplitBy {
 }
 
 impl Split {
-    pub fn describe(&self) -> String {
-        match &self.by {
-            SplitBy::Delimiter { delimiter, parts } => {
-                format!(
-                    "Split {} by {delimiter:?} into {parts} columns",
-                    self.column
-                )
-            }
-            SplitBy::Positions(positions) => {
-                let list: Vec<String> = positions.iter().map(ToString::to_string).collect();
-                format!("Split {} at positions {}", self.column, list.join(", "))
-            }
-        }
-    }
-
     fn parts(&self) -> usize {
         match &self.by {
             SplitBy::Delimiter { parts, .. } => *parts,
@@ -146,10 +131,6 @@ pub struct Merge {
 }
 
 impl Merge {
-    pub fn describe(&self) -> String {
-        format!("Merged {} into {}", self.columns.join(", "), self.name)
-    }
-
     pub(crate) fn output_fields(&self, schema: &Schema) -> Result<Vec<Field>> {
         if self.columns.len() < 2 {
             return Err(invalid("select at least 2 columns to merge".into()));

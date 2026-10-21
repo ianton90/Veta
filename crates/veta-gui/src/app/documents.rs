@@ -265,7 +265,6 @@ impl App {
                         .to_owned();
                     let info = veta_core::recipe::RecipeInfo {
                         name,
-                        description: String::new(),
                         source_file: doc
                             .path()
                             .and_then(|p| p.file_name())

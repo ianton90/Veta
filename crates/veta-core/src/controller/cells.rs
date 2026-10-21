@@ -3,7 +3,7 @@
 use super::*;
 
 /// Plans one of this area's commands (see `super::plan`).
-pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
+pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
     match command {
         Command::SetCell { row, column, value } => {
             let schema = doc.schema();
@@ -21,7 +21,6 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
             if after.is_null(0) && !field.is_nullable() {
                 return Err(invalid(format!("{column} cannot be empty")));
             }
-            let label = format!("Edit {column} in row {}", row + 1);
             let change = match doc.steps().last() {
                 Some(Step::EditCells(edits)) => Change::EditCell {
                     before: edits.get(&column, row).cloned(),
@@ -38,7 +37,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
                     new_step: true,
                 },
             };
-            Ok((label, change))
+            Ok(change)
         }
         Command::PasteCells {
             row,
@@ -71,7 +70,6 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
                 _ => None,
             };
             let mut new_step = existing.is_none();
-            let mut count = 0;
             for (i, line) in values.iter().enumerate() {
                 for (j, value) in line.iter().enumerate() {
                     let field = schema.field(column + j);
@@ -90,15 +88,9 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
                         new_step,
                     });
                     new_step = false;
-                    count += 1;
                 }
             }
-            let label = if count == 1 {
-                "Paste 1 cell".to_owned()
-            } else {
-                format!("Paste {count} cells")
-            };
-            Ok((label, Change::Batch(changes)))
+            Ok(Change::Batch(changes))
         }
         Command::PasteFields {
             row,
@@ -136,7 +128,6 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
                 _ => None,
             };
             let mut new_step = existing.is_none();
-            let mut count = 0;
             for (i, line) in values.iter().enumerate() {
                 let r = row + i;
                 // Fields of one struct cell are set one after the other.
@@ -166,7 +157,6 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
                             new_step,
                         });
                         new_step = false;
-                        count += 1;
                         continue;
                     }
                     let json = match cells.iter().position(|(cc, _)| cc == c) {
@@ -181,7 +171,6 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
                     let json = crate::values::set_nested(&json, &pointer, value.as_deref(), leaf)
                         .map_err(|e| invalid(format!("row {}, {name}: {e}", r + 1)))?;
                     cells.push((*c, json));
-                    count += 1;
                 }
                 for (c, json) in cells {
                     let field = schema.field(c);
@@ -196,12 +185,7 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
                     new_step = false;
                 }
             }
-            let label = if count == 1 {
-                "Paste 1 cell".to_owned()
-            } else {
-                format!("Paste {count} cells")
-            };
-            Ok((label, Change::Batch(changes)))
+            Ok(Change::Batch(changes))
         }
         other => Err(invalid(format!("not a {} command: {other:?}", "cells"))),
     }

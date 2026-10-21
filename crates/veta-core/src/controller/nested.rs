@@ -8,7 +8,7 @@ use crate::display::{PathPart, map_key_type, type_at, value_json};
 use crate::values::{ListEdit, MapEdit, edit_list, edit_map, fill_null_list, set_nested};
 
 /// Plans one of this area's commands (see `super::plan`).
-pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
+pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
     match command {
         Command::SetValue {
             row,
@@ -172,7 +172,7 @@ fn edit_cell(
     row: usize,
     column: String,
     change: impl FnOnce(&str) -> Result<String>,
-) -> Result<(String, Change)> {
+) -> Result<Change> {
     let index = doc
         .schema()
         .index_of(&column)

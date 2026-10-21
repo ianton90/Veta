@@ -199,7 +199,7 @@ fn collect_columns_into_lists() {
     assert_eq!(names, ["name", "score"]);
     assert_eq!(doc.num_rows(), 6);
     assert_eq!(
-        doc.steps()[0].describe(),
+        crate::i18n::model::step_name(&doc.steps()[0]),
         "Collected score into lists by name"
     );
 

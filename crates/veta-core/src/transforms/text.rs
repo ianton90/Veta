@@ -27,18 +27,6 @@ pub struct Replace {
 }
 
 impl Replace {
-    pub fn describe(&self) -> String {
-        let find = match &self.find {
-            Some(f) => format!("{f:?}"),
-            None => "nulls".into(),
-        };
-        let with = match &self.with {
-            Some(w) => format!("{w:?}"),
-            None => "null".into(),
-        };
-        format!("Replaced {find} with {with} in {}", self.column)
-    }
-
     fn substring(&self, data_type: &DataType) -> bool {
         is_text(data_type) && !self.whole_cell && self.find.is_some()
     }
@@ -102,15 +90,6 @@ pub enum TextOp {
 
 impl TextOp {
     pub const ALL: [TextOp; 4] = [Self::Trim, Self::Lower, Self::Upper, Self::Title];
-
-    pub fn verb(self) -> &'static str {
-        match self {
-            Self::Trim => "Trimmed",
-            Self::Lower => "Lowercased",
-            Self::Upper => "Uppercased",
-            Self::Title => "Capitalized",
-        }
-    }
 
     pub(crate) fn validate(self, schema: &Schema, columns: &[String]) -> Result<()> {
         if columns.is_empty() {

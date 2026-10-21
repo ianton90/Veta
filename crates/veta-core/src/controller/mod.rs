@@ -22,10 +22,10 @@ use crate::values::parse_value;
 ///
 /// On error the document is left unchanged.
 pub fn execute(document: &mut Document, command: Command) -> Result<()> {
-    let (label, change) = plan(document, command)?;
+    let change = plan(document, command)?;
     change.apply(document)?;
     document.bump_revision();
-    document.history.record(label, change);
+    document.history.record(change);
     Ok(())
 }
 
@@ -33,7 +33,7 @@ pub fn execute(document: &mut Document, command: Command) -> Result<()> {
 /// history, so they undo as one (for follow-up changes the app makes on its
 /// own).
 pub fn amend(document: &mut Document, command: Command) -> Result<()> {
-    let (_, change) = plan(document, command)?;
+    let change = plan(document, command)?;
     change.apply(document)?;
     document.bump_revision();
     document.history.amend(change);
@@ -42,7 +42,7 @@ pub fn amend(document: &mut Document, command: Command) -> Result<()> {
 
 /// Reverts the last change. Returns `false` if there was nothing to undo.
 pub fn undo(document: &mut Document) -> bool {
-    let Some((_, change)) = document.history.pop_undo() else {
+    let Some(change) = document.history.pop_undo() else {
         return false;
     };
     change.revert(document);
@@ -53,7 +53,7 @@ pub fn undo(document: &mut Document) -> bool {
 /// Re-applies the last undone change. Returns `Ok(false)` if there was
 /// nothing to redo.
 pub fn redo(document: &mut Document) -> Result<bool> {
-    let Some((_, change)) = document.history.pop_redo() else {
+    let Some(change) = document.history.pop_redo() else {
         return Ok(false);
     };
     if let Err(e) = change.apply(document) {
@@ -65,7 +65,7 @@ pub fn redo(document: &mut Document) -> Result<bool> {
 }
 
 /// Builds the change for `command` without touching the document.
-fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
+fn plan(doc: &Document, command: Command) -> Result<Change> {
     use Command as C;
     match command {
         command @ (C::SetMetadata { .. }
@@ -106,14 +106,6 @@ fn check_keys(entries: &[KeyValue]) -> Result<()> {
 
 fn invalid(message: String) -> Error {
     Error::InvalidCommand(message)
-}
-
-fn rows_label(n: usize) -> String {
-    if n == 1 {
-        "1 row".into()
-    } else {
-        format!("{n} rows")
-    }
 }
 
 #[cfg(test)]

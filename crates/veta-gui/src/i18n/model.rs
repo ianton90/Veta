@@ -1,7 +1,7 @@
 //! Texts for the model's values in the app's language: step names, filter,
 //! text and on-error options, value summaries, the import report and the
-//! formula help. `veta-core` describes these in plain English (for the CLI
-//! and recipes); the app builds its own from the same data.
+//! formula help. `veta-core` has no wording of its own (decision 53); the
+//! app builds these from the model's data.
 
 use std::fmt;
 
@@ -330,46 +330,4 @@ pub fn formula_help() -> String {
         "ST_FORMULA_HELP",
         &[("functions", &function_signatures().join(", "))],
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use veta_core::steps::Sort;
-    use veta_core::steps::SortKey;
-
-    // English texts match what veta-core says, so recipes, the CLI and the
-    // app name steps alike.
-    #[test]
-    fn english_matches_the_core() {
-        let steps = [
-            Step::Sort(Sort {
-                keys: vec![SortKey {
-                    column: "a".into(),
-                    descending: true,
-                    nulls_first: true,
-                }],
-            }),
-            Step::Filter(Filter {
-                conditions: vec![Condition {
-                    column: "a".into(),
-                    op: FilterOp::GreaterOrEqual,
-                    value: "3".into(),
-                    case_sensitive: false,
-                }],
-                match_all: true,
-                exclude: false,
-            }),
-            Step::KeepColumns {
-                names: vec!["a".into(), "b".into()],
-            },
-            Step::FormatText {
-                columns: vec!["a".into()],
-                op: TextOp::Upper,
-            },
-        ];
-        for step in &steps {
-            assert_eq!(step_name(step), step.describe());
-        }
-    }
 }

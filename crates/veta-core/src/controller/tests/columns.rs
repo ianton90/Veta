@@ -126,7 +126,10 @@ fn add_and_remove_struct_fields() {
             )
             .is_err()
         );
-        assert_eq!(doc.steps()[0].describe(), "Added field point.z (string)");
+        assert!(matches!(
+            &doc.steps()[0],
+            crate::steps::Step::AddField { name, .. } if name == "z"
+        ));
 
         let out = dir.join("fields.parquet");
         doc.save(Some(out.clone())).unwrap();

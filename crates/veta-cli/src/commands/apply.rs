@@ -26,7 +26,7 @@ pub fn apply(
         Error::Usage(format!(
             "stopped at step {} ({}): {error}",
             step + 1,
-            doc.steps()[step].describe()
+            crate::names::step(&doc.steps()[step])
         ))
     };
     // Run full passes here so a failing step is reported by number. A last

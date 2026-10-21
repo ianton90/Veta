@@ -434,7 +434,10 @@ fn cell_edit_steps_expand_to_list_their_edits() {
     }
     let doc = app.workbook.get(id).unwrap();
     assert_eq!(doc.steps().len(), 1, "edits share one step");
-    assert_eq!(doc.steps()[0].describe(), "Edited 2 cells");
+    assert_eq!(
+        crate::i18n::model::step_name(&doc.steps()[0]),
+        "Edited 2 cells"
+    );
 
     let _ = app.update(Message::ToggleStep(id, 0));
     assert!(app.tabs[0].expanded_steps.contains(&0));

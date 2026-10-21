@@ -3,33 +3,20 @@
 use super::*;
 
 /// Plans one of this area's commands (see `super::plan`).
-pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)> {
+pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
     match command {
         Command::AddColumn {
             name,
             data_type,
             at,
-        } => Ok((
-            format!("Add column {name}"),
-            Change::PushStep(Step::AddColumn {
-                name,
-                data_type,
-                at,
-            }),
-        )),
-        Command::RemoveColumns { names } => {
-            let label = match names.as_slice() {
-                [one] => format!("Remove column {one}"),
-                _ => format!("Remove {} columns", names.len()),
-            };
-            Ok((label, Change::PushStep(Step::RemoveColumns { names })))
-        }
-        Command::KeepColumns { names } => {
-            let step = Step::KeepColumns { names };
-            Ok((step.describe(), Change::PushStep(step)))
-        }
+        } => Ok(Change::PushStep(Step::AddColumn {
+            name,
+            data_type,
+            at,
+        })),
+        Command::RemoveColumns { names } => Ok(Change::PushStep(Step::RemoveColumns { names })),
+        Command::KeepColumns { names } => Ok(Change::PushStep(Step::KeepColumns { names })),
         Command::RenameColumn { from, to } => {
-            let label = format!("Rename {from} to {to}");
             let step = Change::PushStep(Step::RenameColumn {
                 from: from.clone(),
                 to: to.clone(),
@@ -72,29 +59,22 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<(String, Change)>
             } else {
                 Change::Batch(changes)
             };
-            Ok((label, change))
+            Ok(change)
         }
-        Command::MoveColumn { name, to } => Ok((
-            format!("Move column {name}"),
-            Change::PushStep(Step::MoveColumn { name, to }),
-        )),
+        Command::MoveColumn { name, to } => Ok(Change::PushStep(Step::MoveColumn { name, to })),
         Command::AddField {
             column,
             path,
             name,
             data_type,
-        } => {
-            let step = Step::AddField {
-                column,
-                path,
-                name,
-                data_type,
-            };
-            Ok((step.describe(), Change::PushStep(step)))
-        }
+        } => Ok(Change::PushStep(Step::AddField {
+            column,
+            path,
+            name,
+            data_type,
+        })),
         Command::RemoveField { column, path, name } => {
-            let step = Step::RemoveField { column, path, name };
-            Ok((step.describe(), Change::PushStep(step)))
+            Ok(Change::PushStep(Step::RemoveField { column, path, name }))
         }
         other => Err(invalid(format!("not a {} command: {other:?}", "columns"))),
     }

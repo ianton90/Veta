@@ -66,7 +66,6 @@ fn recipe_from_one_file_applies_to_another() {
     run(&mut doc, steps());
     let info = RecipeInfo {
         name: "tidy".into(),
-        description: "rename, add, filter, sort".into(),
         source_file: Some("mixed.parquet".into()),
     };
     let recipe_path = dir.join("tidy.json");

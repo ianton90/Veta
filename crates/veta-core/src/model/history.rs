@@ -137,7 +137,6 @@ fn last_edits(doc: &mut Document) -> Result<&mut CellEdits> {
 
 #[derive(Debug, Clone)]
 struct Entry {
-    label: String,
     change: Change,
 }
 
@@ -164,13 +163,13 @@ impl History {
         Self::default()
     }
 
-    pub(crate) fn record(&mut self, label: String, change: Change) {
+    pub(crate) fn record(&mut self, change: Change) {
         if self.saved.is_some_and(|s| s > self.undo.len()) {
             // The saved state was in the redo stack we are discarding.
             self.saved = None;
         }
         self.redo.clear();
-        self.undo.push(Entry { label, change });
+        self.undo.push(Entry { change });
     }
 
     /// Adds `change` to the last recorded entry, so they undo together.
@@ -184,23 +183,20 @@ impl History {
                 let previous = std::mem::replace(&mut entry.change, Change::Batch(Vec::new()));
                 entry.change = Change::Batch(vec![previous, change]);
             }
-            None => self.undo.push(Entry {
-                label: String::new(),
-                change,
-            }),
+            None => self.undo.push(Entry { change }),
         }
     }
 
-    pub(crate) fn pop_undo(&mut self) -> Option<(String, Change)> {
+    pub(crate) fn pop_undo(&mut self) -> Option<Change> {
         let entry = self.undo.pop()?;
-        let result = (entry.label.clone(), entry.change.clone());
+        let result = entry.change.clone();
         self.redo.push(entry);
         Some(result)
     }
 
-    pub(crate) fn pop_redo(&mut self) -> Option<(String, Change)> {
+    pub(crate) fn pop_redo(&mut self) -> Option<Change> {
         let entry = self.redo.pop()?;
-        let result = (entry.label.clone(), entry.change.clone());
+        let result = entry.change.clone();
         self.undo.push(entry);
         Some(result)
     }
@@ -220,16 +216,6 @@ impl History {
     /// Whether the document differs from what was last saved (or opened).
     pub fn is_modified(&self) -> bool {
         self.saved != Some(self.undo.len())
-    }
-
-    /// Label of the change that undo would revert.
-    pub fn undo_label(&self) -> Option<&str> {
-        self.undo.last().map(|e| e.label.as_str())
-    }
-
-    /// Label of the change that redo would re-apply.
-    pub fn redo_label(&self) -> Option<&str> {
-        self.redo.last().map(|e| e.label.as_str())
     }
 
     pub fn can_undo(&self) -> bool {

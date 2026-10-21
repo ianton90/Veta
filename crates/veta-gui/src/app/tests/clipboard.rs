@@ -66,7 +66,7 @@ fn cut_and_paste() {
     assert_eq!(cell(&app, 1, "name").as_deref(), Some("y"));
     assert_eq!(cell(&app, 1, "score"), None);
     let doc = app.workbook.get(id).unwrap();
-    assert_eq!(doc.history().undo_label(), Some("Paste 4 cells"));
+    assert!(doc.history().can_undo());
 
     // Cut clears the cell.
     let _ = app.update(Message::Action(Action::Cut));

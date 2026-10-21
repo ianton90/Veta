@@ -196,7 +196,6 @@ fn nulls_first_per_key() {
             nulls_first: true,
         }],
     };
-    assert_eq!(sort.describe(), "Sorted by score descending, nulls first");
     let sorted = sort_in_memory(&sort, &batch.schema(), 100, &read, 64, &mut |_| true).unwrap();
     let scores = ints(&sorted, "score");
     let nulls = scores.iter().filter(|s| s.is_none()).count();
@@ -243,14 +242,10 @@ fn external_sort_can_be_cancelled() {
 }
 
 #[test]
-fn validation_and_description() {
+fn validation() {
     let schema = input(1).schema();
     let sort = &sorts()[1];
     assert!(sort.validate(&schema).is_ok());
-    assert_eq!(
-        sort.describe(),
-        "Sorted by group ascending, then score descending"
-    );
     assert!(Sort { keys: vec![] }.validate(&schema).is_err());
     assert!(
         Sort {

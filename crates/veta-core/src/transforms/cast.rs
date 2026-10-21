@@ -71,10 +71,6 @@ pub struct CastPreview {
 }
 
 impl Cast {
-    pub fn describe(&self) -> String {
-        format!("Changed {} to {}", self.column, type_name(&self.to))
-    }
-
     /// Name of the extra column holding values that failed to convert.
     pub fn error_column(&self) -> String {
         format!("{} errors", self.column)

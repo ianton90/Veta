@@ -8,7 +8,6 @@ use crate::command::Command;
 use crate::history::Change;
 use crate::steps::{Step, normalize_ranges};
 
-use super::rows_label;
 use crate::error::{Error, Result};
 
 /// Where rows go, or which rows are meant.
@@ -114,19 +113,12 @@ pub fn keep_only(keep: &[Range<usize>], num_rows: usize) -> Vec<Range<usize>> {
 }
 
 /// Plans one of this area's commands (see `super::plan`).
-pub(super) fn plan(command: Command) -> Result<(String, Change)> {
+pub(super) fn plan(command: Command) -> Result<Change> {
     match command {
-        Command::InsertRows { at, count } => Ok((
-            format!("Insert {}", rows_label(count)),
-            Change::PushStep(Step::InsertRows { at, count }),
-        )),
+        Command::InsertRows { at, count } => Ok(Change::PushStep(Step::InsertRows { at, count })),
         Command::DeleteRows { rows: ranges } => {
             let ranges = normalize_ranges(ranges);
-            let count = ranges.iter().map(|r| r.len()).sum();
-            Ok((
-                format!("Delete {}", rows_label(count)),
-                Change::PushStep(Step::DeleteRows { rows: ranges }),
-            ))
+            Ok(Change::PushStep(Step::DeleteRows { rows: ranges }))
         }
         other => Err(invalid(format!("not a {} command: {other:?}", "rows"))),
     }
