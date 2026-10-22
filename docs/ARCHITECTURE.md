@@ -105,6 +105,7 @@ veta-gui/src/
   platform/              native file dialogs, single instance, system
                          language, icon font
   ribbon.rs              the ribbon and its Actions
+  fonts.rs               interface font and size, text widgets that use them
   i18n/                  translations: mod.rs (tag → language → text, tr),
                          model.rs (step names, option labels, summaries),
                          errors.rs (core errors through ERR_ tags)
@@ -297,6 +298,10 @@ undone one edit at a time.
   A paste is one undo step and adds rows if needed.
 - Themes: TOML files with font family/size, palette and light/dark flag,
   converted to an iced `Theme` plus Veta's own style tokens.
+- Fonts apply live: text widgets come from `fonts.rs`, which `App::view`
+  sets each frame. The table has its own text size (Settings; the
+  interface's by default) times the zoom (View → Zoom, Ctrl+wheel), which
+  scales row heights and column widths.
 
 ## Single instance
 

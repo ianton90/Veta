@@ -46,8 +46,7 @@ use crate::settings::{config, theme};
 use crate::{dialogs, grid, panes, ribbon, settings};
 use iced::widget::{center, container, mouse_area, opaque, pin, row, rule, stack};
 use iced::{
-    Color, Element, Font, Length, Pixels, Size, Subscription, Task, Theme, event, font, keyboard,
-    window,
+    Color, Element, Font, Length, Pixels, Size, Subscription, Task, Theme, event, keyboard, window,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -168,23 +167,17 @@ impl Startup {
         }
     }
 
-    /// Font and text size for the session. The OS mode is unknown this early,
-    /// so "follow system" uses the light theme's font.
+    /// iced's default font and text size, for the first frame (the app sets
+    /// its own on every frame, see `crate::fonts`). The OS mode is unknown
+    /// this early, so "follow system" uses the light theme's font.
     fn font(&self) -> (Font, f32) {
         let theme = pick_theme(&self.themes, &self.config, None);
-        let family = self
-            .config
-            .appearance
-            .font_family
-            .clone()
-            .or_else(|| theme.font_family.clone());
-        let size = self.config.appearance.font_size.unwrap_or(theme.font_size);
-        let font = match family {
-            // iced needs a 'static name; this runs once per process.
-            Some(name) => Font::with_name(Box::leak(name.into_boxed_str())),
-            None => Font::DEFAULT,
-        };
-        (font, size)
+        let a = &self.config.appearance;
+        let family = a.font_family.as_deref().or(theme.font_family.as_deref());
+        (
+            crate::fonts::named(family),
+            a.font_size.unwrap_or(theme.font_size),
+        )
     }
 }
 
@@ -206,16 +199,13 @@ pub(crate) fn pick_theme<'a>(
         .unwrap_or(&themes[0])
 }
 
+/// The interface font in bold.
 pub(crate) fn bold() -> Font {
-    Font {
-        weight: font::Weight::Bold,
-        ..Font::DEFAULT
-    }
+    crate::fonts::bold()
 }
 
 impl App {
     fn new(startup: Startup, files: Vec<PathBuf>) -> (Self, Task<Message>) {
-        let (_, text_size) = startup.font();
         let mut app = Self {
             queued_files: Vec::new(),
             window_size: Size::new(1280.0, 800.0),
@@ -233,7 +223,6 @@ impl App {
             themes: startup.themes,
             themes_dir: startup.themes_dir,
             system_mode: None,
-            text_size,
             edit: None,
             flash: None,
             menu: None,
@@ -274,7 +263,37 @@ impl App {
     fn ui(&self) -> Ui {
         Ui {
             tokens: self.current_theme().tokens,
-            size: self.text_size,
+            size: self.interface_font().1,
+        }
+    }
+
+    /// The interface font and text size: the settings', else the theme's.
+    pub(crate) fn interface_font(&self) -> (Font, f32) {
+        let theme = self.current_theme();
+        let a = &self.config.appearance;
+        let family = a.font_family.as_deref().or(theme.font_family.as_deref());
+        (
+            crate::fonts::named(family),
+            a.font_size.unwrap_or(theme.font_size),
+        )
+    }
+
+    /// The table's text size: its own setting (else the interface's),
+    /// zoomed.
+    pub(crate) fn table_text_size(&self) -> f32 {
+        let a = &self.config.appearance;
+        let base = a.table_font_size.unwrap_or(self.interface_font().1);
+        base * f32::from(a.zoom) / 100.0
+    }
+
+    /// Gives every table the current text size (after a font, theme or
+    /// zoom change).
+    pub(crate) fn apply_table_size(&mut self) {
+        let size = self.table_text_size();
+        for tab in &mut self.tabs {
+            if let Some(doc) = self.workbook.get(tab.id) {
+                tab.grid.set_text_size(size, doc);
+            }
         }
     }
 
@@ -466,6 +485,7 @@ impl App {
                 }
             }
             Message::Grid(id, event) => match event {
+                GridEvent::Zoom(steps) => self.zoom_by(steps),
                 GridEvent::StartEdit { initial } => return self.start_edit(id, initial),
                 GridEvent::EditMove(nav) => {
                     if self.commit_edit() {
@@ -566,6 +586,7 @@ impl App {
                             let changed = language != self.config.language();
                             self.config = *config;
                             self.config.apply_memory_budget();
+                            self.apply_table_size();
                             self.save_config();
                             self.dialog = None;
                             if changed {
@@ -594,6 +615,8 @@ impl App {
                     iced::theme::Mode::Dark => Some(Mode::Dark),
                     iced::theme::Mode::None => None,
                 };
+                // The theme's font size may differ.
+                self.apply_table_size();
             }
         }
         Task::none()

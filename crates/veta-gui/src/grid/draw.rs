@@ -25,10 +25,7 @@ impl<Message> Grid<'_, Message> {
         let line = t.border;
         let header_bg = t.grid_header;
         let stripe = t.grid_stripe;
-        let bold = Font {
-            weight: font::Weight::Bold,
-            ..Font::DEFAULT
-        };
+        let bold = crate::fonts::bold();
 
         fill(renderer, regions.bounds, t.background);
 
@@ -120,7 +117,7 @@ impl<Message> Grid<'_, Message> {
                     text_cell,
                     numeric,
                     m.text_size,
-                    Font::DEFAULT,
+                    crate::fonts::font(),
                     color,
                     clip,
                 );
@@ -160,7 +157,7 @@ impl<Message> Grid<'_, Message> {
                                 at(offset),
                                 false,
                                 size,
-                                Font::DEFAULT,
+                                crate::fonts::font(),
                                 muted,
                                 clip,
                             );
@@ -195,7 +192,7 @@ impl<Message> Grid<'_, Message> {
                                 at(label + label_width(m, &line.label)),
                                 false,
                                 m.text_size,
-                                Font::DEFAULT,
+                                crate::fonts::font(),
                                 color,
                                 clip,
                             );
@@ -355,7 +352,7 @@ impl<Message> Grid<'_, Message> {
                     type_cell,
                     false,
                     m.type_text_size,
-                    Font::DEFAULT,
+                    crate::fonts::font(),
                     muted,
                     clip,
                 );
@@ -395,7 +392,7 @@ impl<Message> Grid<'_, Message> {
             let (font, color) = if highlighted.contains(&row) {
                 (bold, t.selection)
             } else {
-                (Font::DEFAULT, muted)
+                (crate::fonts::font(), muted)
             };
             draw_text(
                 renderer,
@@ -488,7 +485,7 @@ impl<Message> Grid<'_, Message> {
                 regions.body,
                 false,
                 m.text_size,
-                Font::DEFAULT,
+                crate::fonts::font(),
                 muted,
                 regions.body,
             );

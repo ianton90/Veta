@@ -75,6 +75,9 @@ pub enum Icon {
     RecipeSave,
     Group,
     ListCollapse,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
 }
 
 impl Icon {
@@ -140,6 +143,9 @@ impl Icon {
             Icon::RecipeSave => 0xe0c8,      // file-output
             Icon::Group => 0xe464,           // group
             Icon::ListCollapse => 0xe59b,    // list-collapse
+            Icon::ZoomIn => 0xe1b6,          // zoom-in
+            Icon::ZoomOut => 0xe1b7,         // zoom-out
+            Icon::ZoomReset => 0xe151,       // search
         };
         char::from_u32(code).unwrap_or('?')
     }

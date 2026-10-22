@@ -21,7 +21,6 @@ use iced::keyboard::{self, key::Named};
 use iced::mouse::{self, ScrollDelta};
 use iced::{
     Border, Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Renderer, Size, Theme,
-    font,
 };
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -90,6 +89,9 @@ impl Metrics {
 /// Input from the grid widget.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GridEvent {
+    /// Ctrl+wheel: zoom `steps` levels in (or out, when negative); the app
+    /// changes the text size.
+    Zoom(i32),
     /// The widget's body can show `rows` full rows and is `width` wide.
     Resized {
         rows: usize,
@@ -270,6 +272,25 @@ pub struct GridView {
 pub type Target = (usize, Vec<String>);
 
 impl GridView {
+    #[cfg(test)]
+    pub fn text_size(&self) -> f32 {
+        self.metrics.text_size
+    }
+
+    /// Changes the text size (zoom or font settings), scaling column widths
+    /// with it.
+    pub fn set_text_size(&mut self, text_size: f32, document: &Document) {
+        let ratio = text_size / self.metrics.text_size;
+        if (ratio - 1.0).abs() < f32::EPSILON {
+            return;
+        }
+        self.metrics = Metrics::new(text_size);
+        for column in &mut self.columns {
+            column.width = (column.width * ratio).round();
+        }
+        self.refresh(document);
+    }
+
     pub fn new(document: &Document, text_size: f32) -> Self {
         let schema = document
             .schema_at(document.evaluated_steps())
@@ -472,6 +493,7 @@ impl GridView {
 
     pub fn apply(&mut self, event: GridEvent, document: &Document) {
         match event {
+            GridEvent::Zoom(_) => {}
             GridEvent::Resized { rows, width } => {
                 self.visible_rows = rows.max(1);
                 self.body_width = width;

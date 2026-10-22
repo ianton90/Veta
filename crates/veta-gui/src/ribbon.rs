@@ -6,7 +6,8 @@
 //! Commands that are not built yet are shown disabled, with the issue that
 //! tracks them in the tooltip.
 
-use iced::widget::{Space, button, column, container, row, rule, text, tooltip};
+use crate::fonts::text;
+use iced::widget::{Space, button, column, container, row, rule, tooltip};
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 
 use crate::i18n::tr;
@@ -66,6 +67,9 @@ pub enum Action {
     FileMetadata,
     WriterSettings,
     Mode(ModePreference),
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
     Settings,
     About,
 }
@@ -494,6 +498,14 @@ fn groups(tab: Tab) -> Vec<Group> {
                         "ST_RIBBON_BTN_FOLLOW_SYSTEM",
                         Icon::Monitor,
                     ),
+                ],
+            ),
+            group(
+                "ST_RIBBON_GROUP_ZOOM",
+                vec![
+                    small(A::ZoomIn, "ST_RIBBON_BTN_ZOOM_IN", Icon::ZoomIn),
+                    small(A::ZoomOut, "ST_RIBBON_BTN_ZOOM_OUT", Icon::ZoomOut),
+                    small(A::ZoomReset, "ST_RIBBON_BTN_ZOOM_RESET", Icon::ZoomReset),
                 ],
             ),
             group(

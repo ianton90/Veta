@@ -2,12 +2,11 @@
 //! Larger parts have their own file; small ones (errors, empty state, tab
 //! bar, filter bar, progress) are here.
 
+use crate::fonts::{text, text_input};
 use std::path::PathBuf;
 
 use crate::i18n::{tr, tr_with};
-use iced::widget::{
-    button, center, column, container, progress_bar, row, rule, scrollable, text, text_input,
-};
+use iced::widget::{button, center, column, container, progress_bar, row, rule, scrollable};
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 use veta_core::{Document, DocumentId, SourceMode};
 use veta_fmt::{abbreviate, human_bytes};

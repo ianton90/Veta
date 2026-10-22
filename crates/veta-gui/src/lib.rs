@@ -7,6 +7,7 @@
 
 mod app;
 mod dialogs;
+mod fonts;
 mod grid;
 pub mod i18n;
 mod panes;

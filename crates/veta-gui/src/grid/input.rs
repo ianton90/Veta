@@ -245,6 +245,20 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 if !cursor.is_over(regions.bounds) {
                     return;
                 }
+                if state.modifiers.command() {
+                    let up = match *delta {
+                        ScrollDelta::Lines { y, .. } | ScrollDelta::Pixels { y, .. } => y,
+                    };
+                    if up != 0.0 {
+                        shell.publish((self.on_event)(GridEvent::Zoom(if up > 0.0 {
+                            1
+                        } else {
+                            -1
+                        })));
+                    }
+                    shell.capture_event();
+                    return;
+                }
                 let (dx, dy) = match *delta {
                     ScrollDelta::Lines { x, y } => {
                         (x * 40.0, y * WHEEL_LINES * regions.m.row_height)

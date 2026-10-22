@@ -691,7 +691,7 @@ impl App {
     }
 
     fn add_tab(&mut self, document: Document) {
-        let mut grid = GridView::new(&document, self.text_size);
+        let mut grid = GridView::new(&document, self.table_text_size());
         // Start on the first cell, at the top left.
         grid.apply(GridEvent::Select { row: 0, column: 0 }, &document);
         // Paged files can be slow to read: scroll without waiting.

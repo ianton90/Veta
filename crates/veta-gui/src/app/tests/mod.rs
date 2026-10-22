@@ -109,6 +109,46 @@ fn settings_dialog_saves_config() {
 }
 
 #[test]
+fn zoom_and_table_font_size() {
+    use super::actions::{ZOOM_LEVELS, zoom_step};
+    assert_eq!(zoom_step(100, 1), 110);
+    assert_eq!(zoom_step(100, -2), 80);
+    assert_eq!(zoom_step(300, 1), 300, "stops at the last level");
+    assert_eq!(zoom_step(50, -1), 50);
+    assert_eq!(zoom_step(105, -1), 100, "off-level zooms snap to a level");
+    assert_eq!(ZOOM_LEVELS.len(), 13);
+
+    let dir = TempDir::new();
+    let path = dir.join("m.parquet");
+    fixtures::mixed_settings(&path);
+    let mut app = app_with(&[&path]);
+    let interface = app.interface_font().1;
+    let size = |app: &App| app.tabs[0].grid.text_size();
+    assert_eq!(size(&app), interface);
+    let _ = app.update(Message::Action(Action::ZoomIn));
+    assert_eq!(app.config.appearance.zoom, 110);
+    assert!((size(&app) - interface * 1.1).abs() < 1e-4);
+    // Ctrl+wheel over the table zooms too.
+    let id = app.tabs[0].id;
+    let _ = app.update(Message::Grid(id, GridEvent::Zoom(-2)));
+    assert_eq!(app.config.appearance.zoom, 90);
+    let _ = app.update(Message::Action(Action::ZoomReset));
+    assert_eq!(size(&app), interface);
+
+    // The table has its own size; the interface keeps its own.
+    let _ = app.update(Message::Action(Action::Settings));
+    let _ = app.update(Message::Settings(SettingsMessage::TableFontSize(
+        "20".into(),
+    )));
+    let _ = app.update(Message::Settings(SettingsMessage::Save));
+    assert_eq!(app.config.appearance.table_font_size, Some(20.0));
+    assert_eq!(size(&app), 20.0);
+    assert_eq!(app.interface_font().1, interface);
+    let _ = app.update(Message::Action(Action::ZoomOut));
+    assert!((size(&app) - 18.0).abs() < 1e-4);
+}
+
+#[test]
 fn menu_sections_follow_the_target() {
     use veta_core::arrow::datatypes::{DataType, Field, Fields};
     let titles = |target, column_type: Option<&DataType>| -> Vec<&str> {

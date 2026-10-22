@@ -3,12 +3,11 @@
 //! settings, metadata, CSV import / export and confirmations. This file
 //! holds the widgets they share.
 
+use crate::fonts::{checkbox, pick_list, text, text_input};
 use crate::i18n::errors::error_text;
 use crate::i18n::model::Labeled;
 use crate::i18n::{tr, tr_with};
-use iced::widget::{
-    Space, button, checkbox, container, pick_list, row, scrollable, text, text_input,
-};
+use iced::widget::{Space, button, container, row, scrollable};
 use iced::{Alignment, Border, Element, Length, Theme};
 use veta_core::arrow::array::ArrayRef;
 use veta_core::arrow::datatypes::SchemaRef;

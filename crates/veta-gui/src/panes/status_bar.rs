@@ -7,6 +7,7 @@ pub fn status_bar(
     opening: usize,
     transfers: &[crate::app::Transfer],
     notice: Option<&str>,
+    zoom: u16,
     ui: Ui,
 ) -> Element<'static, Message> {
     let mut parts: Vec<String> = Vec::new();
@@ -46,6 +47,9 @@ pub fn status_bar(
         if let Some(e) = tab.grid.error() {
             parts.push(tr_with("ST_STATUS_READ_ERROR", &[("error", &e)]));
         }
+    }
+    if zoom != 100 {
+        parts.push(tr_with("ST_STATUS_ZOOM", &[("n", &zoom)]));
     }
     if opening > 0 {
         parts.push(tr_with("ST_STATUS_OPENING", &[("n", &opening)]));

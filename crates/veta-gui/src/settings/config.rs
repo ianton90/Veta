@@ -87,10 +87,14 @@ pub struct Appearance {
     pub light_theme: String,
     /// Theme used in dark mode, by name.
     pub dark_theme: String,
-    /// Overrides the theme's font family. Applied on restart.
+    /// Overrides the theme's font family.
     pub font_family: Option<String>,
-    /// Overrides the theme's font size. Applied on restart.
+    /// Overrides the theme's font size, for the interface.
     pub font_size: Option<f32>,
+    /// Text size of the table; `None` is the interface's.
+    pub table_font_size: Option<f32>,
+    /// Zoom of the table, in percent (View → Zoom).
+    pub zoom: u16,
     /// Language of the app, by locale (`es-ES`); `None` follows the system.
     pub language: Option<String>,
 }
@@ -143,6 +147,8 @@ impl Default for Appearance {
             dark_theme: theme::DEFAULT_DARK.into(),
             font_family: None,
             font_size: None,
+            table_font_size: None,
+            zoom: 100,
             language: None,
         }
     }

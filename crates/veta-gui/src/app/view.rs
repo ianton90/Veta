@@ -34,6 +34,9 @@ pub(crate) fn divider<'a>(tokens: Tokens, vertical: bool) -> Element<'a, Message
 
 impl App {
     pub(crate) fn view(&self) -> Element<'_, Message> {
+        // Text widgets read the interface font from here (`crate::fonts`).
+        let (font, size) = self.interface_font();
+        crate::fonts::set(font, size);
         let ui = self.ui();
         let main: Element<'_, Message> = match self.active_document() {
             Some((tab, doc)) => {
@@ -50,7 +53,7 @@ impl App {
                 // Refused input: the editor turns red and fades back.
                 let flash = self.flash.map_or(0.0, |(_, level)| level);
                 let editor = editor.map(|e| {
-                    iced::widget::text_input("", &e.text)
+                    crate::fonts::text_input("", &e.text)
                         .id(EDITOR_ID)
                         .on_input(Message::EditInput)
                         .on_submit(Message::CommitEdit)
@@ -188,6 +191,7 @@ impl App {
                     .count(),
                 &self.transfers,
                 self.notice.as_deref(),
+                self.config.appearance.zoom,
                 ui
             ),
         ];
@@ -198,7 +202,7 @@ impl App {
                 window,
                 opaque(
                     center(
-                        container(iced::widget::text(tr("ST_MSG_SAVING")).size(ui.heading()))
+                        container(crate::fonts::text(tr("ST_MSG_SAVING")).size(ui.heading()))
                             .padding(24)
                             .style(move |_theme: &Theme| {
                                 container::Style::default()

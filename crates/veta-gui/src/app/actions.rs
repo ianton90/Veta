@@ -3,6 +3,25 @@
 
 use super::*;
 
+/// Zoom levels of the table, in percent.
+pub(crate) const ZOOM_LEVELS: [u16; 13] =
+    [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300];
+
+/// The zoom level `steps` levels from `zoom` (in or, when negative, out),
+/// within the levels.
+pub(crate) fn zoom_step(zoom: u16, steps: i32) -> u16 {
+    let mut zoom = zoom;
+    for _ in 0..steps.unsigned_abs() {
+        zoom = if steps > 0 {
+            ZOOM_LEVELS.iter().copied().find(|&z| z > zoom)
+        } else {
+            ZOOM_LEVELS.iter().rev().copied().find(|&z| z < zoom)
+        }
+        .unwrap_or(zoom);
+    }
+    zoom
+}
+
 impl App {
     pub(crate) fn perform(&mut self, action: Action) -> Task<Message> {
         let changes_data = matches!(
@@ -97,10 +116,27 @@ impl App {
             Action::Mode(mode) => {
                 self.config.appearance.mode = mode;
                 self.save_config();
+                self.apply_table_size();
             }
+            Action::ZoomIn => self.zoom_by(1),
+            Action::ZoomOut => self.zoom_by(-1),
+            Action::ZoomReset => self.set_zoom(100),
             Action::Settings => self.dialog = Some(Dialog::Settings(Draft::new(&self.config))),
             Action::About => self.dialog = Some(Dialog::About),
         }
         Task::none()
+    }
+
+    /// Zooms the table `steps` levels in (or out, when negative).
+    pub(crate) fn zoom_by(&mut self, steps: i32) {
+        self.set_zoom(zoom_step(self.config.appearance.zoom, steps));
+    }
+
+    pub(crate) fn set_zoom(&mut self, zoom: u16) {
+        if zoom != self.config.appearance.zoom {
+            self.config.appearance.zoom = zoom;
+            self.save_config();
+            self.apply_table_size();
+        }
     }
 }

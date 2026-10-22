@@ -3,10 +3,11 @@
 pub mod config;
 pub mod theme;
 
+use crate::fonts::{checkbox, pick_list, text, text_input};
 use std::path::Path;
 
 use crate::i18n::{Translations, tr, tr_with};
-use iced::widget::{button, checkbox, column, pick_list, row, text, text_input};
+use iced::widget::{button, column, row};
 use iced::{Alignment, Element, Length};
 use veta_core::{Compression, FormatVersion, StatisticsLevel, WriterSettings};
 
@@ -23,6 +24,7 @@ pub struct Draft {
     dark_theme: String,
     font_family: String,
     font_size: String,
+    table_font_size: String,
     memory_mib: String,
     /// Shown when `memory_mib` is empty: the default budget.
     memory_placeholder: String,
@@ -40,6 +42,7 @@ pub enum SettingsMessage {
     DarkTheme(String),
     FontFamily(String),
     FontSize(String),
+    TableFontSize(String),
     Memory(String),
     Compression(Compression),
     Level(Level),
@@ -98,6 +101,7 @@ impl Draft {
             dark_theme: a.dark_theme.clone(),
             font_family: a.font_family.clone().unwrap_or_default(),
             font_size: a.font_size.map(|s| s.to_string()).unwrap_or_default(),
+            table_font_size: a.table_font_size.map(|s| s.to_string()).unwrap_or_default(),
             memory_placeholder: tr_with(
                 "ST_SETTINGS_MEMORY_AUTOMATIC",
                 &[(
@@ -124,6 +128,7 @@ impl Draft {
             SettingsMessage::DarkTheme(name) => self.dark_theme = name,
             SettingsMessage::FontFamily(family) => self.font_family = family,
             SettingsMessage::FontSize(size) => self.font_size = size,
+            SettingsMessage::TableFontSize(size) => self.table_font_size = size,
             SettingsMessage::Memory(mib) => self.memory_mib = mib,
             SettingsMessage::Compression(c) => {
                 let d = &mut self.new_files.default_column;
@@ -151,18 +156,8 @@ impl Draft {
     }
 
     fn apply(&self, config: &Config) -> Result<Config, String> {
-        let font_size = match self.font_size.trim() {
-            "" => None,
-            s => {
-                let size: f32 = s
-                    .parse()
-                    .map_err(|_| tr_with("ST_SETTINGS_FONT_SIZE_NOT_NUMBER", &[("value", &s)]))?;
-                if !(6.0..=48.0).contains(&size) {
-                    return Err(tr("ST_SETTINGS_FONT_SIZE_RANGE"));
-                }
-                Some(size)
-            }
-        };
+        let table_font_size = parse_font_size(&self.table_font_size)?;
+        let font_size = parse_font_size(&self.font_size)?;
         // Empty: the default, half of RAM.
         let memory = match self.memory_mib.trim() {
             "" => None,
@@ -191,6 +186,7 @@ impl Draft {
         a.dark_theme = self.dark_theme.clone();
         a.font_family = Some(self.font_family.trim().to_owned()).filter(|f| !f.is_empty());
         a.font_size = font_size;
+        a.table_font_size = table_font_size;
         config.data.memory_budget_mib = memory;
         config.new_files = NewFiles::from_settings(&new_files);
         Ok(config)
@@ -269,7 +265,14 @@ pub fn view<'a>(
                 .width(220)
                 .into()
         ),
-        note(tr("ST_SETTINGS_FONT_RESTART")),
+        field_row(
+            tr("ST_SETTINGS_TABLE_FONT_SIZE"),
+            text_input(&tr("ST_SETTINGS_TABLE_SAME"), &draft.table_font_size)
+                .on_input(SettingsMessage::TableFontSize)
+                .width(220)
+                .into()
+        ),
+        note(tr("ST_SETTINGS_ZOOM_NOTE")),
         note(match themes_dir {
             Some(dir) => tr_with("ST_SETTINGS_THEMES_DIR", &[("dir", &dir.display())]),
             None => tr("ST_SETTINGS_THEMES_NO_DIR"),
@@ -388,6 +391,22 @@ pub fn about<'a, Message: Clone + 'a>(close: Message, tokens: Tokens) -> Element
     ]
     .spacing(12);
     card(body.into(), tokens, 380.0)
+}
+
+/// A font size typed in Settings: empty for the default, else 6 to 48.
+fn parse_font_size(text: &str) -> Result<Option<f32>, String> {
+    match text.trim() {
+        "" => Ok(None),
+        s => {
+            let size: f32 = s
+                .parse()
+                .map_err(|_| tr_with("ST_SETTINGS_FONT_SIZE_NOT_NUMBER", &[("value", &s)]))?;
+            if !(6.0..=48.0).contains(&size) {
+                return Err(tr("ST_SETTINGS_FONT_SIZE_RANGE"));
+            }
+            Ok(Some(size))
+        }
+    }
 }
 
 fn section<'a, Message: 'a>(title: String) -> Element<'a, Message> {

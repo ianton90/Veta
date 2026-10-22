@@ -55,7 +55,6 @@ pub(crate) struct App {
     pub(crate) themes_dir: Option<PathBuf>,
     /// OS light/dark mode, once known.
     pub(crate) system_mode: Option<Mode>,
-    pub(crate) text_size: f32,
     /// Cell being edited in the formula bar.
     pub(crate) edit: Option<Edit>,
     /// The cell editor flashes after refused input: when it started, and
