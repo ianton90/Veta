@@ -203,3 +203,20 @@ fn step_dialog<D: 'static>(app: &App) -> Option<&D> {
         _ => None,
     }
 }
+
+#[test]
+fn missing_font_message_clears_once_fixed() {
+    use crate::settings::FontChoice;
+    let mut app = app();
+    app.config.appearance.font_family = Some("No Such Font 123".into());
+    let message = missing_font(&app.config, app.current_theme()).unwrap();
+    assert!(message.contains("No Such Font 123"));
+    app.errors.push(message);
+    let _ = app.update(Message::Action(Action::Settings));
+    let _ = app.update(Message::Settings(SettingsMessage::FontFamily(
+        FontChoice::Theme,
+    )));
+    let _ = app.update(Message::Settings(SettingsMessage::Save));
+    assert_eq!(app.config.appearance.font_family, None);
+    assert!(app.errors.is_empty());
+}

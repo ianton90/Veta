@@ -158,6 +158,7 @@ impl Startup {
         crate::i18n::Translations::set_language(config.language());
         let (themes, mut errors) = theme::load_all(themes_dir.as_deref());
         errors.extend(config_error);
+        errors.extend(missing_font(&config, pick_theme(&themes, &config, None)));
         Self {
             config,
             config_path,
@@ -173,12 +174,28 @@ impl Startup {
     fn font(&self) -> (Font, f32) {
         let theme = pick_theme(&self.themes, &self.config, None);
         let a = &self.config.appearance;
-        let family = a.font_family.as_deref().or(theme.font_family.as_deref());
         (
-            crate::fonts::named(family),
+            crate::fonts::resolve(font_family(&self.config, theme)),
             a.font_size.unwrap_or(theme.font_size),
         )
     }
+}
+
+/// The font family the settings name, else the theme's.
+fn font_family<'a>(config: &'a Config, theme: &'a VetaTheme) -> Option<&'a str> {
+    config
+        .appearance
+        .font_family
+        .as_deref()
+        .or(theme.font_family.as_deref())
+}
+
+/// A message when the font the settings or theme name isn't installed.
+pub(crate) fn missing_font(config: &Config, theme: &VetaTheme) -> Option<String> {
+    let family = font_family(config, theme)?;
+    crate::fonts::find(family)
+        .is_none()
+        .then(|| tr_with("ST_MSG_FONT_MISSING", &[("font", &family)]))
 }
 
 /// The theme for the configured mode, falling back to the built-in one.
@@ -271,9 +288,8 @@ impl App {
     pub(crate) fn interface_font(&self) -> (Font, f32) {
         let theme = self.current_theme();
         let a = &self.config.appearance;
-        let family = a.font_family.as_deref().or(theme.font_family.as_deref());
         (
-            crate::fonts::named(family),
+            crate::fonts::resolve(font_family(&self.config, theme)),
             a.font_size.unwrap_or(theme.font_size),
         )
     }
@@ -584,7 +600,13 @@ impl App {
                         Outcome::Saved(config) => {
                             let language = config.language();
                             let changed = language != self.config.language();
+                            let missing = missing_font(&self.config, self.current_theme());
                             self.config = *config;
+                            if missing.is_some()
+                                && missing_font(&self.config, self.current_theme()).is_none()
+                            {
+                                self.errors.retain(|e| Some(e) != missing.as_ref());
+                            }
                             self.config.apply_memory_budget();
                             self.apply_table_size();
                             self.save_config();

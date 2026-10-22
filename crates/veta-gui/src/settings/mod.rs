@@ -7,7 +7,7 @@ use crate::fonts::{checkbox, pick_list, text, text_input};
 use std::path::Path;
 
 use crate::i18n::{Translations, tr, tr_with};
-use iced::widget::{button, column, row};
+use iced::widget::{button, column, combo_box, row};
 use iced::{Alignment, Element, Length};
 use veta_core::{Compression, FormatVersion, StatisticsLevel, WriterSettings};
 
@@ -16,13 +16,15 @@ use crate::settings::config::{Config, ModePreference, NewFiles};
 use crate::settings::theme::{Mode, Tokens, VetaTheme};
 
 /// Settings being edited; applied to [`Config`] on save.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Draft {
     language: Language,
     mode: ModePreference,
     light_theme: String,
     dark_theme: String,
-    font_family: String,
+    font_family: FontChoice,
+    /// The font list: the theme's, a missing saved font, the installed ones.
+    fonts: combo_box::State<FontChoice>,
     font_size: String,
     table_font_size: String,
     memory_mib: String,
@@ -40,7 +42,7 @@ pub enum SettingsMessage {
     Mode(ModePreference),
     LightTheme(String),
     DarkTheme(String),
-    FontFamily(String),
+    FontFamily(FontChoice),
     FontSize(String),
     TableFontSize(String),
     Memory(String),
@@ -52,6 +54,47 @@ pub enum SettingsMessage {
     RowGroup(String),
     Save,
     Cancel,
+}
+
+/// An entry of the font list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FontChoice {
+    /// The theme's font (the platform's when the theme names none).
+    Theme,
+    Installed(&'static str),
+    /// A saved font that isn't installed; kept until another is chosen.
+    Missing(String),
+}
+
+impl FontChoice {
+    fn of(family: Option<&str>) -> Self {
+        match family {
+            None => Self::Theme,
+            Some(f) => {
+                crate::fonts::find(f).map_or_else(|| Self::Missing(f.to_owned()), Self::Installed)
+            }
+        }
+    }
+
+    fn family(&self) -> Option<String> {
+        match self {
+            Self::Theme => None,
+            Self::Installed(f) => Some((*f).to_owned()),
+            Self::Missing(f) => Some(f.clone()),
+        }
+    }
+}
+
+impl std::fmt::Display for FontChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Theme => f.write_str(&tr("ST_SETTINGS_THEME_DEFAULT")),
+            Self::Installed(name) => f.write_str(name),
+            Self::Missing(name) => {
+                f.write_str(&tr_with("ST_SETTINGS_FONT_MISSING", &[("font", name)]))
+            }
+        }
+    }
 }
 
 /// A language in the picker: its locale, shown by its own name.
@@ -99,7 +142,20 @@ impl Draft {
             mode: a.mode,
             light_theme: a.light_theme.clone(),
             dark_theme: a.dark_theme.clone(),
-            font_family: a.font_family.clone().unwrap_or_default(),
+            font_family: FontChoice::of(a.font_family.as_deref()),
+            fonts: combo_box::State::new(
+                std::iter::once(FontChoice::Theme)
+                    .chain(match FontChoice::of(a.font_family.as_deref()) {
+                        missing @ FontChoice::Missing(_) => Some(missing),
+                        _ => None,
+                    })
+                    .chain(
+                        crate::fonts::families()
+                            .iter()
+                            .map(|f| FontChoice::Installed(f)),
+                    )
+                    .collect(),
+            ),
             font_size: a.font_size.map(|s| s.to_string()).unwrap_or_default(),
             table_font_size: a.table_font_size.map(|s| s.to_string()).unwrap_or_default(),
             memory_placeholder: tr_with(
@@ -184,7 +240,7 @@ impl Draft {
         a.mode = self.mode;
         a.light_theme = self.light_theme.clone();
         a.dark_theme = self.dark_theme.clone();
-        a.font_family = Some(self.font_family.trim().to_owned()).filter(|f| !f.is_empty());
+        a.font_family = self.font_family.family();
         a.font_size = font_size;
         a.table_font_size = table_font_size;
         config.data.memory_budget_mib = memory;
@@ -253,10 +309,16 @@ pub fn view<'a>(
         ),
         field_row(
             tr("ST_SETTINGS_FONT_FAMILY"),
-            text_input(&tr("ST_SETTINGS_THEME_DEFAULT"), &draft.font_family)
-                .on_input(SettingsMessage::FontFamily)
-                .width(220)
-                .into()
+            combo_box(
+                &draft.fonts,
+                &tr("ST_SETTINGS_FONT_SEARCH"),
+                Some(&draft.font_family),
+                SettingsMessage::FontFamily
+            )
+            .font(crate::fonts::font())
+            .size(crate::fonts::size())
+            .width(220)
+            .into()
         ),
         field_row(
             tr("ST_SETTINGS_FONT_SIZE"),
@@ -434,7 +496,7 @@ mod tests {
         draft.update(SettingsMessage::FontSize("16".into()), &config);
         draft.update(SettingsMessage::Memory("512".into()), &config);
         draft.update(SettingsMessage::Mode(ModePreference::Dark), &config);
-        draft.update(SettingsMessage::FontFamily("  ".into()), &config);
+        draft.update(SettingsMessage::FontFamily(FontChoice::Theme), &config);
         let Outcome::Saved(saved) = draft.update(SettingsMessage::Save, &config) else {
             panic!("expected save");
         };
@@ -442,6 +504,30 @@ mod tests {
         assert_eq!(saved.appearance.font_family, None);
         assert_eq!(saved.appearance.mode, ModePreference::Dark);
         assert_eq!(saved.data.memory_budget_mib, Some(512));
+    }
+
+    #[test]
+    fn missing_font_is_kept() {
+        let mut config = Config::default();
+        config.appearance.font_family = Some("No Such Font 123".into());
+        let mut draft = Draft::new(&config);
+        let missing = FontChoice::Missing("No Such Font 123".into());
+        assert_eq!(draft.font_family, missing);
+        assert_eq!(draft.fonts.options()[..2], [FontChoice::Theme, missing]);
+        let Outcome::Saved(saved) = draft.update(SettingsMessage::Save, &config) else {
+            panic!("expected save");
+        };
+        assert_eq!(saved.appearance.font_family, config.appearance.font_family);
+        if let Some(installed) = crate::fonts::families().first() {
+            draft.update(
+                SettingsMessage::FontFamily(FontChoice::Installed(installed)),
+                &config,
+            );
+            let Outcome::Saved(saved) = draft.update(SettingsMessage::Save, &config) else {
+                panic!("expected save");
+            };
+            assert_eq!(saved.appearance.font_family.as_ref(), Some(installed));
+        }
     }
 
     #[test]

@@ -121,7 +121,9 @@ impl App {
             Action::ZoomIn => self.zoom_by(1),
             Action::ZoomOut => self.zoom_by(-1),
             Action::ZoomReset => self.set_zoom(100),
-            Action::Settings => self.dialog = Some(Dialog::Settings(Draft::new(&self.config))),
+            Action::Settings => {
+                self.dialog = Some(Dialog::Settings(Box::new(Draft::new(&self.config))))
+            }
             Action::About => self.dialog = Some(Dialog::About),
         }
         Task::none()

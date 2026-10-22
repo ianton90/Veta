@@ -219,7 +219,7 @@ pub(crate) enum Dialog {
         /// Editing the step at this index instead of adding a new one.
         replace: Option<usize>,
     },
-    Settings(Draft),
+    Settings(Box<Draft>),
     About,
     Column {
         document: DocumentId,

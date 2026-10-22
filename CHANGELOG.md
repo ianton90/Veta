@@ -51,7 +51,9 @@ CSV import and export).
   Add or remove struct fields at any depth (also inside list items and
   map values); insert list items and map entries at any position.
 - Ribbon, light and dark themes (TOML), settings.
-- Font family and size apply at once; the table has its own text size,
+- Fonts are picked from the installed ones (searchable); a missing font
+  falls back to the system's interface font. Font family and size apply
+  at once; the table has its own text size,
   and View → Zoom (or Ctrl+wheel) zooms the table from 50% to 300%.
 
 **Command line (`veta-cli`)**
