@@ -343,7 +343,7 @@
   "ST_DLG_WRITER_COLUMNS": "Columns",
   "ST_DLG_WRITER_ENCODING": "Encoding",
   "ST_DLG_WRITER_LEVEL": "Level",
-  "ST_DLG_WRITER_NESTED_NOTE": "Nested columns are listed per leaf. With a dictionary, the encoding is used only if the dictionary grows too large; files record it only then, so it shows as plain after reopening.",
+  "ST_DLG_WRITER_NESTED_NOTE": "Nested columns are listed per leaf. A dictionary is used only where it fits: a column with too many different values is saved without one, and shows it off after reopening. With a dictionary, the encoding is used only if the dictionary grows too large; files record it only then, so it shows as plain after reopening.",
   "ST_DLG_WRITER_NEW_COLUMNS": "New columns",
   "ST_DLG_WRITER_NOTE": "Used when saving. Opened files keep the settings they were written with.",
   "ST_DLG_WRITER_TITLE": "Writer settings",

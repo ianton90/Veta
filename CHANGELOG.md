@@ -22,6 +22,8 @@ CSV import and export).
   (the Rows tab inserts, deletes, keeps or removes any number of rows at
   the top, bottom or a row number),
   undo/redo, and Save/Save As that keep the file's writer settings.
+- Saving leaves the dictionary out of columns with too many distinct
+  values to fit one: faster saves, slightly smaller files.
 - Writer settings (compression, encoding, dictionary, statistics, bloom
   filters, row groups) and file metadata editors.
 - Transformations recorded as applied steps: change type (with an error

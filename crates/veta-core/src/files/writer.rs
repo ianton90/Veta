@@ -7,6 +7,10 @@
 //! are encoded at once, so the threads stay busy even with few columns or
 //! one column much slower than the rest; the finished chunks are appended
 //! to the file in order.
+//!
+//! Dictionary encoding is left out of a column whose first row group has
+//! more distinct values than its dictionary page holds (#149): the column
+//! writer would build the dictionary and then drop it for plain values.
 
 use crate::error::invalid;
 use std::collections::VecDeque;
@@ -25,13 +29,13 @@ use parquet::arrow::arrow_writer::{
 use parquet::arrow::{ArrowSchemaConverter, add_encoded_arrow_schema_to_metadata};
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
+use parquet::schema::types::ColumnPath;
 
 use crate::error::{Error, Result};
 
 /// Writes record batches to a Parquet file, encoding columns in parallel.
 pub struct ParallelWriter<W: Write + Send> {
-    writer: SerializedFileWriter<W>,
-    factory: ArrowRowGroupWriterFactory,
+    file: File<W>,
     schema: SchemaRef,
     max_rows: usize,
     pool: Pool,
@@ -59,6 +63,16 @@ impl<W: Write + Send> std::fmt::Debug for ParallelWriter<W> {
     }
 }
 
+/// The file, opened once the first row group is gathered (its rows decide
+/// where dictionaries are left out).
+enum File<W: Write + Send> {
+    Waiting(Option<(W, WriterProperties)>),
+    Open {
+        writer: SerializedFileWriter<W>,
+        factory: ArrowRowGroupWriterFactory,
+    },
+}
+
 impl<W: Write + Send> ParallelWriter<W> {
     pub fn new(out: W, schema: SchemaRef, mut props: WriterProperties) -> Result<Self> {
         let parquet_schema = ArrowSchemaConverter::new()
@@ -66,13 +80,9 @@ impl<W: Write + Send> ParallelWriter<W> {
             .convert(&schema)?;
         add_encoded_arrow_schema_to_metadata(&schema, &mut props);
         let max_rows = props.max_row_group_row_count().unwrap_or(usize::MAX).max(1);
-        let writer =
-            SerializedFileWriter::new(out, parquet_schema.root_schema_ptr(), Arc::new(props))?;
-        let factory = ArrowRowGroupWriterFactory::new(&writer, schema.clone());
         let threads = crate::parallel::threads();
         Ok(Self {
-            writer,
-            factory,
+            file: File::Waiting(Some((out, props))),
             schema,
             max_rows,
             pool: Pool::spawn(threads.min(parquet_schema.num_columns()).max(1)),
@@ -106,13 +116,36 @@ impl<W: Write + Send> ParallelWriter<W> {
         Ok(())
     }
 
+    /// Opens the file, leaving dictionaries out where the gathered rows
+    /// would overflow them.
+    fn open(&mut self) -> Result<(&mut SerializedFileWriter<W>, &ArrowRowGroupWriterFactory)> {
+        if let File::Waiting(waiting) = &mut self.file {
+            let (out, props) = waiting.take().ok_or_else(failed)?;
+            let props = crate::profile::time("save: choosing dictionaries", || {
+                plan_dictionaries(props, &self.schema, &self.gathered)
+            });
+            let parquet_schema = ArrowSchemaConverter::new()
+                .with_coerce_types(props.coerce_types())
+                .convert(&self.schema)?;
+            let writer =
+                SerializedFileWriter::new(out, parquet_schema.root_schema_ptr(), Arc::new(props))?;
+            let factory = ArrowRowGroupWriterFactory::new(&writer, self.schema.clone());
+            self.file = File::Open { writer, factory };
+        }
+        match &mut self.file {
+            File::Open { writer, factory } => Ok((writer, factory)),
+            File::Waiting(_) => Err(failed()),
+        }
+    }
+
     /// Queues the gathered row group, if any, one task per leaf column, and
     /// writes out the row groups finished by then.
     fn flush(&mut self) -> Result<()> {
         if self.gathered.is_empty() {
             return Ok(());
         }
-        let writers = self.factory.create_column_writers(self.row_groups)?;
+        let row_group = self.row_groups;
+        let writers = self.open()?.1.create_column_writers(row_group)?;
         let mut leaves: Vec<Vec<ArrowLeafColumn>> = writers.iter().map(|_| Vec::new()).collect();
         for batch in self.gathered.drain(..) {
             let mut leaf = 0;
@@ -172,7 +205,7 @@ impl<W: Write + Send> ParallelWriter<W> {
             }
             let Encoding { bytes, chunks } = self.encoding.pop_front().expect("the oldest");
             self.encoding_bytes -= bytes;
-            let mut row_group = self.writer.next_row_group()?;
+            let mut row_group = self.open()?.0.next_row_group()?;
             for (_, chunk) in chunks {
                 chunk
                     .ok_or_else(failed)?
@@ -186,7 +219,10 @@ impl<W: Write + Send> ParallelWriter<W> {
     pub fn close(mut self) -> Result<()> {
         self.flush()?;
         self.write_finished(true)?;
-        self.writer.close()?;
+        self.open()?;
+        if let File::Open { writer, .. } = self.file {
+            writer.close()?;
+        }
         Ok(())
     }
 }
@@ -296,6 +332,105 @@ fn work(tasks: &Mutex<Receiver<Task>>) {
     }
 }
 
+/// `props` with the dictionary turned off for each plain top-level column
+/// whose distinct values in `rows` would outgrow its dictionary page.
+fn plan_dictionaries(
+    props: WriterProperties,
+    schema: &SchemaRef,
+    rows: &[RecordBatch],
+) -> WriterProperties {
+    let mut off = Vec::new();
+    for (i, field) in schema.fields().iter().enumerate() {
+        let path = ColumnPath::new(vec![field.name().clone()]);
+        if !props.dictionary_enabled(&path) {
+            continue;
+        }
+        let limit = props.column_dictionary_page_size_limit(&path);
+        let columns: Vec<&dyn arrow::array::Array> =
+            rows.iter().map(|b| b.column(i).as_ref()).collect();
+        if dictionary_overflows(&columns, limit) {
+            off.push(path);
+        }
+    }
+    if off.is_empty() {
+        return props;
+    }
+    let mut builder = props.into_builder();
+    for path in off {
+        builder = builder.set_column_dictionary_enabled(path, false);
+    }
+    builder.build()
+}
+
+/// Whether a dictionary of the distinct values in `columns` (one column's
+/// pieces) takes more than `limit` bytes. Only plain values (numbers, dates,
+/// strings, bytes) are looked at; for other types it says `false`.
+fn dictionary_overflows(columns: &[&dyn arrow::array::Array], limit: usize) -> bool {
+    use arrow::array::AsArray;
+    use arrow::datatypes::DataType;
+    // Numbers are read from their values buffer, kept here while `seen`
+    // borrows from it.
+    let data: Vec<arrow::array::ArrayData> = columns.iter().map(|c| c.to_data()).collect();
+    let mut seen: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
+    let mut size = 0;
+    for (column, data) in columns.iter().zip(&data) {
+        // Each distinct value adds its bytes to the dictionary: byte arrays
+        // with a 4-byte length, numbers at least 4 bytes (Parquet has no
+        // narrower integers).
+        let values: Box<dyn Iterator<Item = &[u8]>> = match column.data_type() {
+            DataType::Utf8 => Box::new(
+                column
+                    .as_string::<i32>()
+                    .iter()
+                    .flatten()
+                    .map(str::as_bytes),
+            ),
+            DataType::LargeUtf8 => Box::new(
+                column
+                    .as_string::<i64>()
+                    .iter()
+                    .flatten()
+                    .map(str::as_bytes),
+            ),
+            DataType::Utf8View => {
+                Box::new(column.as_string_view().iter().flatten().map(str::as_bytes))
+            }
+            DataType::Binary => Box::new(column.as_binary::<i32>().iter().flatten()),
+            DataType::LargeBinary => Box::new(column.as_binary::<i64>().iter().flatten()),
+            DataType::BinaryView => Box::new(column.as_binary_view().iter().flatten()),
+            DataType::FixedSizeBinary(_) => {
+                Box::new(column.as_fixed_size_binary().iter().flatten())
+            }
+            t => {
+                let Some(width) = t.primitive_width() else {
+                    return false;
+                };
+                let buffer = data.buffers()[0].as_slice();
+                let offset = data.offset();
+                Box::new(
+                    (0..data.len())
+                        .filter(|&i| data.is_valid(i))
+                        .map(move |i| &buffer[(offset + i) * width..(offset + i + 1) * width]),
+                )
+            }
+        };
+        let extra = match column.data_type() {
+            t if t.primitive_width().is_some() => 0,
+            DataType::FixedSizeBinary(_) => 0,
+            _ => 4,
+        };
+        for value in values {
+            if seen.insert(value) {
+                size += (value.len() + extra).max(4);
+                if size > limit {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,5 +523,68 @@ mod tests {
         let empty =
             ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&path).unwrap()).unwrap();
         assert_eq!(empty.metadata().file_metadata().num_rows(), 0);
+    }
+
+    #[test]
+    fn dictionaries_only_where_they_fit() {
+        use arrow::array::Array;
+        let unique = Int64Array::from_iter_values(0..1000);
+        let repeated = Int64Array::from_iter_values((0..1000).map(|i| i % 10));
+        let words = StringArray::from_iter_values((0..1000).map(|i| ["a", "b", "c"][i % 3]));
+        let names = StringArray::from_iter_values((0..1000).map(|i| format!("name-{i}")));
+        let overflows = |a: &dyn Array| dictionary_overflows(&[a], 1024);
+        assert!(overflows(&unique), "1000 × 8 bytes");
+        assert!(!overflows(&repeated));
+        assert!(!overflows(&words));
+        assert!(overflows(&names));
+        // Pieces of one column count together; nulls aren't values.
+        let half = |from: i64| Int64Array::from_iter_values(from..from + 100);
+        assert!(!dictionary_overflows(&[&half(0), &half(0)], 1024));
+        assert!(dictionary_overflows(&[&half(0), &half(100)], 1024));
+        assert!(!overflows(&Int64Array::from(vec![None::<i64>; 1000])));
+        // Booleans aren't dictionary-encoded.
+        assert!(!overflows(&arrow::array::BooleanArray::from(vec![
+            true;
+            1000
+        ])));
+
+        let dir = veta_testkit::TempDir::new();
+        let path = dir.join("d.parquet");
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("n", DataType::Int64, false),
+            Field::new("word", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(unique),
+                Arc::new(repeated),
+                Arc::new(words),
+                Arc::new(names),
+            ],
+        )
+        .unwrap();
+        let props = WriterProperties::builder()
+            .set_dictionary_page_size_limit(1024)
+            .set_column_dictionary_enabled(ColumnPath::from("word"), false)
+            .build();
+        let mut writer =
+            ParallelWriter::new(std::fs::File::create(&path).unwrap(), schema, props).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let builder =
+            ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&path).unwrap()).unwrap();
+        let dictionary: Vec<bool> = builder
+            .metadata()
+            .row_group(0)
+            .columns()
+            .iter()
+            .map(|c| c.dictionary_page_offset().is_some())
+            .collect();
+        assert_eq!(dictionary, [false, true, false, false], "word: set off");
+        let back: Vec<RecordBatch> = builder.build().unwrap().map(Result::unwrap).collect();
+        assert_eq!(back, [batch]);
     }
 }

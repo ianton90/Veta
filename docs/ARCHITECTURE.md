@@ -264,6 +264,10 @@ undone one edit at a time.
 - `WriterSettings` is read from the source file's metadata on open (row group
   size, per-column compression/encoding, dictionary, statistics, page size,
   format version) and reused on save. New documents get defaults.
+- `ParallelWriter` (`files/writer.rs`) encodes column chunks on all cores.
+  It opens the file once the first row group is gathered and turns the
+  dictionary off for plain columns whose distinct values there outgrow the
+  dictionary page (parquet would drop it for plain values anyway).
 - Save in place writes to a temp file in the same directory and atomically
   renames it over the original once complete (the original is still being
   read during the write).

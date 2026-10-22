@@ -343,7 +343,7 @@
   "ST_DLG_WRITER_COLUMNS": "Columnas",
   "ST_DLG_WRITER_ENCODING": "Codificación",
   "ST_DLG_WRITER_LEVEL": "Nivel",
-  "ST_DLG_WRITER_NESTED_NOTE": "Las columnas anidadas se listan por hoja. Con diccionario, la codificación solo se usa si el diccionario crece demasiado; los archivos solo la registran entonces, así que al volver a abrirlos aparece como plain.",
+  "ST_DLG_WRITER_NESTED_NOTE": "Las columnas anidadas se listan por hoja. El diccionario solo se usa donde cabe: una columna con demasiados valores distintos se guarda sin él, y al volver a abrirla aparece desactivado. Con diccionario, la codificación solo se usa si el diccionario crece demasiado; los archivos solo la registran entonces, así que al volver a abrirlos aparece como plain.",
   "ST_DLG_WRITER_NEW_COLUMNS": "Columnas nuevas",
   "ST_DLG_WRITER_NOTE": "Se usan al guardar. Los archivos abiertos conservan las opciones con las que se escribieron.",
   "ST_DLG_WRITER_TITLE": "Opciones de escritura",
