@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::error::invalid;
+use std::sync::Mutex;
 
 // Export.
 
@@ -48,24 +49,33 @@ pub(super) fn write_export(
     match format {
         ExportFormat::Csv(_) | ExportFormat::JsonLines => {
             // Pieces are read and turned into text on several threads, then
-            // written in order.
+            // written in order. Written texts' buffers go back to the threads:
+            // a fresh buffer for every piece would have the system map and
+            // clear new memory each time.
             let piece_format = format.clone();
+            let spare: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+            let buffers = spare.clone();
             let pieces =
                 output.read_parallel(output.evaluated(), 0..rows, None, move |batches, first| {
                     let n: usize = batches.iter().map(RecordBatch::num_rows).sum();
-                    Ok((format_piece(&piece_format, &batches, first == 0)?, n))
+                    let out = buffers.lock().ok().and_then(|mut b| b.pop());
+                    let text = format_piece(&piece_format, &batches, first == 0, out)?;
+                    Ok((text, n))
                 });
             let mut written = false;
             for piece in pieces {
                 let (text, n) = piece?;
                 file.write_all(&text)?;
+                if let Ok(mut spare) = spare.lock() {
+                    spare.push(text);
+                }
                 written = true;
                 tick(n)?;
             }
             // An empty table still gets its header line.
             if !written && let ExportFormat::Csv(_) = format {
                 let empty = RecordBatch::new_empty(output.schema());
-                file.write_all(&format_piece(format, &[empty], true)?)?;
+                file.write_all(&format_piece(format, &[empty], true, None)?)?;
             }
             file.flush()?;
         }
@@ -88,9 +98,16 @@ pub(super) fn write_export(
     Ok(())
 }
 
-/// `batches` as CSV (with the header line when `first`) or JSON lines.
-fn format_piece(format: &ExportFormat, batches: &[RecordBatch], first: bool) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
+/// `batches` as CSV (with the header line when `first`) or JSON lines,
+/// written into `out` (emptied first) if given.
+fn format_piece(
+    format: &ExportFormat,
+    batches: &[RecordBatch],
+    first: bool,
+    out: Option<Vec<u8>>,
+) -> Result<Vec<u8>> {
+    let mut out = out.unwrap_or_default();
+    out.clear();
     match format {
         ExportFormat::Csv(options) => {
             let builder = arrow::csv::WriterBuilder::new()
