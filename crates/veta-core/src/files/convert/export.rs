@@ -13,29 +13,18 @@ pub fn export(
     format: &ExportFormat,
     progress: &mut dyn FnMut(f32) -> bool,
 ) -> Result<()> {
-    let dir = target.parent().filter(|d| !d.as_os_str().is_empty());
-    let name = target
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "export".into());
-    let temp = dir
-        .unwrap_or(Path::new("."))
-        .join(format!(".{name}.veta-{}.tmp", std::process::id()));
-    let result = write_export(output, &temp, format, progress)
-        .and_then(|()| std::fs::rename(&temp, target).map_err(Into::into));
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    result
+    let (replacement, file) = crate::files::replace::Replacement::create(target)?;
+    write_export(output, file, format, progress)?;
+    replacement.commit()
 }
 
 pub(super) fn write_export(
     output: &Pipeline,
-    path: &Path,
+    file: File,
     format: &ExportFormat,
     progress: &mut dyn FnMut(f32) -> bool,
 ) -> Result<()> {
-    let mut file = BufWriter::new(File::create(path)?);
+    let mut file = BufWriter::new(file);
     let rows = output.num_rows();
     let mut done = 0;
     let mut tick = |n: usize| {

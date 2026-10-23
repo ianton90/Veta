@@ -23,6 +23,7 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 
 use crate::error::Result;
+use crate::files::replace::Replacement;
 use crate::model::{
     ColumnSettings, Compression, Encoding, FileInfo, FileMetadata, FormatVersion, KeyValue,
     RowGroupInfo, StatisticsLevel, WriterSettings,
@@ -316,30 +317,26 @@ impl SaveJob {
     }
 
     /// Writes the file: to a temporary file next to the target, then renamed
-    /// over it, so a failed save never leaves a half-written file.
+    /// over it, so a failed save never leaves a half-written file. The file
+    /// keeps the target's permissions.
     pub fn run(mut self) -> Result<SaveResult> {
         // Steps still waiting for a full pass are computed here; a last
         // filter or sort writes its output as it produces it.
         let streamed = self.pipeline.compute_for_save(&mut |_| true)?;
-        let temp = temp_path(&self.target);
-
-        let written = match &streamed {
+        let (replacement, file) = Replacement::create(&self.target)?;
+        match &streamed {
             Some(job) => job.stream().and_then(|batches| {
                 write_batches(
                     &self.pipeline.schema(),
                     batches,
                     &self.metadata,
                     &self.writer,
-                    &temp,
+                    file,
                 )
             }),
-            None => write_parquet(&self.pipeline, &self.metadata, &self.writer, &temp),
-        }
-        .and_then(|()| std::fs::rename(&temp, &self.target).map_err(Into::into));
-        if let Err(e) = written {
-            let _ = std::fs::remove_file(&temp);
-            return Err(e);
-        }
+            None => write_parquet(&self.pipeline, &self.metadata, &self.writer, file),
+        }?;
+        replacement.commit()?;
         let reopened = match self.reopen {
             Some(options) => Some(open_parquet(&self.target, options)?),
             None => None,
@@ -351,19 +348,6 @@ impl SaveJob {
     }
 }
 
-/// A temporary file next to `target`, to write before renaming it into place.
-fn temp_path(target: &Path) -> PathBuf {
-    let dir = match target.parent() {
-        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
-    let name = target
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "file".into());
-    dir.join(format!(".{name}.veta-{}.tmp", std::process::id()))
-}
-
 /// Writes `batches` to a new Parquet file at `target`, with the settings
 /// of a new document, through a temporary file renamed into place.
 pub(crate) fn write_new_file(
@@ -371,27 +355,23 @@ pub(crate) fn write_new_file(
     batches: impl Iterator<Item = Result<RecordBatch>>,
     target: &Path,
 ) -> Result<()> {
-    let temp = temp_path(target);
-    let written = write_batches(
+    let (replacement, file) = Replacement::create(target)?;
+    write_batches(
         schema,
         batches,
         &FileMetadata::default(),
         &WriterSettings::default(),
-        &temp,
-    )
-    .and_then(|()| std::fs::rename(&temp, target).map_err(Into::into));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    written
+        file,
+    )?;
+    replacement.commit()
 }
 
-/// Streams the pipeline's output into a Parquet file at `path`.
-pub fn write_parquet(
+/// Streams the pipeline's output into `file` as Parquet.
+fn write_parquet(
     pipeline: &Pipeline,
     metadata: &FileMetadata,
     settings: &WriterSettings,
-    path: &Path,
+    file: File,
 ) -> Result<()> {
     // Pieces of the output are read on several threads, in order.
     let batches = pipeline
@@ -405,21 +385,20 @@ pub fn write_parquet(
             Ok(batches) => batches.into_iter().map(Ok).collect(),
             Err(e) => vec![Err(e)],
         });
-    write_batches(&pipeline.schema(), batches, metadata, settings, path)
+    write_batches(&pipeline.schema(), batches, metadata, settings, file)
 }
 
-/// Writes `batches` (with the columns of `schema`) into a Parquet file at
-/// `path`. The next batch is produced while the last one is encoded.
+/// Writes `batches` (with the columns of `schema`) into `file` as Parquet.
+/// The next batch is produced while the last one is encoded.
 fn write_batches(
     schema: &SchemaRef,
     batches: impl Iterator<Item = Result<RecordBatch>>,
     metadata: &FileMetadata,
     settings: &WriterSettings,
-    path: &Path,
+    file: File,
 ) -> Result<()> {
     let schema = with_column_metadata(schema, metadata);
     let props = writer_properties(&schema, metadata, settings)?;
-    let file = File::create(path)?;
     let mut writer = crate::files::writer::ParallelWriter::new(file, schema.clone(), props)?;
     let mut batches = batches;
     while let Some(batch) = crate::profile::time("save: waiting for rows", || batches.next()) {
