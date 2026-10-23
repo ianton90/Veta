@@ -39,8 +39,11 @@ fn message(error: &Error) -> String {
         Error::Cancelled => tr("ERR_CANCELLED"),
         Error::Invalid(invalid) => {
             let tag = error_tag(invalid.code);
-            // A code without a text yet reads in the core's English.
-            let mut text = match Translations::global().has(&tag) {
+            // A code without a text yet reads in the core's English. The
+            // lock is released before `tr` takes it again: a second read
+            // while a language change waits would deadlock.
+            let has = Translations::global().has(&tag);
+            let mut text = match has {
                 true => tr(&tag),
                 false => invalid.code.english().to_owned(),
             };
