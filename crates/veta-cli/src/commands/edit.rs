@@ -83,13 +83,7 @@ pub(crate) fn run(command: crate::Command, out: &mut impl Write) -> Result<(), E
         }),
         C::KeepRows { rows, output } => edit(&rows.file, &output, out, |doc| {
             let keep = rows.ranges(doc.num_rows())?;
-            if let Some(bad) = keep.iter().find(|r| r.end > doc.num_rows()) {
-                return Err(Error::Usage(format!(
-                    "row {} is past the last row ({})",
-                    bad.end,
-                    doc.num_rows()
-                )));
-            }
+            veta_core::rows::check_rows(&keep, doc.num_rows())?;
             let delete = veta_core::rows::keep_only(&keep, doc.num_rows());
             Ok(if delete.is_empty() {
                 Vec::new()

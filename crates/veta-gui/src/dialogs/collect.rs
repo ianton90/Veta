@@ -89,7 +89,7 @@ impl CollectDialog {
         if !dropped.is_empty() {
             body = body.push(
                 row![
-                    text(tr("ST_DLG_COLLECT_DROPPED")).font(crate::app::bold()),
+                    text(tr("ST_DLG_COLLECT_DROPPED")).font(crate::fonts::bold()),
                     text(dropped.join(", ")).width(Length::Fill),
                 ]
                 .spacing(6),

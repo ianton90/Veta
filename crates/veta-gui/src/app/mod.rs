@@ -70,7 +70,8 @@ pub(crate) const EDITOR_ID: iced::widget::Id = iced::widget::Id::new("cell-edito
 /// How long the cell editor flashes after refused input.
 const FLASH: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// Rows dialogs sample (to preview cast failures, suggest split parts).
+/// Rows a dialog samples to preview its result (cast failures, split
+/// parts).
 pub(crate) const SAMPLE_ROWS: usize = 1000;
 
 /// Opens the main window with `files` and blocks until it is closed. If
@@ -198,6 +199,16 @@ pub(crate) fn missing_font(config: &Config, theme: &VetaTheme) -> Option<String>
         .then(|| tr_with("ST_MSG_FONT_MISSING", &[("font", &family)]))
 }
 
+/// A document's name as shown on its tab and in the window title, marked
+/// with ● when it has unsaved changes.
+pub(crate) fn doc_label(doc: &Document) -> String {
+    let title = doc.title_or(&tr("ST_DOC_UNTITLED"));
+    match doc.is_modified() {
+        true => format!("● {title}"),
+        false => title,
+    }
+}
+
 /// The theme for the configured mode, falling back to the built-in one.
 pub(crate) fn pick_theme<'a>(
     themes: &'a [VetaTheme],
@@ -214,11 +225,6 @@ pub(crate) fn pick_theme<'a>(
         .find(|t| &t.name == wanted && t.mode == mode)
         .or_else(|| themes.iter().find(|t| t.name == fallback))
         .unwrap_or(&themes[0])
-}
-
-/// The interface font in bold.
-pub(crate) fn bold() -> Font {
-    crate::fonts::bold()
 }
 
 impl App {
@@ -261,10 +267,7 @@ impl App {
 
     fn title(&self) -> String {
         match self.active_document() {
-            Some((_, doc)) if doc.is_modified() => {
-                format!("● {} — Veta", doc.title_or(&tr("ST_DOC_UNTITLED")))
-            }
-            Some((_, doc)) => format!("{} — Veta", doc.title_or(&tr("ST_DOC_UNTITLED"))),
+            Some((_, doc)) => format!("{} — Veta", doc_label(doc)),
             None => "Veta".to_owned(),
         }
     }

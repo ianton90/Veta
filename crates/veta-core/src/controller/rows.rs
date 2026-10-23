@@ -80,6 +80,14 @@ pub fn rows_command(
     }
 }
 
+/// Refuses ranges that go past the last of `num_rows` rows.
+pub fn check_rows(ranges: &[Range<usize>], num_rows: usize) -> Result<()> {
+    match ranges.iter().find(|r| r.end > num_rows) {
+        Some(bad) => Err(invalid!(RowPastEnd, row = bad.end, rows = num_rows)),
+        None => Ok(()),
+    }
+}
+
 /// The rows to delete to keep only `keep` (sorted or not, may overlap).
 pub fn keep_only(keep: &[Range<usize>], num_rows: usize) -> Vec<Range<usize>> {
     let mut keep: Vec<Range<usize>> = keep.iter().filter(|r| !r.is_empty()).cloned().collect();

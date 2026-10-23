@@ -472,7 +472,7 @@ fn parse_font_size(text: &str) -> Result<Option<f32>, String> {
 }
 
 fn section<'a, Message: 'a>(title: String) -> Element<'a, Message> {
-    text(title).size(15).font(crate::app::bold()).into()
+    text(title).size(15).font(crate::fonts::bold()).into()
 }
 
 #[cfg(test)]

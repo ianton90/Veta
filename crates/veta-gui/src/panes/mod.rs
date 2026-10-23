@@ -11,7 +11,8 @@ use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 use veta_core::{Document, DocumentId, SourceMode};
 use veta_fmt::{abbreviate, human_bytes};
 
-use crate::app::{Edit, FORMULA_ID, MenuItem, Message, SideTab, Tab, Ui, bold};
+use crate::app::{Edit, FORMULA_ID, MenuItem, Message, SideTab, Tab, Ui};
+use crate::fonts::bold;
 use crate::grid::MenuTarget;
 use crate::platform::icon::{Icon, icon};
 use crate::ribbon::Action;

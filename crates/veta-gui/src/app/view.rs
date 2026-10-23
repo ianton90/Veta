@@ -129,23 +129,18 @@ impl App {
                 .is_some_and(|(_, doc)| doc.num_rows() > 0),
             column: match column {
                 None => ribbon::ColumnKind::None,
-                Some(veta_core::arrow::datatypes::DataType::Struct(fields)) => {
-                    ribbon::ColumnKind::Struct {
-                        nested_structs: fields.iter().any(|f| {
-                            matches!(
-                                f.data_type(),
-                                veta_core::arrow::datatypes::DataType::Struct(_)
-                            )
-                        }),
+                Some(data_type) => {
+                    use veta_core::arrow::datatypes::DataType;
+                    use veta_core::values::node::NodeKind;
+                    match NodeKind::of(&data_type) {
+                        NodeKind::Struct => ribbon::ColumnKind::Struct {
+                            nested_structs: matches!(&data_type, DataType::Struct(fields)
+                                if fields.iter().any(|f| matches!(f.data_type(), DataType::Struct(_)))),
+                        },
+                        NodeKind::List | NodeKind::Map => ribbon::ColumnKind::List,
+                        NodeKind::Value => ribbon::ColumnKind::Plain,
                     }
                 }
-                Some(
-                    veta_core::arrow::datatypes::DataType::List(_)
-                    | veta_core::arrow::datatypes::DataType::LargeList(_)
-                    | veta_core::arrow::datatypes::DataType::FixedSizeList(..)
-                    | veta_core::arrow::datatypes::DataType::Map(..),
-                ) => ribbon::ColumnKind::List,
-                Some(_) => ribbon::ColumnKind::Plain,
             },
             filter_active: self
                 .active_document()
@@ -170,12 +165,7 @@ impl App {
             panes::tab_bar(
                 self.tabs.iter().filter_map(|t| {
                     let doc = self.workbook.get(t.id)?;
-                    let title = if doc.is_modified() {
-                        format!("● {}", doc.title_or(&tr("ST_DOC_UNTITLED")))
-                    } else {
-                        doc.title_or(&tr("ST_DOC_UNTITLED"))
-                    };
-                    Some((t.id, title))
+                    Some((t.id, super::doc_label(doc)))
                 }),
                 self.active,
                 ui,

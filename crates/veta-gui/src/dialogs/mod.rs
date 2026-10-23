@@ -1,7 +1,9 @@
-//! Dialogs, one per file: column commands (add, rename, choose columns,
-//! change type, replace values, format text), filters, sorts, writer
-//! settings, metadata, CSV import / export and confirmations. This file
-//! holds the widgets they share.
+//! Dialogs, one per file: column commands (add or rename a column, choose
+//! columns, change type, replace values, format text, split, merge, custom
+//! columns), nested values (collect into lists, combine into a struct),
+//! rows (insert, remove, keep), filters, sorts, writer settings, metadata,
+//! CSV import / export and confirmations. This file holds the widgets they
+//! share and the StepDialog trait.
 
 use crate::fonts::{checkbox, pick_list, text, text_input};
 use crate::i18n::errors::error_text;

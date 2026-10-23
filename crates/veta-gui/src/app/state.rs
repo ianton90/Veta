@@ -69,7 +69,6 @@ pub(crate) struct App {
     pub(crate) computing: Option<Computing>,
     /// Column statistics for the side pane.
     pub(crate) stats: Stats,
-    /// Exports running in the background.
     /// Imports and exports running in the background.
     pub(crate) transfers: Vec<Transfer>,
     pub(crate) next_transfer: u64,

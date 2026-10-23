@@ -227,7 +227,7 @@ fn help_view<'a, Message: 'a>(title: String, help: Help, tokens: Tokens) -> Elem
             })
     };
     column![
-        tip(title).font(crate::app::bold()),
+        tip(title).font(crate::fonts::bold()),
         tip(tr(help.text)).width(300).color(tokens.muted_text),
         row![
             table(help.before),
