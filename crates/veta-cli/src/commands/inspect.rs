@@ -152,7 +152,7 @@ pub(crate) fn stats(
         return Ok(());
     }
     let header: Vec<String> = [
-        "column", "type", "count", "nulls", "distinct", "min", "max", "mean", "std dev",
+        "column", "type", "count", "nulls", "distinct", "min", "max", "mean", "std dev", "length",
     ]
     .map(String::from)
     .to_vec();
@@ -167,12 +167,17 @@ pub(crate) fn stats(
                 format_distinct(s),
                 s.min.as_ref().map(format_stat_value),
                 s.max.as_ref().map(format_stat_value),
-                s.mean.map(format_float),
-                s.std_dev.map(format_float),
+                s.mean.as_ref().map(format_stat_value),
+                s.std_dev.as_ref().map(format_stat_value),
+                s.text_lengths
+                    .as_ref()
+                    .map(|l| format!("{}–{} (mean {})", l.min, l.max, format_float(l.mean))),
             ]
         })
         .collect();
-    let right = [false, false, true, true, true, false, false, true, true];
+    let right = [
+        false, false, true, true, true, false, false, true, true, false,
+    ];
     table::write(out, &header, None, &rows, &right)?;
     Ok(())
 }

@@ -85,8 +85,8 @@ pub(super) fn stats_pane<'a>(view: StatsView, ui: Ui) -> Element<'a, Message> {
                     later(format_distinct(s)),
                     s.min.as_ref().map(format_stat_value),
                     s.max.as_ref().map(format_stat_value),
-                    later(s.mean.map(format_float)),
-                    later(s.std_dev.map(format_float)),
+                    later(s.mean.as_ref().map(format_stat_value)),
+                    later(s.std_dev.as_ref().map(format_stat_value)),
                 )
             }
             None => {
@@ -110,6 +110,17 @@ pub(super) fn stats_pane<'a>(view: StatsView, ui: Ui) -> Element<'a, Message> {
             .push(line("ST_STATS_MAX", max))
             .push(line("ST_STATS_MEAN", mean))
             .push(line("ST_STATS_STD_DEV", sd));
+        if let Some(l) = stats.as_ref().and_then(|s| s.text_lengths.as_ref()) {
+            let value = tr_with(
+                "ST_STATS_LENGTH_VALUE",
+                &[
+                    ("min", &l.min),
+                    ("max", &l.max),
+                    ("mean", &format_float(l.mean)),
+                ],
+            );
+            card = card.push(line("ST_STATS_LENGTH", (!partial).then_some(value)));
+        }
         content = content.push(container(card).padding(8).width(Length::Fill).style(
             move |_theme: &Theme| {
                 container::Style::default()

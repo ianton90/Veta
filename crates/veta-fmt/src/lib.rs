@@ -3,7 +3,7 @@
 //! model and its data; how it reads on screen lives here or in each front
 //! end (DECISIONS 53, 54).
 
-use veta_core::arrow::array::ArrayRef;
+use veta_core::arrow::array::{Array, ArrayRef};
 use veta_core::arrow::datatypes::DataType;
 use veta_core::arrow::util::display::array_value_to_string;
 use veta_core::stats::ColumnStats;
@@ -55,9 +55,54 @@ pub fn format_float(x: f64) -> String {
     }
 }
 
-/// A statistics min or max (a one-value array) for display.
+/// A statistic held as a one-value array (min, max, mean, …) for display:
+/// floats as [`format_float`], durations as [`format_duration`], other
+/// values as Arrow shows them.
 pub fn format_stat_value(value: &ArrayRef) -> String {
-    array_value_to_string(value.as_ref(), 0).unwrap_or_default()
+    use veta_core::arrow::array::AsArray;
+    use veta_core::arrow::datatypes::{Float64Type, Int64Type, TimeUnit};
+    if value.is_empty() || value.is_null(0) {
+        return String::new();
+    }
+    match value.data_type() {
+        DataType::Float64 => format_float(value.as_primitive::<Float64Type>().value(0)),
+        DataType::Duration(unit) => {
+            let per_second = match unit {
+                TimeUnit::Second => 1.0,
+                TimeUnit::Millisecond => 1e3,
+                TimeUnit::Microsecond => 1e6,
+                TimeUnit::Nanosecond => 1e9,
+            };
+            let ints = veta_core::arrow::compute::cast(value, &DataType::Int64);
+            match ints {
+                Ok(ints) => {
+                    format_duration(ints.as_primitive::<Int64Type>().value(0) as f64 / per_second)
+                }
+                Err(_) => array_value_to_string(value.as_ref(), 0).unwrap_or_default(),
+            }
+        }
+        _ => array_value_to_string(value.as_ref(), 0).unwrap_or_default(),
+    }
+}
+
+/// A length of time in seconds for display, in its two largest units:
+/// `3d 4h`, `2h 05m`, `1m 30s`, `12.5 s`.
+pub fn format_duration(seconds: f64) -> String {
+    let sign = if seconds < 0.0 { "-" } else { "" };
+    let s = seconds.abs();
+    let whole = s.round() as u64;
+    let (d, h, m, sec) = (
+        whole / 86_400,
+        whole / 3600 % 24,
+        whole / 60 % 60,
+        whole % 60,
+    );
+    match () {
+        _ if d > 0 => format!("{sign}{d}d {h}h"),
+        _ if h > 0 => format!("{sign}{h}h {m:02}m"),
+        _ if m > 0 => format!("{sign}{m}m {sec:02}s"),
+        _ => format!("{sign}{} s", format_float(s)),
+    }
 }
 
 /// The distinct count for display (`~` when estimated).
@@ -78,6 +123,14 @@ mod tests {
     fn abbreviates_long_values() {
         assert_eq!(abbreviate("short", 10), "short");
         assert_eq!(abbreviate(&"x".repeat(2048), 3), "xxx… (2.0 KiB)");
+    }
+
+    #[test]
+    fn durations() {
+        assert_eq!(format_duration(12.5), "12.5 s");
+        assert_eq!(format_duration(90.0), "1m 30s");
+        assert_eq!(format_duration(7500.0), "2h 05m");
+        assert_eq!(format_duration(-3.0 * 86_400.0 - 4.0 * 3600.0), "-3d 4h");
     }
 
     #[test]

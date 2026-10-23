@@ -664,6 +664,8 @@
   "ST_STATS_NULLS": "Nulos",
   "ST_STATS_SELECT": "Selecciona una o más columnas para ver sus estadísticas.",
   "ST_STATS_STD_DEV": "Desv. típica",
+  "ST_STATS_LENGTH": "Longitud",
+  "ST_STATS_LENGTH_VALUE": "{min}–{max}, media {mean}",
   "ST_STATS_WAITING": "Esperando a que se calculen los pasos…",
   "ST_STATUS_COLUMNS": "{n} columnas",
   "ST_STATUS_COMPUTING_STEP": "Calculando el paso {n}…",
