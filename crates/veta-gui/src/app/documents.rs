@@ -197,8 +197,10 @@ impl App {
                 let output = match self.workbook.get(id).map(Document::output) {
                     Some(Ok(output)) => output,
                     Some(Err(e)) => {
-                        self.errors
-                            .push(tr_with("ST_MSG_EXPORT_FAILED", &[("error", &e)]));
+                        self.errors.push(tr_with(
+                            "ST_MSG_EXPORT_FAILED",
+                            &[("error", &error_text(&e))],
+                        ));
                         return Task::none();
                     }
                     None => return Task::none(),
@@ -272,7 +274,7 @@ impl App {
                     };
                     let result = veta_core::recipe::to_json(doc.steps(), &info)
                         .map_err(|e| error_text(&e))
-                        .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
+                        .and_then(|text| std::fs::write(&path, text).map_err(io_text));
                     if let Err(e) = result {
                         self.errors
                             .push(tr_with("ST_MSG_RECIPE_SAVE_FAILED", &[("error", &e)]));
@@ -296,9 +298,10 @@ impl App {
                     self.dialog = Some(Dialog::ConfirmRecipe { document: id, text });
                 }
                 Ok(text) => self.apply_recipe(id, &text, false),
-                Err(e) => self
-                    .errors
-                    .push(tr_with("ST_MSG_RECIPE_LOAD_FAILED", &[("error", &e)])),
+                Err(e) => self.errors.push(tr_with(
+                    "ST_MSG_RECIPE_LOAD_FAILED",
+                    &[("error", &io_text(e))],
+                )),
             },
             Message::RecipeChoice(choice) => {
                 if let Some(Dialog::ConfirmRecipe { document, text }) = self.dialog.take()
@@ -367,8 +370,10 @@ impl App {
                             });
                         }
                         Some(Err(e)) => {
-                            self.errors
-                                .push(tr_with("ST_MSG_EXPORT_FAILED", &[("error", &e)]));
+                            self.errors.push(tr_with(
+                                "ST_MSG_EXPORT_FAILED",
+                                &[("error", &error_text(&e))],
+                            ));
                         }
                         None => {}
                     }
@@ -556,7 +561,7 @@ impl App {
             }
             Err(e) => {
                 self.errors
-                    .push(tr_with("ST_MSG_SAVE_FAILED", &[("error", &e)]));
+                    .push(tr_with("ST_MSG_SAVE_FAILED", &[("error", &error_text(&e))]));
                 Task::none()
             }
         }
@@ -587,9 +592,10 @@ impl App {
                     self.after_compute(id);
                 }
             }
-            Err(e) => self
-                .errors
-                .push(tr_with("ST_MSG_RECIPE_LOAD_FAILED", &[("error", &e)])),
+            Err(e) => self.errors.push(tr_with(
+                "ST_MSG_RECIPE_LOAD_FAILED",
+                &[("error", &error_text(&e))],
+            )),
         }
     }
 

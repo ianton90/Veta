@@ -91,7 +91,7 @@ impl App {
             Ok(text) => text,
             Err(e) => {
                 self.errors
-                    .push(tr_with("ST_MSG_COPY_FAILED", &[("error", &e)]));
+                    .push(tr_with("ST_MSG_COPY_FAILED", &[("error", &error_text(&e))]));
                 return Task::none();
             }
         };
@@ -180,7 +180,7 @@ impl App {
             Ok(text) => text,
             Err(e) => {
                 self.errors
-                    .push(tr_with("ST_MSG_COPY_FAILED", &[("error", &e)]));
+                    .push(tr_with("ST_MSG_COPY_FAILED", &[("error", &error_text(&e))]));
                 return Task::none();
             }
         };

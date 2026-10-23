@@ -8,6 +8,11 @@ use veta_core::error::ErrorCode;
 use super::{Translations, tr, tr_with};
 
 /// `error` as a sentence in the app's language.
+/// An I/O error as the user reads it (`ERR_IO`).
+pub fn io_text(error: std::io::Error) -> String {
+    error_text(&Error::from(error))
+}
+
 pub fn error_text(error: &Error) -> String {
     let text = message(error);
     let mut chars = text.chars();

@@ -239,7 +239,7 @@ pub fn load_all(dir: Option<&Path>) -> (Vec<VetaTheme>, Vec<String>) {
     paths.sort();
     for path in paths {
         let result = std::fs::read_to_string(&path)
-            .map_err(|e| e.to_string())
+            .map_err(crate::i18n::errors::io_text)
             .and_then(|s| parse(&s));
         match result {
             Ok(theme) => {

@@ -32,7 +32,7 @@ use crate::dialogs::{
     WriterMessage,
 };
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav, Selection};
-use crate::i18n::errors::error_text;
+use crate::i18n::errors::{error_text, io_text};
 use crate::i18n::{tr, tr_with};
 use crate::platform::files::FileKind;
 use crate::platform::{files, icon, instance};
