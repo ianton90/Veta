@@ -239,27 +239,17 @@ impl App {
             return;
         };
         let mut values = veta_core::clipboard::parse_tsv(text);
+        let selection = tab.grid.selection();
+        let targets = tab.grid.paste_targets();
+        // Copied whole columns start with their names.
+        if let (Selection::Columns(_), Some((targets, _))) = (&selection, &targets) {
+            veta_core::clipboard::drop_header(&mut values, &doc.schema(), targets);
+        }
         // Into fields of expanded struct columns.
-        if let Some((targets, true)) = tab.grid.paste_targets() {
-            let row = match tab.grid.selection() {
+        if let Some((targets, true)) = targets {
+            let row = match selection {
                 Selection::Cell(r, _) => r,
-                Selection::Columns(_) => {
-                    let header: Vec<Option<String>> = targets
-                        .iter()
-                        .take(values.first().map_or(0, Vec::len))
-                        .map(|(c, path)| {
-                            let mut name = doc.schema().field(*c).name().clone();
-                            for part in path {
-                                name = format!("{name}.{part}");
-                            }
-                            Some(name)
-                        })
-                        .collect();
-                    if values.first() == Some(&header) {
-                        values.remove(0);
-                    }
-                    0
-                }
+                Selection::Columns(_) => 0,
                 _ => return,
             };
             if !values.is_empty() {
@@ -274,22 +264,14 @@ impl App {
             }
             return;
         }
-        let (row, column) = match tab.grid.selection() {
+        let (row, column) = match selection {
             Selection::None => {
                 self.errors.push(tr("ST_MSG_PASTE_WHERE"));
                 return;
             }
             Selection::Cell(r, c) => (r, c),
             Selection::Rows(rows) => (rows.start, 0),
-            Selection::Columns(cols) => {
-                // Copied whole columns start with their names.
-                let names = self.column_names(id, cols.clone());
-                let header: Vec<Option<String>> = names.into_iter().map(Some).collect();
-                if values.first() == Some(&header) {
-                    values.remove(0);
-                }
-                (0, cols.start)
-            }
+            Selection::Columns(cols) => (0, cols.start),
         };
         if values.is_empty() || doc.num_columns() == 0 {
             return;

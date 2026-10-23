@@ -279,7 +279,7 @@ fn import_reports_values_that_did_not_fit() {
         panic!("import dialog");
     };
     let options = dialog.options();
-    assert_eq!(options.on_error, OnError::ErrorColumn);
+    assert_eq!(options.on_error, veta_core::steps::OnError::ErrorColumn);
     let result =
         veta_core::convert::import_csv(&csv, &options, 1 << 30, &mut |_| true).map(Slot::new);
     let _ = app.update(Message::Imported(csv, result));

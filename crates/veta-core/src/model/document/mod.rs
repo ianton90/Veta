@@ -40,6 +40,9 @@ pub struct Document {
     pub(crate) metadata: FileMetadata,
     pub(crate) writer: WriterSettings,
     pub(crate) history: History,
+    /// Index of the step checking that a new cast's error column is empty,
+    /// until [`settle`](crate::controller::settle) sees it pass or fail.
+    pub(crate) error_check: Option<usize>,
 }
 
 impl Default for Document {
@@ -55,6 +58,7 @@ impl Default for Document {
             metadata: FileMetadata::default(),
             writer: WriterSettings::default(),
             history: History::new(),
+            error_check: None,
         }
     }
 }
@@ -80,6 +84,7 @@ impl Document {
             metadata: opened.metadata,
             writer: opened.writer,
             history: History::new(),
+            error_check: None,
         })
     }
 

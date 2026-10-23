@@ -74,9 +74,6 @@ pub(crate) struct App {
     pub(crate) next_transfer: u64,
     /// Last thing done worth telling (shown in the status bar).
     pub(crate) notice: Option<String>,
-    /// A "remove the error column if empty" step just added after a cast,
-    /// to drop again (keeping the errors) if the column isn't empty.
-    pub(crate) error_check: Option<(DocumentId, usize)>,
 }
 
 /// A step's full pass running on a worker thread.

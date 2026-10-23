@@ -8,6 +8,20 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
     match command {
         Command::Filter(filter) => Ok(Change::PushStep(Step::Filter(filter))),
         Command::Sort(sort) => Ok(Change::PushStep(Step::Sort(sort))),
+        // With an error column, a second step removes it if nothing failed
+        // (checked on every row; see `settle`).
+        Command::Cast(cast) if cast.options.on_error == OnError::ErrorColumn => {
+            let name = cast.error_column();
+            let before = doc.steps().to_vec();
+            let keep = before.len();
+            let mut after = before.clone();
+            after.extend([Step::Cast(cast), Step::RemoveEmptyColumn { name }]);
+            Ok(Change::Steps {
+                before,
+                after,
+                keep,
+            })
+        }
         Command::Cast(cast) => Ok(Change::PushStep(Step::Cast(cast))),
         Command::Replace(replace) => Ok(Change::PushStep(Step::Replace(replace))),
         Command::FormatText { columns, op } => {

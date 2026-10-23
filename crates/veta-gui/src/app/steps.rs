@@ -282,17 +282,8 @@ impl App {
                 self.dialog = None;
                 return Ok(());
             }
-            // With an error column, a second step removes it if nothing
-            // failed (checked on every row).
-            Step::Cast(cast) if cast.options.on_error == OnError::ErrorColumn => {
-                let name = cast.error_column();
-                Command::AppendSteps {
-                    steps: vec![Step::Cast(cast), Step::RemoveEmptyColumn { name }],
-                }
-            }
             step => step_command(step),
         };
-        let check = matches!(command, Command::AppendSteps { .. });
         let added_column = match &command {
             Command::AddColumn { at, .. } => Some(*at),
             _ => None,
@@ -301,9 +292,6 @@ impl App {
             return Ok(());
         };
         controller::execute(doc, command).map_err(|e| error_text(&e))?;
-        if check {
-            self.error_check = Some((id, doc.steps().len().saturating_sub(1)));
-        }
         self.dialog = None;
         self.refresh(id);
         if let Some(at) = added_column {
@@ -318,43 +306,28 @@ impl App {
         let Some(doc) = self.workbook.get_mut(id) else {
             return;
         };
-        let check = self.error_check.filter(|(d, _)| *d == id);
-        match doc.status().clone() {
-            Status::Broken { step, error } if check == Some((id, step)) => {
-                self.error_check = None;
-                let column = match doc.steps().get(step) {
-                    Some(Step::RemoveEmptyColumn { name }) => name.clone(),
-                    _ => return,
-                };
-                if controller::amend(doc, Command::RemoveStep { index: step }).is_ok() {
-                    // The removed step's error says how many values failed.
-                    let values = match error.as_ref() {
-                        veta_core::Error::Invalid(invalid) => invalid.arg("values"),
-                        _ => None,
-                    };
-                    self.errors.push(tr_with(
-                        "ST_MSG_VALUES_KEPT",
-                        &[("n", &values.unwrap_or("?")), ("column", &column)],
-                    ));
-                }
-            }
-            Status::Broken { step, error } => {
-                let label = doc
-                    .steps()
-                    .get(step)
-                    .map(crate::i18n::model::step_name)
-                    .unwrap_or_default();
-                self.errors.push(tr_with(
-                    "ST_MSG_STOPPED_AT_STEP",
-                    &[
-                        ("n", &(step + 1)),
-                        ("step", &label),
-                        ("error", &crate::i18n::errors::error_text(&error)),
-                    ],
-                ));
-            }
-            Status::Ready if check.is_some() => self.error_check = None,
-            _ => {}
+        if let Some(kept) = controller::settle(doc) {
+            let values = kept.values.unwrap_or_else(|| "?".into());
+            self.errors.push(tr_with(
+                "ST_MSG_VALUES_KEPT",
+                &[("n", &values), ("column", &kept.column)],
+            ));
+            return;
+        }
+        if let Status::Broken { step, error } = doc.status().clone() {
+            let label = doc
+                .steps()
+                .get(step)
+                .map(crate::i18n::model::step_name)
+                .unwrap_or_default();
+            self.errors.push(tr_with(
+                "ST_MSG_STOPPED_AT_STEP",
+                &[
+                    ("n", &(step + 1)),
+                    ("step", &label),
+                    ("error", &crate::i18n::errors::error_text(&error)),
+                ],
+            ));
         }
     }
 

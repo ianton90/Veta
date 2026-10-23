@@ -58,8 +58,8 @@ use veta_core::arrow::array::ArrayRef;
 use veta_core::convert::ImportReport;
 use veta_core::stats::ColumnStats;
 use veta_core::steps::{
-    Cast, ComputeJob, Computed, Condition, CustomColumn, Fill, Filter, FilterOp, Merge, OnError,
-    Replace, Sort, SortKey, Split, Status, Step, TextOp,
+    Cast, ComputeJob, Computed, Condition, CustomColumn, Fill, Filter, FilterOp, Merge, Replace,
+    Sort, SortKey, Split, Status, Step, TextOp,
 };
 use veta_core::{Command, Document, DocumentId, OpenOptions, Workbook, controller};
 
@@ -257,7 +257,6 @@ impl App {
             saving: None,
             closing: None,
             computing: None,
-            error_check: None,
             stats: Stats::default(),
             transfers: Vec::new(),
             next_transfer: 0,

@@ -47,10 +47,7 @@ pub fn formula_bar<'a>(
                 .get(column)
                 .map(|f| {
                     let path = tab.grid.selected_field().map_or(&[][..], |(p, _)| p);
-                    let mut name = f.name().clone();
-                    for part in path {
-                        name = format!("{name}.{part}");
-                    }
+                    let mut name = veta_core::clipboard::field_label(f.name(), path);
                     if let Some(item) = tab.grid.selected_item() {
                         let key = edit.is_some_and(|e| e.key) && !item.is_slot();
                         name = format!("{name}{}", item.display);

@@ -61,7 +61,8 @@ veta-core/src/
                          history
   controller/            the only way to change a Document
     command.rs           the Command enum
-    mod.rs               execute / undo / redo; plan() hands each command
+    mod.rs               execute / amend / undo / redo, settle (after a
+                         full pass); plan() hands each command
                          to its area: cells, nested, rows, columns,
                          metadata, steps
   steps/                 Step, Pipeline (lazy evaluation), read.rs (a
@@ -162,8 +163,11 @@ How a click becomes a change on screen, e.g. Rows → Remove Rows → OK:
    the grid reads only the rows on screen (`grid/load.rs`), through the
    pipeline, and `App::view` (`app/view.rs`) draws the window.
 
-Step dialogs (filter, sort, cast, …) take the same path through one
-`Message::Step` handler (`app/steps.rs`) and `App::add_or_replace`.
+Step dialogs (add or rename a column, filter, sort, cast, …) take the same
+path through one `Message::Step` handler (`app/steps.rs`) and
+`App::add_or_replace`. When a full pass finishes, the app calls
+`controller::settle`, which drops a new cast's failed error-column check
+(keeping the column) and says so.
 
 ## MVC mapping
 

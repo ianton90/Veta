@@ -16,18 +16,65 @@ use crate::error::Result;
 use crate::error::invalid;
 use crate::history::Change;
 use crate::model::{Document, KeyValue};
-use crate::steps::Step;
+use crate::steps::{OnError, Status, Step};
 use crate::values::parse_value;
 
 /// Validates `command` and applies it to `document`, recording it for undo.
 ///
 /// On error the document is left unchanged.
 pub fn execute(document: &mut Document, command: Command) -> Result<()> {
+    let checked =
+        matches!(&command, Command::Cast(c) if c.options.on_error == OnError::ErrorColumn);
     let change = plan(document, command)?;
     change.apply(document)?;
     document.bump_revision();
     document.history.record(change);
+    if checked {
+        document.error_check = document.steps().len().checked_sub(1);
+    }
     Ok(())
+}
+
+/// A new cast's error column, kept because some values failed to convert
+/// (see [`settle`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorsKept {
+    pub column: String,
+    /// How many values failed, as the check counted them.
+    pub values: Option<String>,
+}
+
+/// Call when a document's full pass finishes (after
+/// [`Document::install`] or [`Document::fail_compute`]). A cast added with
+/// an error column is followed by a step removing that column if it is
+/// empty; when that check fails, some values failed, so the check is
+/// dropped (undone with the cast) and the column kept.
+pub fn settle(document: &mut Document) -> Option<ErrorsKept> {
+    let index = document.error_check?;
+    let column = match document.steps().get(index) {
+        Some(Step::RemoveEmptyColumn { name }) => name.clone(),
+        _ => {
+            document.error_check = None;
+            return None;
+        }
+    };
+    match document.status().clone() {
+        Status::Broken { step, error } if step == index => {
+            document.error_check = None;
+            amend(document, Command::RemoveStep { index }).ok()?;
+            // The check's error says how many values failed.
+            let values = match error.as_ref() {
+                crate::Error::Invalid(invalid) => invalid.arg("values").map(str::to_owned),
+                _ => None,
+            };
+            Some(ErrorsKept { column, values })
+        }
+        Status::Ready => {
+            document.error_check = None;
+            None
+        }
+        _ => None,
+    }
 }
 
 /// Like [`execute`], but folds the change into the last one in the

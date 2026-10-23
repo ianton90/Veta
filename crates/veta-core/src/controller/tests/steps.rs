@@ -185,10 +185,12 @@ fn cast_command_with_error_column() {
         }),
     )
     .unwrap();
+    doc.compute_all().unwrap();
+    assert_eq!(settle(&mut doc), None, "the empty column is removed");
     assert_eq!(cell(&doc, 3, "score").as_deref(), Some("1234.5"));
     // "2.5" reads as 25 with these separators; nothing fails here.
     assert_eq!(cell(&doc, 5, "score").as_deref(), Some("25.0"));
-    assert_eq!(cell(&doc, 5, "score errors"), None);
+    assert!(doc.schema().field_with_name("score errors").is_err());
 
     // name → int: every non-null name fails into the error column.
     let mut cast = Cast {
@@ -200,6 +202,11 @@ fn cast_command_with_error_column() {
         },
     };
     execute(&mut doc, Command::Cast(cast.clone())).unwrap();
+    assert!(doc.compute_all().is_err(), "the check fails");
+    let kept = settle(&mut doc).expect("the column is kept");
+    assert_eq!(kept.column, "name errors");
+    assert!(kept.values.is_some());
+    assert_eq!(doc.status(), &crate::steps::Status::Ready);
     assert_eq!(cell(&doc, 1, "name"), None);
     assert_eq!(cell(&doc, 1, "name errors").as_deref(), Some("bo"));
     let out = dir.join("cast.parquet");

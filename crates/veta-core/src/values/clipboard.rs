@@ -5,6 +5,7 @@ use crate::error::invalid;
 use std::ops::Range;
 
 use arrow::array::Array;
+use arrow::datatypes::Schema;
 
 use crate::display::PathPart;
 use crate::display::{field_array, json_column};
@@ -33,21 +34,9 @@ pub fn copy_fields(
     targets: &[(usize, Vec<String>)],
     header: bool,
 ) -> Result<String> {
-    let schema = doc.schema();
     let mut lines: Vec<Vec<Option<String>>> = Vec::new();
     if header {
-        lines.push(
-            targets
-                .iter()
-                .map(|(c, path)| {
-                    let mut name = schema.field(*c).name().clone();
-                    for part in path {
-                        name = format!("{name}.{part}");
-                    }
-                    Some(name)
-                })
-                .collect(),
-        );
+        lines.push(header_line(&doc.schema(), targets).collect());
     }
     if !rows.is_empty() {
         let batch = doc.read(rows)?;
@@ -65,6 +54,41 @@ pub fn copy_fields(
         }
     }
     Ok(to_tsv(&lines))
+}
+
+/// How a column, or a field inside a struct column, is named in headers:
+/// `column.field.inner`.
+pub fn field_label(column: &str, path: &[impl std::fmt::Display]) -> String {
+    let mut label = column.to_owned();
+    for part in path {
+        label = format!("{label}.{part}");
+    }
+    label
+}
+
+/// Removes the first line of pasted `values` if it holds the names of
+/// `targets` (in order, as many as it has), as copied with whole columns.
+pub fn drop_header(
+    values: &mut Vec<Vec<Option<String>>>,
+    schema: &Schema,
+    targets: &[(usize, Vec<String>)],
+) {
+    let Some(first) = values.first() else {
+        return;
+    };
+    let header: Vec<Option<String>> = header_line(schema, targets).take(first.len()).collect();
+    if *first == header {
+        values.remove(0);
+    }
+}
+
+fn header_line<'a>(
+    schema: &'a Schema,
+    targets: &'a [(usize, Vec<String>)],
+) -> impl Iterator<Item = Option<String>> + 'a {
+    targets
+        .iter()
+        .map(|(c, path)| Some(field_label(schema.field(*c).name(), path)))
 }
 
 /// The value at `path` inside cell (`row`, `column`) as clipboard text:
@@ -181,6 +205,27 @@ mod tests {
             "nested values as JSON"
         );
         assert!(copy_value(&doc, 0, column("tags"), &[PathPart::Index(9)]).is_err());
+    }
+
+    #[test]
+    fn headers_name_fields_and_are_dropped_on_paste() {
+        use arrow::datatypes::{DataType, Field, Fields};
+        let point = Fields::from(vec![Field::new("x", DataType::Int64, true)]);
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("point", DataType::Struct(point), true),
+        ]);
+        assert_eq!(field_label("point", &["x"]), "point.x");
+        let targets = vec![(0, Vec::new()), (1, vec!["x".to_owned()])];
+        let mut values = parse_tsv("id\tpoint.x\n1\t2\n");
+        drop_header(&mut values, &schema, &targets);
+        assert_eq!(values, [[Some("1".to_owned()), Some("2".to_owned())]]);
+        // Fewer values than targets: compared with the first ones.
+        let mut values = parse_tsv("id\n1\n");
+        drop_header(&mut values, &schema, &targets);
+        assert_eq!(values, [[Some("1".to_owned())]]);
+        drop_header(&mut values, &schema, &targets);
+        assert_eq!(values.len(), 1, "data stays");
     }
 
     #[test]
