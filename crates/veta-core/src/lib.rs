@@ -30,7 +30,7 @@ pub mod version {
     pub const BUILD: &str = env!("VETA_BUILD");
     /// Short commit hash, empty when built without git.
     pub const COMMIT: &str = env!("VETA_COMMIT");
-    /// E.g. `0.6.0 (build 412, a1b2c3d)`.
+    /// E.g. `0.7.0 (build 412, a1b2c3d)`.
     pub const LONG: &str = env!("VETA_VERSION_LONG");
 }
 
