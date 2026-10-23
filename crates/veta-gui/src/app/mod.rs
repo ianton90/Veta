@@ -470,12 +470,7 @@ impl App {
             }
             Message::Ribbon(message) => self.ribbon.update(message),
             Message::RowsRead(id, read, result) => {
-                if let (Some(doc), Some(tab)) = (
-                    self.workbook.get(id),
-                    self.tabs.iter_mut().find(|t| t.id == id),
-                ) {
-                    tab.grid.install_read(read, result, doc);
-                }
+                self.grid_do(id, |grid, doc| grid.install_read(read, result, doc));
             }
             Message::WindowResized(size) => self.window_size = size,
             Message::Frame(now) => {
@@ -505,7 +500,7 @@ impl App {
                 GridEvent::StartEdit { initial } => return self.start_edit(id, initial),
                 GridEvent::EditMove(nav) => {
                     if self.commit_edit() {
-                        self.grid_event(id, GridEvent::Navigate(nav));
+                        self.grid_do(id, |grid, doc| grid.apply(GridEvent::Navigate(nav), doc));
                         return iced::widget::operation::focus(GRID_ID);
                     }
                 }
@@ -568,12 +563,7 @@ impl App {
                     ) {
                         self.commit_edit_or_drop();
                     }
-                    if let (Some(doc), Some(tab)) = (
-                        self.workbook.get(id),
-                        self.tabs.iter_mut().find(|t| t.id == id),
-                    ) {
-                        tab.grid.apply(event, doc);
-                    }
+                    self.grid_do(id, |grid, doc| grid.apply(event, doc));
                 }
             },
             Message::SideTab(side) => self.side_tab = side,
@@ -664,20 +654,13 @@ impl App {
 
     /// Re-reads a document's grid after a change, showing all steps.
     fn refresh(&mut self, id: DocumentId) {
-        if let (Some(doc), Some(tab)) = (
-            self.workbook.get(id),
-            self.tabs.iter_mut().find(|t| t.id == id),
-        ) {
-            tab.grid.set_preview(None, doc);
-        }
+        self.grid_do(id, |grid, doc| grid.set_preview(None, doc));
     }
 
     /// Whether the document can be changed: all steps shown and evaluated.
     fn editable(&self, id: DocumentId) -> bool {
         let previewing = self
-            .tabs
-            .iter()
-            .find(|t| t.id == id)
+            .tab(id)
             .is_some_and(|t| t.grid.preview().is_some() || t.grid.filter().is_some());
         let ready = self
             .workbook
@@ -693,10 +676,7 @@ impl App {
             .workbook
             .get(id)
             .is_some_and(|d| matches!(d.status(), Status::Computing { .. }));
-        let filtered = self
-            .tabs
-            .iter()
-            .any(|t| t.id == id && t.grid.filter().is_some());
+        let filtered = self.tab(id).is_some_and(|t| t.grid.filter().is_some());
         !computing && !filtered
     }
 
@@ -709,26 +689,11 @@ impl App {
             Some(Status::Computing { step }) => {
                 tr_with("ST_MSG_STEP_COMPUTING", &[("n", &(step + 1))])
             }
-            _ if self
-                .tabs
-                .iter()
-                .any(|t| t.id == id && t.grid.filter().is_some()) =>
-            {
-                tr("ST_MSG_FILTER_ON")
-            }
+            _ if self.tab(id).is_some_and(|t| t.grid.filter().is_some()) => tr("ST_MSG_FILTER_ON"),
             _ => tr("ST_MSG_EARLIER_STEP"),
         };
         if !self.errors.contains(&message) {
             self.errors.push(message);
-        }
-    }
-
-    fn grid_event(&mut self, id: DocumentId, event: GridEvent) {
-        if let (Some(doc), Some(tab)) = (
-            self.workbook.get(id),
-            self.tabs.iter_mut().find(|t| t.id == id),
-        ) {
-            tab.grid.apply(event, doc);
         }
     }
 
@@ -743,7 +708,7 @@ impl App {
 
     fn active_document(&self) -> Option<(&Tab, &Document)> {
         let id = self.active?;
-        let tab = self.tabs.iter().find(|t| t.id == id)?;
+        let tab = self.tab(id)?;
         Some((tab, self.workbook.get(id)?))
     }
 }

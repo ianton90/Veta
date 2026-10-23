@@ -51,8 +51,7 @@ impl App {
         if let Some(item) = self.selected_cell_item(id).filter(|i| !i.item.is_slot()) {
             return self.copy_item(id, &item, cut);
         }
-        let (Some(tab), Some(doc)) = (self.tabs.iter().find(|t| t.id == id), self.workbook.get(id))
-        else {
+        let (Some(tab), Some(doc)) = (self.tab(id), self.workbook.get(id)) else {
             return Task::none();
         };
         let selection = tab.grid.selection();
@@ -236,8 +235,7 @@ impl App {
     /// the selected rows or columns) as one change.
     pub(crate) fn paste(&mut self, id: DocumentId, text: &str) {
         self.commit_edit();
-        let (Some(tab), Some(doc)) = (self.tabs.iter().find(|t| t.id == id), self.workbook.get(id))
-        else {
+        let (Some(tab), Some(doc)) = (self.tab(id), self.workbook.get(id)) else {
             return;
         };
         let mut values = veta_core::clipboard::parse_tsv(text);

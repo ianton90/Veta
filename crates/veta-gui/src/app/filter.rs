@@ -80,11 +80,7 @@ impl App {
         let selected = self
             .selected_columns(id)
             .and_then(|c| columns.get(c.start).cloned());
-        let current = self
-            .tabs
-            .iter()
-            .find(|t| t.id == id)
-            .and_then(|t| t.grid.filter().cloned());
+        let current = self.tab(id).and_then(|t| t.grid.filter().cloned());
         let dialog = match current {
             Some(filter) => FilterDialog::edit(columns, &filter),
             None => FilterDialog::new(columns, selected),
@@ -112,33 +108,18 @@ impl App {
             .filter_view(filter.clone())
             .map_err(|e| error_text(&e))?;
         self.commit_edit_or_drop();
-        if let (Some(doc), Some(tab)) = (
-            self.workbook.get(id),
-            self.tabs.iter_mut().find(|t| t.id == id),
-        ) {
-            tab.grid.set_filter(Some((filter, view)), doc);
-        }
+        self.grid_do(id, |grid, doc| grid.set_filter(Some((filter, view)), doc));
         Ok(())
     }
 
     pub(crate) fn clear_filter(&mut self, id: DocumentId) {
-        if let (Some(doc), Some(tab)) = (
-            self.workbook.get(id),
-            self.tabs.iter_mut().find(|t| t.id == id),
-        ) {
-            tab.grid.set_filter(None, doc);
-        }
+        self.grid_do(id, |grid, doc| grid.set_filter(None, doc));
     }
 
     /// Turns the temporary filter into a step that keeps (or removes) the
     /// rows it shows, and clears it.
     pub(crate) fn apply_filter(&mut self, id: DocumentId, remove: bool) {
-        let Some(filter) = self
-            .tabs
-            .iter()
-            .find(|t| t.id == id)
-            .and_then(|t| t.grid.filter().cloned())
-        else {
+        let Some(filter) = self.tab(id).and_then(|t| t.grid.filter().cloned()) else {
             return;
         };
         self.clear_filter(id);
@@ -153,14 +134,10 @@ impl App {
 
     /// Sorts by the selected column.
     pub(crate) fn sort_selected(&mut self, id: DocumentId, descending: bool) {
-        let column = self.selected_columns(id).map(|c| c.start).or_else(|| {
-            self.tabs
-                .iter()
-                .find(|t| t.id == id)?
-                .grid
-                .selected()
-                .map(|s| s.1)
-        });
+        let column = self
+            .selected_columns(id)
+            .map(|c| c.start)
+            .or_else(|| self.tab(id)?.grid.selected().map(|s| s.1));
         let Some(column) = column.and_then(|c| self.column_names(id, c..c + 1).pop()) else {
             self.errors.push(tr("ST_MSG_SELECT_COLUMN_SORT"));
             return;
@@ -196,11 +173,7 @@ impl App {
             value: value.unwrap_or_default(),
             case_sensitive: true,
         };
-        let current = self
-            .tabs
-            .iter()
-            .find(|t| t.id == id)
-            .and_then(|t| t.grid.filter().cloned());
+        let current = self.tab(id).and_then(|t| t.grid.filter().cloned());
         let filter = match current {
             Some(mut f) if f.match_all => {
                 f.conditions.push(condition);

@@ -183,15 +183,11 @@ impl App {
     }
 
     pub(crate) fn selected_columns(&self, id: DocumentId) -> Option<std::ops::Range<usize>> {
-        self.tabs
-            .iter()
-            .find(|t| t.id == id)?
-            .grid
-            .selected_columns()
+        self.tab(id)?.grid.selected_columns()
     }
 
     fn select_columns(&mut self, id: DocumentId, range: std::ops::Range<usize>) {
-        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
+        if let Some(tab) = self.tab_mut(id) {
             tab.grid.select_columns(range);
         }
     }
@@ -256,7 +252,7 @@ impl App {
     /// Adds a copy of the selected column next to it.
     pub(crate) fn duplicate_column(&mut self, id: DocumentId) {
         let Some(range) = self.selected_columns(id).or_else(|| {
-            let (_, c) = self.tabs.iter().find(|t| t.id == id)?.grid.selected()?;
+            let (_, c) = self.tab(id)?.grid.selected()?;
             Some(c..c + 1)
         }) else {
             self.errors.push(tr("ST_MSG_SELECT_COLUMN_DUPLICATE"));
@@ -448,7 +444,7 @@ impl App {
     /// Names of the selected columns, or of the selected cell's column.
     pub(crate) fn selected_column_names(&self, id: DocumentId) -> Vec<String> {
         let range = self.selected_columns(id).or_else(|| {
-            let (_, c) = self.tabs.iter().find(|t| t.id == id)?.grid.selected()?;
+            let (_, c) = self.tab(id)?.grid.selected()?;
             Some(c..c + 1)
         });
         range.map_or_else(Vec::new, |r| self.column_names(id, r))
@@ -530,14 +526,10 @@ impl App {
         let column = match &step {
             Some((_, cast)) => Some(cast.column.clone()),
             None => {
-                let index = self.selected_columns(id).map(|c| c.start).or_else(|| {
-                    self.tabs
-                        .iter()
-                        .find(|t| t.id == id)?
-                        .grid
-                        .selected()
-                        .map(|s| s.1)
-                });
+                let index = self
+                    .selected_columns(id)
+                    .map(|c| c.start)
+                    .or_else(|| self.tab(id)?.grid.selected().map(|s| s.1));
                 index.and_then(|c| self.column_names(id, c..c + 1).pop())
             }
         };

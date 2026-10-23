@@ -54,13 +54,17 @@ impl App {
                             });
                         }
                         Some(item) if item.parent_kind == NodeKind::Struct => {
-                            self.grid_event(id, GridEvent::Navigate(Nav::Down));
+                            self.grid_do(id, |grid, doc| {
+                                grid.apply(GridEvent::Navigate(Nav::Down), doc)
+                            });
                         }
                         Some(item) if item.index + 1 >= item.len && !item.fixed => {
                             self.grid_do(id, |g, d| g.select_slot(&item.parent, d));
                             return self.start_edit(id, None);
                         }
-                        _ => self.grid_event(id, GridEvent::Navigate(Nav::Down)),
+                        _ => self.grid_do(id, |grid, doc| {
+                            grid.apply(GridEvent::Navigate(Nav::Down), doc)
+                        }),
                     }
                     return iced::widget::operation::focus(GRID_ID);
                 }
@@ -150,9 +154,7 @@ impl App {
             None => self.selected_column_names(id).into_iter().next(),
         };
         let path = path.unwrap_or_else(|| {
-            self.tabs
-                .iter()
-                .find(|t| t.id == id)
+            self.tab(id)
                 .and_then(|t| t.grid.selected_field())
                 .map(|(fields, _)| fields.iter().cloned().map(PathPart::Field).collect())
                 .unwrap_or_default()
@@ -206,12 +208,7 @@ impl App {
                 _ => return Task::none(),
             },
             None => {
-                let Some(kind) = self
-                    .tabs
-                    .iter()
-                    .find(|t| t.id == id)
-                    .and_then(|t| t.grid.selected_opens_items())
-                else {
+                let Some(kind) = self.tab(id).and_then(|t| t.grid.selected_opens_items()) else {
                     return Task::none();
                 };
                 (kind, Vec::new(), Vec::new())
@@ -233,7 +230,7 @@ impl App {
 
     /// Row and column name of the selected cell in a document's grid.
     pub(crate) fn selected_cell(&self, id: DocumentId) -> Option<(usize, String)> {
-        let tab = self.tabs.iter().find(|t| t.id == id)?;
+        let tab = self.tab(id)?;
         let (row, column) = tab.grid.selected()?;
         let doc = self.workbook.get(id)?;
         Some((row, doc.schema().field(column).name().clone()))
@@ -249,10 +246,20 @@ impl App {
         }
     }
 
+    /// The tab of document `id`.
+    pub(crate) fn tab(&self, id: DocumentId) -> Option<&Tab> {
+        self.tabs.iter().find(|t| t.id == id)
+    }
+
+    /// The tab of document `id`, to change.
+    pub(crate) fn tab_mut(&mut self, id: DocumentId) -> Option<&mut Tab> {
+        self.tabs.iter_mut().find(|t| t.id == id)
+    }
+
     /// The selected line of an open cell, if one is.
     pub(crate) fn selected_cell_item(&self, id: DocumentId) -> Option<CellItem> {
         let (row, column) = self.selected_cell(id)?;
-        let tab = self.tabs.iter().find(|t| t.id == id)?;
+        let tab = self.tab(id)?;
         let item = tab.grid.selected_item()?;
         let cell = tab
             .grid
@@ -422,7 +429,7 @@ impl App {
 
     /// The struct field shown in the selected cell, if it is one.
     pub(crate) fn selected_struct_field(&self, id: DocumentId) -> Option<StructField> {
-        let tab = self.tabs.iter().find(|t| t.id == id)?;
+        let tab = self.tab(id)?;
         let (path, data_type) = tab.grid.selected_field()?;
         (!path.is_empty()).then(|| StructField {
             path: path.to_vec(),
@@ -463,7 +470,7 @@ impl App {
         let Some((row, column)) = self.selected_cell(id) else {
             return Task::none();
         };
-        let Some(tab) = self.tabs.iter().find(|t| t.id == id) else {
+        let Some(tab) = self.tab(id) else {
             return Task::none();
         };
         // A nested cell: into its lines.
@@ -480,12 +487,7 @@ impl App {
         }
         let item = self.selected_cell_item(id);
         let Some(item) = item else {
-            if self
-                .tabs
-                .iter()
-                .find(|t| t.id == id)
-                .is_some_and(|t| t.grid.selected_is_container())
-            {
+            if self.tab(id).is_some_and(|t| t.grid.selected_is_container()) {
                 return Task::none();
             }
             // A plain cell, or a field of an expanded struct column.
@@ -591,7 +593,7 @@ impl App {
 
     /// Text of the selected cell (`None` inside for null).
     pub(crate) fn cell_value(&self, id: DocumentId) -> Option<Option<String>> {
-        let tab = self.tabs.iter().find(|t| t.id == id)?;
+        let tab = self.tab(id)?;
         let (row, column) = tab.grid.selected()?;
         match tab.grid.selected_edit_value() {
             Some(value) => Some(value.map(str::to_owned)),

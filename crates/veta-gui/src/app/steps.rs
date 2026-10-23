@@ -65,17 +65,16 @@ impl App {
                     self.computing = None;
                 }
                 if target == Target::View {
-                    if let (Some(doc), Some(tab)) = (
-                        self.workbook.get(id),
-                        self.tabs.iter_mut().find(|t| t.id == id),
-                    ) {
+                    if self.tab(id).is_some() {
                         match result.map(|slot| slot.take()) {
                             Ok(Some(computed)) => {
-                                tab.grid.install_filter(computed, doc);
+                                self.grid_do(id, |grid, doc| {
+                                    grid.install_filter(computed, doc);
+                                });
                             }
                             Ok(None) => {}
                             Err(e) => {
-                                tab.grid.set_filter(None, doc);
+                                self.grid_do(id, |grid, doc| grid.set_filter(None, doc));
                                 let error = crate::i18n::errors::error_text(&e);
                                 self.errors
                                     .push(tr_with("ST_MSG_FILTER_FAILED", &[("error", &error)]));
@@ -115,16 +114,13 @@ impl App {
             }
             Message::PreviewStep(id, level) => {
                 self.commit_edit_or_drop();
-                if let (Some(doc), Some(tab)) = (
-                    self.workbook.get(id),
-                    self.tabs.iter_mut().find(|t| t.id == id),
-                ) {
+                self.grid_do(id, |grid, doc| {
                     let preview = (level < doc.evaluated_steps()).then_some(level);
-                    tab.grid.set_preview(preview, doc);
-                }
+                    grid.set_preview(preview, doc);
+                });
             }
             Message::ToggleStep(id, index) => {
-                if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id)
+                if let Some(tab) = self.tab_mut(id)
                     && !tab.expanded_steps.remove(&index)
                 {
                     tab.expanded_steps.insert(index);
@@ -355,11 +351,7 @@ impl App {
                     .workbook
                     .get(c.document)
                     .and_then(Document::compute_key),
-                Target::View => self
-                    .tabs
-                    .iter()
-                    .find(|t| t.id == c.document)
-                    .and_then(|t| t.grid.filter_key()),
+                Target::View => self.tab(c.document).and_then(|t| t.grid.filter_key()),
             };
             if current.as_ref() != Some(&c.key) {
                 c.cancel.store(true, Ordering::Relaxed);
@@ -376,7 +368,7 @@ impl App {
             if let Some(job) = self.workbook.get(id).and_then(Document::compute_job) {
                 return self.start_compute(id, Target::Document, job);
             }
-            let view = self.tabs.iter().find(|t| t.id == id);
+            let view = self.tab(id);
             if let Some(job) = view.and_then(|t| t.grid.filter_job()) {
                 return self.start_compute(id, Target::View, job);
             }

@@ -23,12 +23,8 @@ impl App {
                             Some(Ok(())) => {
                                 self.dialog = None;
                                 self.refresh(id);
-                                if let (Some(rows), Some(doc), Some(tab)) = (
-                                    inserted,
-                                    self.workbook.get(id),
-                                    self.tabs.iter_mut().find(|t| t.id == id),
-                                ) {
-                                    tab.grid.select_rows(rows, doc);
+                                if let Some(rows) = inserted {
+                                    self.grid_do(id, |grid, doc| grid.select_rows(rows, doc));
                                 }
                             }
                             Some(Err(e)) => {
@@ -65,11 +61,7 @@ impl App {
                 // otherwise rows by position.
                 if let Some(id) = self.active {
                     let remove = action == Action::RemoveRows;
-                    let filtered = self
-                        .tabs
-                        .iter()
-                        .find(|t| t.id == id)
-                        .is_some_and(|t| t.grid.filter().is_some());
+                    let filtered = self.tab(id).is_some_and(|t| t.grid.filter().is_some());
                     if filtered {
                         self.apply_filter(id, remove);
                     } else if !self.editable(id) {
@@ -95,7 +87,7 @@ impl App {
     }
 
     pub(crate) fn selected_rows(&self, id: DocumentId) -> Option<std::ops::Range<usize>> {
-        self.tabs.iter().find(|t| t.id == id)?.grid.selected_rows()
+        self.tab(id)?.grid.selected_rows()
     }
 
     /// Inserts as many empty rows as are selected, above or below the
@@ -108,13 +100,8 @@ impl App {
         };
         let at = if below { rows.end } else { rows.start };
         let count = rows.len();
-        if self.execute(id, Command::InsertRows { at, count })
-            && let (Some(doc), Some(tab)) = (
-                self.workbook.get(id),
-                self.tabs.iter_mut().find(|t| t.id == id),
-            )
-        {
-            tab.grid.select_rows(at..at + count, doc);
+        if self.execute(id, Command::InsertRows { at, count }) {
+            self.grid_do(id, |grid, doc| grid.select_rows(at..at + count, doc));
         }
     }
 
@@ -124,13 +111,8 @@ impl App {
         let Some(at) = self.workbook.get(id).map(Document::num_rows) else {
             return;
         };
-        if self.execute(id, Command::InsertRows { at, count: 1 })
-            && let (Some(doc), Some(tab)) = (
-                self.workbook.get(id),
-                self.tabs.iter_mut().find(|t| t.id == id),
-            )
-        {
-            tab.grid.select_rows(at..at + 1, doc);
+        if self.execute(id, Command::InsertRows { at, count: 1 }) {
+            self.grid_do(id, |grid, doc| grid.select_rows(at..at + 1, doc));
         }
     }
 

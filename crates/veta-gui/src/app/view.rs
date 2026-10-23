@@ -229,9 +229,7 @@ impl App {
             let column = match menu.target {
                 MenuTarget::Column(c) => Some(c),
                 MenuTarget::Cell => self
-                    .tabs
-                    .iter()
-                    .find(|t| t.id == menu.document)
+                    .tab(menu.document)
                     .and_then(|t| t.grid.selected())
                     .map(|(_, c)| c),
                 _ => None,
@@ -242,9 +240,7 @@ impl App {
                     .and_then(|d| d.schema().fields().get(c).map(|f| f.data_type().clone()))
             });
             let line = self
-                .tabs
-                .iter()
-                .find(|t| t.id == menu.document)
+                .tab(menu.document)
                 .and_then(|t| t.grid.selected_item())
                 .and_then(|i| i.kind);
             let sections =
