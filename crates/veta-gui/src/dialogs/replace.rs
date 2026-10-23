@@ -109,7 +109,7 @@ impl ReplaceDialog {
             );
         }
         if let Some(error) = &self.error {
-            body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
+            body = body.push(text(error).style(iced::widget::text::danger));
         } else if !self.text_column {
             body = body.push(text(tr("ST_DLG_REPLACE_TYPED_NOTE")).color(tokens.muted_text));
         }

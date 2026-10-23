@@ -350,7 +350,7 @@ impl CastDialog {
         let color = if p.failed == 0 {
             tokens.muted_text
         } else {
-            iced::Color::from_rgb8(0xd1, 0x43, 0x43)
+            tokens.danger
         };
         body = body.push(text(summary).color(color));
         body = body.push(buttons(

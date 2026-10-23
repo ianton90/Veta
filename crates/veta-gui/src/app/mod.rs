@@ -173,13 +173,16 @@ impl Startup {
     /// its own on every frame, see `crate::fonts`). The OS mode is unknown
     /// this early, so "follow system" uses the light theme's font.
     fn font(&self) -> (Font, f32) {
-        let theme = pick_theme(&self.themes, &self.config, None);
-        let a = &self.config.appearance;
-        (
-            crate::fonts::resolve(font_family(&self.config, theme)),
-            a.font_size.unwrap_or(theme.font_size),
-        )
+        interface_font(&self.config, pick_theme(&self.themes, &self.config, None))
     }
+}
+
+/// The interface font and text size: the settings', else the theme's.
+fn interface_font(config: &Config, theme: &VetaTheme) -> (Font, f32) {
+    (
+        crate::fonts::resolve(font_family(config, theme)),
+        config.appearance.font_size.unwrap_or(theme.font_size),
+    )
 }
 
 /// The font family the settings name, else the theme's.
@@ -289,12 +292,7 @@ impl App {
 
     /// The interface font and text size: the settings', else the theme's.
     pub(crate) fn interface_font(&self) -> (Font, f32) {
-        let theme = self.current_theme();
-        let a = &self.config.appearance;
-        (
-            crate::fonts::resolve(font_family(&self.config, theme)),
-            a.font_size.unwrap_or(theme.font_size),
-        )
+        interface_font(&self.config, self.current_theme())
     }
 
     /// The table's text size: its own setting (else the interface's),
@@ -305,9 +303,8 @@ impl App {
         base * f32::from(a.zoom) / 100.0
     }
 
-    /// Gives every table the current text size (after a font, theme or
-    /// zoom change).
-    pub(crate) fn apply_table_size(&mut self) {
+    /// Gives every table the current text size; run after every update.
+    fn apply_table_size(&mut self) {
         let size = self.table_text_size();
         for tab in &mut self.tabs {
             if let Some(doc) = self.workbook.get(tab.id) {
@@ -367,6 +364,9 @@ impl App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.handle(message);
+        // Tables follow the zoom, fonts and theme, whatever changed them
+        // (nothing happens when the size is the same).
+        self.apply_table_size();
         // Files sent by another launch wait until a save is done.
         let queued = if self.saving.is_none() && !self.queued_files.is_empty() {
             let files = std::mem::take(&mut self.queued_files);
@@ -601,7 +601,6 @@ impl App {
                                 self.errors.retain(|e| Some(e) != missing.as_ref());
                             }
                             self.config.apply_memory_budget();
-                            self.apply_table_size();
                             self.save_config();
                             self.dialog = None;
                             if changed {
@@ -630,8 +629,6 @@ impl App {
                     iced::theme::Mode::Dark => Some(Mode::Dark),
                     iced::theme::Mode::None => None,
                 };
-                // The theme's font size may differ.
-                self.apply_table_size();
             }
         }
         Task::none()

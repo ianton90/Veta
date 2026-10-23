@@ -366,7 +366,7 @@ impl ImportDialog {
             } else {
                 e.clone()
             })
-            .color(iced::Color::from_rgb8(0xd1, 0x43, 0x43))
+            .style(iced::widget::text::danger)
             .into(),
             Ok(preview) => {
                 const WIDTH: f32 = 150.0;
@@ -395,7 +395,7 @@ impl ImportDialog {
                     let note = if failed > 0 {
                         text(tr_with("ST_DLG_IMPORT_DONT_FIT", &[("n", &failed)]))
                             .size(11)
-                            .color(iced::Color::from_rgb8(0xd1, 0x43, 0x43))
+                            .style(iced::widget::text::danger)
                     } else {
                         text(" ").size(11)
                     };

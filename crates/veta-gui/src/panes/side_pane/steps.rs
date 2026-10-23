@@ -15,7 +15,7 @@ pub(super) fn steps_pane<'a>(tab: &'a Tab, doc: &'a Document, ui: Ui) -> Element
     let steps = doc.steps();
     let evaluated = doc.evaluated_steps();
     let shown = tab.grid.preview().unwrap_or(evaluated).min(evaluated);
-    let red = Color::from_rgb8(0xd1, 0x43, 0x43);
+    let red = t.danger;
 
     let item = |index: Option<usize>,
                 label: String,

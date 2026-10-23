@@ -64,7 +64,7 @@ impl App {
                             if flash > 0.0
                                 && let iced::Background::Color(base) = style.background
                             {
-                                let red = Color::from_rgb8(0xd1, 0x43, 0x43);
+                                let red = theme.palette().danger;
                                 let k = 0.5 * flash;
                                 let mix = |a: f32, b: f32| a + (b - a) * k;
                                 style.background = iced::Background::Color(Color {

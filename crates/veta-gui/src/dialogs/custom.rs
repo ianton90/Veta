@@ -79,13 +79,12 @@ impl CustomDialog {
     }
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, CustomMessage> {
-        let danger = iced::Color::from_rgb8(0xd1, 0x43, 0x43);
         let status: Element<'_, CustomMessage> = match &self.check {
             Ok(t) => text(tr_with("ST_DLG_CUSTOM_RESULT", &[("type", &t)]))
                 .color(tokens.muted_text)
                 .into(),
             Err(e) if e.is_empty() => text("").into(),
-            Err(e) => text(e).color(danger).into(),
+            Err(e) => text(e).style(iced::widget::text::danger).into(),
         };
         let columns: Vec<String> = self
             .schema
@@ -132,7 +131,7 @@ impl CustomDialog {
         ]
         .spacing(12);
         if let Some(error) = &self.error {
-            body = body.push(text(error).color(danger));
+            body = body.push(text(error).style(iced::widget::text::danger));
         }
         body = body.push(buttons(
             "ST_COMMON_OK",

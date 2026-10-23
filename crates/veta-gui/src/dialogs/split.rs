@@ -180,7 +180,7 @@ impl SplitDialog {
             }
         }
         if let Some(error) = &self.error {
-            body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
+            body = body.push(text(error).style(iced::widget::text::danger));
         }
         body = body.push(buttons(
             "ST_COMMON_OK",

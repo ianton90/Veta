@@ -443,7 +443,7 @@ impl ColumnDialog {
             body = body.push(text(tr(note)).color(tokens.muted_text));
         }
         if let Some(error) = &self.error {
-            body = body.push(text(error).color(iced::Color::from_rgb8(0xd1, 0x43, 0x43)));
+            body = body.push(text(error).style(iced::widget::text::danger));
         }
         body = body.push(buttons(
             action,

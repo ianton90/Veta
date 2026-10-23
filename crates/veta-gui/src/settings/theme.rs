@@ -65,6 +65,8 @@ pub struct Tokens {
     pub nested_even: Color,
     pub selection: Color,
     pub primary: Color,
+    /// Errors and failures.
+    pub danger: Color,
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,6 +206,7 @@ pub fn parse(source: &str) -> Result<VetaTheme, String> {
             .map_or(mix(palette.background, palette.primary, 0.14), |h| h.0),
         selection: c.selection.map_or(palette.primary, |h| h.0),
         primary: palette.primary,
+        danger: palette.danger,
     };
     Ok(VetaTheme {
         iced: Theme::custom(file.name.clone(), palette),

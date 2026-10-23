@@ -85,7 +85,7 @@ pub fn formula_bar<'a>(
     let (hint, hint_color) = match edit {
         Some(Edit {
             error: Some(error), ..
-        }) => (error.clone(), Color::from_rgb8(0xd1, 0x43, 0x43)),
+        }) => (error.clone(), t.danger),
         Some(_) => (tr("ST_FORMULA_EDIT_HINT"), t.muted_text),
         None => (String::new(), t.muted_text),
     };

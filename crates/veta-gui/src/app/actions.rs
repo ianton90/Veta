@@ -116,7 +116,6 @@ impl App {
             Action::Mode(mode) => {
                 self.config.appearance.mode = mode;
                 self.save_config();
-                self.apply_table_size();
             }
             Action::ZoomIn => self.zoom_by(1),
             Action::ZoomOut => self.zoom_by(-1),
@@ -138,7 +137,6 @@ impl App {
         if zoom != self.config.appearance.zoom {
             self.config.appearance.zoom = zoom;
             self.save_config();
-            self.apply_table_size();
         }
     }
 }
