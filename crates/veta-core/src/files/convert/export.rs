@@ -59,13 +59,18 @@ pub(super) fn write_export(
                 output.read_parallel(output.evaluated(), 0..rows, None, move |batches, first| {
                     let n: usize = batches.iter().map(RecordBatch::num_rows).sum();
                     let out = buffers.lock().ok().and_then(|mut b| b.pop());
-                    let text = format_piece(&piece_format, &batches, first == 0, out)?;
+                    let text = crate::profile::time("export: turning rows into text", || {
+                        format_piece(&piece_format, &batches, first == 0, out)
+                    })?;
                     Ok((text, n))
                 });
+            let mut pieces = pieces.into_iter();
             let mut written = false;
-            for piece in pieces {
+            while let Some(piece) =
+                crate::profile::time("export: waiting for text", || pieces.next())
+            {
                 let (text, n) = piece?;
-                file.write_all(&text)?;
+                crate::profile::time("export: writing", || file.write_all(&text))?;
                 if let Ok(mut spare) = spare.lock() {
                     spare.push(text);
                 }
