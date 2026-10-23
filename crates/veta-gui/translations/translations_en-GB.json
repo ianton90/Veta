@@ -60,6 +60,7 @@
   "ERR_FORMULA_NEEDS_NUMBER": "{what} needs a number, not {data_type}",
   "ERR_FORMULA_NEEDS_TEXT": "{what} needs text, not {data_type}",
   "ERR_FORMULA_NOT_NUMBER": "{text} is not a number",
+  "ERR_FORMULA_TOO_DEEP": "the expression is nested too deeply (more than {max} levels)",
   "ERR_FORMULA_TOO_LARGE": "{text} is too large",
   "ERR_FORMULA_TRAILING": "unexpected \"{text}\" after the expression",
   "ERR_FORMULA_UNEXPECTED": "unexpected \"{text}\"",

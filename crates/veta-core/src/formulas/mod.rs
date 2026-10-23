@@ -371,6 +371,7 @@ impl CustomColumn {
 mod tests {
     use super::eval::*;
     use super::*;
+    use crate::error::{Error, ErrorCode};
     use arrow::array::Date32Array;
     use arrow::datatypes::Field;
 
@@ -409,6 +410,34 @@ mod tests {
             .unwrap();
         assert_eq!(out.data_type(), &t, "{source}");
         out
+    }
+
+    #[test]
+    fn deep_nesting_is_refused_not_overflowed() {
+        use super::parser::MAX_DEPTH;
+        let deep = |n: usize| -> [String; 4] {
+            [
+                format!("{}1{}", "(".repeat(n), ")".repeat(n)),
+                format!("{}1", "-".repeat(n)),
+                format!("{}true", "not ".repeat(n)),
+                vec!["1"; n + 1].join(" + "),
+            ]
+        };
+        let too_deep = |source: &str| matches!(parse(source), Err(Error::Invalid(e)) if e.code == ErrorCode::FormulaTooDeep);
+        // Within the limit, parsing, typing and evaluating fit a worker
+        // thread's stack (2 MB); past it, a clear error.
+        let ok = std::thread::spawn(move || {
+            for source in deep(MAX_DEPTH - 1) {
+                eval(&source);
+            }
+        });
+        ok.join().expect("no stack overflow");
+        for source in deep(MAX_DEPTH + 1) {
+            assert!(too_deep(&source), "{}", &source[..20]);
+        }
+        for source in deep(200_000) {
+            assert!(too_deep(&source));
+        }
     }
 
     fn text(source: &str) -> Vec<Option<String>> {

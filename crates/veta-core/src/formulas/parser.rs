@@ -102,12 +102,28 @@ fn lex(source: &str) -> Result<Vec<Token>> {
 
 // Parsing (precedence climbing).
 
+/// Deepest nesting of brackets, signs, `not` and chained operators: parsing,
+/// type checking and evaluation call themselves once per level, so a formula
+/// nested thousands deep (in a recipe, say) would overflow the stack.
+pub const MAX_DEPTH: usize = 64;
+
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// Levels open right now.
+    depth: usize,
 }
 
 impl Parser {
+    /// Opens a level, refusing past [`MAX_DEPTH`].
+    fn enter(&mut self, more: usize) -> Result<()> {
+        if self.depth + more > MAX_DEPTH {
+            return Err(invalid!(FormulaTooDeep, max = MAX_DEPTH));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
     fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.pos)
     }
@@ -155,15 +171,23 @@ impl Parser {
     }
 
     fn expression(&mut self, min: u8) -> Result<Expr> {
+        self.enter(0)?;
         let mut left = self.unary()?;
+        // Each operator in a chain (`a + b + c`) nests the left side once more.
+        let mut chain = 0;
         while let Some((op, precedence)) = self.binary_op() {
             if precedence < min {
                 break;
             }
             self.next();
             let right = self.expression(precedence + 1)?;
+            chain += 1;
+            if self.depth + chain > MAX_DEPTH {
+                return Err(invalid!(FormulaTooDeep, max = MAX_DEPTH));
+            }
             left = Expr::Binary(op, Box::new(left), Box::new(right));
         }
+        self.depth -= 1;
         Ok(left)
     }
 
@@ -175,7 +199,10 @@ impl Parser {
         }
         if self.peek() == Some(&Token::Op("-")) {
             self.next();
-            return Ok(Expr::Neg(Box::new(self.unary()?)));
+            self.enter(0)?;
+            let inner = self.unary()?;
+            self.depth -= 1;
+            return Ok(Expr::Neg(Box::new(inner)));
         }
         self.primary()
     }
@@ -255,7 +282,11 @@ pub fn parse(source: &str) -> Result<Expr> {
     if tokens.is_empty() {
         return Err(invalid!(FormulaEmpty));
     }
-    let mut parser = Parser { tokens, pos: 0 };
+    let mut parser = Parser {
+        tokens,
+        pos: 0,
+        depth: 0,
+    };
     let expr = parser.expression(0)?;
     if let Some(token) = parser.peek() {
         return Err(invalid!(FormulaTrailing, text = format!("{token:?}")));

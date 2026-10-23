@@ -60,6 +60,7 @@
   "ERR_FORMULA_NEEDS_NUMBER": "{what} necesita un número, no {data_type}",
   "ERR_FORMULA_NEEDS_TEXT": "{what} necesita texto, no {data_type}",
   "ERR_FORMULA_NOT_NUMBER": "{text} no es un número",
+  "ERR_FORMULA_TOO_DEEP": "la expresión está anidada demasiado (más de {max} niveles)",
   "ERR_FORMULA_TOO_LARGE": "{text} es demasiado grande",
   "ERR_FORMULA_TRAILING": "«{text}» inesperado tras la expresión",
   "ERR_FORMULA_UNEXPECTED": "«{text}» inesperado",

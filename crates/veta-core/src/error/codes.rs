@@ -91,6 +91,7 @@ error_codes! {
     FormulaNeedsNumber => "{what} needs a number, not {data_type}",
     FormulaNeedsText => "{what} needs text, not {data_type}",
     FormulaNotNumber => "{text} is not a number",
+    FormulaTooDeep => "the expression is nested too deeply (more than {max} levels)",
     FormulaTooLarge => "{text} is too large",
     FormulaTrailing => "unexpected \"{text}\" after the expression",
     FormulaUnexpected => "unexpected \"{text}\"",
