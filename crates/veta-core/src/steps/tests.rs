@@ -487,7 +487,7 @@ fn fill_carries_values_across_batches() {
 
 #[test]
 fn stale_temp_files_are_removed() {
-    let dir = std::env::temp_dir();
+    let dir = crate::steps::checkpoint::temp_dir().unwrap();
     // No process has this id (above the usual pid limits).
     let stale = dir.join("veta-4294967-0.parquet");
     std::fs::write(&stale, b"x").unwrap();
@@ -497,5 +497,13 @@ fn stale_temp_files_are_removed() {
         assert!(!stale.exists());
     }
     assert!(own.path().exists(), "this process's files stay");
+    assert!(own.path().starts_with(&dir));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(own.path()), 0o600, "only the owner reads temp files");
+        assert_eq!(mode(&dir), 0o700);
+    }
     let _ = std::fs::remove_file(&stale);
 }

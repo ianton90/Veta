@@ -12,7 +12,7 @@ use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 use crate::error::Result;
 use crate::source::{DataSource, PagedSource, SourceMode};
 
-/// A file in the temp directory, deleted when dropped.
+/// A file in Veta's temp folder ([`temp_dir`]), deleted when dropped.
 #[derive(Debug)]
 pub(crate) struct TempFile {
     path: PathBuf,
@@ -22,8 +22,14 @@ impl TempFile {
     pub(crate) fn new() -> Result<Self> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("veta-{}-{n}.parquet", std::process::id()));
-        File::create(&path)?;
+        let path = temp_dir()?.join(format!("veta-{}-{n}.parquet", std::process::id()));
+        // A new file only (never one already there), readable by its owner
+        // alone.
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        options.open(&path)?;
         Ok(Self { path })
     }
 
@@ -38,15 +44,81 @@ impl Drop for TempFile {
     }
 }
 
-/// Deletes temporary files left in the temp directory by Veta processes
-/// that ended without cleaning up (a crash). Returns how many were removed.
+/// Veta's temp folder, only the user can open (#161; decision 61). Linux:
+/// `$XDG_CACHE_HOME/veta/tmp` (default `~/.cache/veta/tmp`): per-user and on
+/// disk, while `/tmp` is shared and, like `/run/user`, often kept in memory,
+/// too small for files of several GB. Elsewhere the system temp folder is
+/// already per-user: a `veta` folder inside it.
+pub fn temp_dir() -> Result<PathBuf> {
+    let dir = temp_dir_path();
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&dir)?;
+    // A folder made by someone else (or a link to one) isn't private.
+    let meta = std::fs::symlink_metadata(&dir)?;
+    #[cfg(target_os = "linux")]
+    let theirs = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata("/proc/self").is_ok_and(|me| me.uid() != meta.uid())
+    };
+    #[cfg(not(target_os = "linux"))]
+    let theirs = false;
+    if !meta.is_dir() || theirs {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{} is not a private folder", dir.display()),
+        )
+        .into());
+    }
+    // Made earlier with other permissions: private again.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o777 != 0o700 {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    Ok(dir)
+}
+
+fn temp_dir_path() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        let absolute = |v: std::ffi::OsString| Some(PathBuf::from(v)).filter(|p| p.is_absolute());
+        let cache = std::env::var_os("XDG_CACHE_HOME")
+            .and_then(absolute)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .and_then(absolute)
+                    .map(|h| h.join(".cache"))
+            });
+        if let Some(cache) = cache {
+            return cache.join("veta").join("tmp");
+        }
+    }
+    std::env::temp_dir().join("veta")
+}
+
+/// Deletes temporary files left by Veta processes that ended without
+/// cleaning up (a crash), in Veta's temp folder and where versions before
+/// 0.7 kept them (the system temp folder). Returns how many were removed.
 ///
 /// A file counts as stale when its process is gone (Linux), or when it is
 /// over a day old (other Unix systems; deleting a file another process has
 /// open is harmless there), or when nothing has it open and it is over an
 /// hour old (Windows).
 pub fn remove_stale_temp_files() -> usize {
-    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+    let dirs = [temp_dir().ok(), Some(std::env::temp_dir())];
+    dirs.into_iter()
+        .flatten()
+        .map(|dir| remove_stale_in(&dir))
+        .sum()
+}
+
+fn remove_stale_in(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
     };
     let own = std::process::id();
