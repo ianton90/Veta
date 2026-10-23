@@ -8,11 +8,6 @@ pub(crate) fn file_label(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Whether an error message is the core's "cancelled".
-pub(crate) fn is_cancelled(error: &str) -> bool {
-    error == error_text(&veta_core::Error::Cancelled)
-}
-
 /// Each top-level column with its metadata: as edited in Veta, otherwise
 /// the column's own (sorted by key).
 pub(crate) fn column_metadata(doc: &Document) -> Vec<(String, Vec<veta_core::model::KeyValue>)> {
@@ -73,10 +68,10 @@ impl App {
                 match result.map(|loaded| loaded.take()) {
                     Ok(Some(document)) => self.add_document(&path, document),
                     Ok(None) => {}
-                    Err(e) if is_cancelled(&e) => {}
+                    Err(veta_core::Error::Cancelled) => {}
                     Err(e) => self.errors.push(tr_with(
                         "ST_MSG_OPEN_FAILED",
-                        &[("path", &path.display()), ("error", &e)],
+                        &[("path", &path.display()), ("error", &error_text(&e))],
                     )),
                 }
             }
@@ -90,10 +85,10 @@ impl App {
                         }
                     }
                     Ok(None) => {}
-                    Err(e) if is_cancelled(&e) => {}
+                    Err(veta_core::Error::Cancelled) => {}
                     Err(e) => self.errors.push(tr_with(
                         "ST_MSG_IMPORT_FAILED",
-                        &[("path", &path.display()), ("error", &e)],
+                        &[("path", &path.display()), ("error", &error_text(&e))],
                     )),
                 }
             }
@@ -122,7 +117,7 @@ impl App {
                     Ok(None) => {}
                     Err(e) => {
                         self.errors
-                            .push(tr_with("ST_MSG_SAVE_FAILED", &[("error", &e)]));
+                            .push(tr_with("ST_MSG_SAVE_FAILED", &[("error", &error_text(&e))]));
                         self.closing = None;
                     }
                 }
@@ -156,7 +151,6 @@ impl App {
                                     progress,
                                 )
                                 .map(Slot::new)
-                                .map_err(|e| error_text(&e))
                             },
                             move |result| Message::Imported(path.clone(), result),
                         );
@@ -209,9 +203,7 @@ impl App {
                     None,
                     tr_with("ST_MSG_EXPORTING", &[("name", &file_label(&path))]),
                     move |progress| {
-                        veta_core::convert::export(&output, &path, &format, progress)
-                            .map(|()| path)
-                            .map_err(|e| error_text(&e))
+                        veta_core::convert::export(&output, &path, &format, progress).map(|()| path)
                     },
                     Message::Exported,
                 );
@@ -221,10 +213,13 @@ impl App {
                 Ok(path) => {
                     self.notice = Some(tr_with("ST_MSG_EXPORTED", &[("path", &path.display())]));
                 }
-                Err(e) if is_cancelled(&e) => self.notice = Some(tr("ST_MSG_EXPORT_CANCELLED")),
-                Err(e) => self
-                    .errors
-                    .push(tr_with("ST_MSG_EXPORT_FAILED", &[("error", &e)])),
+                Err(veta_core::Error::Cancelled) => {
+                    self.notice = Some(tr("ST_MSG_EXPORT_CANCELLED"))
+                }
+                Err(e) => self.errors.push(tr_with(
+                    "ST_MSG_EXPORT_FAILED",
+                    &[("error", &error_text(&e))],
+                )),
             },
             Message::TransferProgress(id, progress) => {
                 if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
@@ -554,10 +549,9 @@ impl App {
         match doc.save_job(target) {
             Ok(job) => {
                 self.saving = Some(id);
-                Task::perform(
-                    blocking(move || job.run().map(Slot::new).map_err(|e| error_text(&e))),
-                    move |result| Message::Saved(id, result),
-                )
+                Task::perform(blocking(move || job.run().map(Slot::new)), move |result| {
+                    Message::Saved(id, result)
+                })
             }
             Err(e) => {
                 self.errors
@@ -667,18 +661,13 @@ impl App {
                     move |progress| {
                         veta_core::convert::import_json(&worker_path, budget, progress)
                             .map(Loaded::new)
-                            .map_err(|e| error_text(&e))
                     },
                     move |result| Message::Opened(path.clone(), result),
                 ));
                 continue;
             }
             tasks.push(Task::perform(
-                blocking(move || {
-                    Document::open(worker_path, options)
-                        .map(Loaded::new)
-                        .map_err(|e| error_text(&e))
-                }),
+                blocking(move || Document::open(worker_path, options).map(Loaded::new)),
                 move |result| Message::Opened(path.clone(), result),
             ));
         }

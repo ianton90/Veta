@@ -56,7 +56,10 @@ fn closing_focuses_neighbour() {
 fn open_failure_is_reported() {
     let mut app = app();
     app.opening.push("x.parquet".into());
-    let _ = app.update(Message::Opened("x.parquet".into(), Err("boom".into())));
+    let _ = app.update(Message::Opened(
+        "x.parquet".into(),
+        Err(veta_core::Error::from(std::io::Error::other("boom"))),
+    ));
     assert!(app.opening.is_empty());
     assert_eq!(app.errors.len(), 1);
     let _ = app.update(Message::DismissError(0));
@@ -83,7 +86,7 @@ fn save_in_place_and_save_as() {
     // What the worker thread does, run inline.
     let run = |app: &App, target: Option<PathBuf>| {
         let job = app.workbook.get(id).unwrap().save_job(target).unwrap();
-        Message::Saved(id, job.run().map(Slot::new).map_err(|e| e.to_string()))
+        Message::Saved(id, job.run().map(Slot::new))
     };
     app.saving = Some(id);
     let _ = app.update(Message::Action(Action::Undo)); // ignored while saving
@@ -159,10 +162,7 @@ fn save_then_close() {
     assert_eq!(app.saving, Some(id));
     // What the worker thread does.
     let job = app.workbook.get(id).unwrap().save_job(None).unwrap();
-    let _ = app.update(Message::Saved(
-        id,
-        job.run().map(Slot::new).map_err(|e| e.to_string()),
-    ));
+    let _ = app.update(Message::Saved(id, job.run().map(Slot::new)));
     assert!(app.tabs.is_empty(), "closed after saving");
     assert_eq!(
         Document::open(&a, OpenOptions::default())
@@ -280,9 +280,8 @@ fn import_reports_values_that_did_not_fit() {
     };
     let options = dialog.options();
     assert_eq!(options.on_error, OnError::ErrorColumn);
-    let result = veta_core::convert::import_csv(&csv, &options, 1 << 30, &mut |_| true)
-        .map(Slot::new)
-        .map_err(|e| e.to_string());
+    let result =
+        veta_core::convert::import_csv(&csv, &options, 1 << 30, &mut |_| true).map(Slot::new);
     let _ = app.update(Message::Imported(csv, result));
     assert_eq!(app.tabs.len(), 1);
     assert!(app.errors[0].contains("n (1)"), "{:?}", app.errors);

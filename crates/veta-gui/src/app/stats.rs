@@ -35,9 +35,10 @@ impl App {
                         }
                     }
                     Ok(_) => {}
-                    Err(e) => self
-                        .errors
-                        .push(tr_with("ST_MSG_STATS_FAILED", &[("error", &e)])),
+                    Err(e) => self.errors.push(tr_with(
+                        "ST_MSG_STATS_FAILED",
+                        &[("error", &error_text(&e))],
+                    )),
                 }
             }
             _ => unreachable!("not a stats message"),
@@ -111,7 +112,6 @@ impl App {
                 !cancel.load(Ordering::Relaxed)
             });
             if !cancel.load(Ordering::Relaxed) {
-                let result = result.map_err(|e| error_text(&e));
                 let _ = sender.unbounded_send(Message::StatsDone(id, revision, result));
             }
         });

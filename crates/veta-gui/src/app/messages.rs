@@ -12,12 +12,18 @@ pub(crate) enum Message {
     WindowResized(Size),
     /// A frame is drawn (only while something animates).
     Frame(std::time::Instant),
-    Opened(PathBuf, Result<Loaded, String>),
+    Opened(PathBuf, Result<Loaded, veta_core::Error>),
     /// A CSV import finished, with what it found.
-    Imported(PathBuf, Result<Slot<(Document, ImportReport)>, String>),
+    Imported(
+        PathBuf,
+        Result<Slot<(Document, ImportReport)>, veta_core::Error>,
+    ),
     /// Save As dialog closed (with the chosen path, if any).
     SaveTo(DocumentId, Option<PathBuf>),
-    Saved(DocumentId, Result<Slot<veta_core::SaveResult>, String>),
+    Saved(
+        DocumentId,
+        Result<Slot<veta_core::SaveResult>, veta_core::Error>,
+    ),
     SelectTab(DocumentId),
     CloseTab(DocumentId),
     Grid(DocumentId, GridEvent),
@@ -71,14 +77,14 @@ pub(crate) enum Message {
         u64,
         Result<veta_core::arrow::record_batch::RecordBatch, veta_core::Error>,
     ),
-    StatsDone(DocumentId, u64, Result<Vec<ColumnStats>, String>),
+    StatsDone(DocumentId, u64, Result<Vec<ColumnStats>, veta_core::Error>),
     /// A file to import was chosen.
     ImportPicked(Option<PathBuf>),
     Import(ImportMessage),
     Export(ExportMessage),
     /// Where to export was chosen.
     ExportTo(DocumentId, Option<PathBuf>),
-    Exported(Result<PathBuf, String>),
+    Exported(Result<PathBuf, veta_core::Error>),
     /// A background import or export reached this fraction.
     TransferProgress(u64, f32),
     TransferDone(u64),

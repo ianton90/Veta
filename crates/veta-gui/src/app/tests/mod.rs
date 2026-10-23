@@ -68,7 +68,7 @@ fn finish_stats(app: &mut App) {
         .unwrap()
         .stats_job(run.columns.clone())
         .unwrap();
-    let result = job.run(&mut |_| true).map_err(|e| e.to_string());
+    let result = job.run(&mut |_| true);
     let _ = app.update(Message::StatsDone(id, revision, result));
 }
 
