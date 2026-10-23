@@ -75,21 +75,136 @@ pub enum Action {
     About,
 }
 
+/// Keyboard shortcuts (Ctrl, or Cmd on macOS, with a key and maybe Shift):
+/// the action, the key, whether Shift is held, and the label shown. The
+/// first shortcut of an action is its label in the ribbon and menus.
+pub const SHORTCUTS: &[(Action, &str, bool, &str)] = &[
+    (Action::New, "n", false, "Ctrl+N"),
+    (Action::Open, "o", false, "Ctrl+O"),
+    (Action::Close, "w", false, "Ctrl+W"),
+    (Action::Save, "s", false, "Ctrl+S"),
+    (Action::SaveAs, "s", true, "Ctrl+Shift+S"),
+    (Action::Undo, "z", false, "Ctrl+Z"),
+    (Action::Redo, "y", false, "Ctrl+Y"),
+    (Action::Redo, "z", true, "Ctrl+Shift+Z"),
+    (Action::Copy, "c", false, "Ctrl+C"),
+    (Action::Cut, "x", false, "Ctrl+X"),
+    (Action::Paste, "v", false, "Ctrl+V"),
+    (Action::Settings, ",", false, "Ctrl+,"),
+];
+
+/// The part of the app that carries out an action (see `App::perform`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Area {
+    Clipboard,
+    Columns,
+    Editing,
+    Documents,
+    Filter,
+    Rows,
+    /// Panes, theme, zoom, settings: handled where actions are dispatched.
+    General,
+}
+
 impl Action {
-    fn shortcut(self) -> Option<&'static str> {
+    /// The action's shortcut, as shown.
+    pub fn shortcut(self) -> Option<&'static str> {
+        SHORTCUTS
+            .iter()
+            .find(|(action, ..)| *action == self)
+            .map(|(.., label)| *label)
+    }
+
+    /// The action bound to Ctrl (Cmd) + `key`, with or without Shift.
+    pub fn for_key(key: &str, shift: bool) -> Option<Action> {
+        SHORTCUTS
+            .iter()
+            .find(|(_, k, s, _)| k.eq_ignore_ascii_case(key) && *s == shift)
+            .map(|(action, ..)| *action)
+    }
+
+    /// Whether the action changes the data (refused while the document
+    /// can't be changed).
+    pub fn changes_data(self) -> bool {
+        use Action as A;
+        matches!(
+            self,
+            A::InsertRowsAt
+                | A::AddColumn
+                | A::RenameColumn
+                | A::RemoveColumns
+                | A::KeepColumns
+                | A::SortAscending
+                | A::SortDescending
+                | A::CustomSort
+                | A::ExpandStruct
+                | A::ExplodeList
+                | A::DataType
+                | A::ReplaceValues
+                | A::FillDown
+                | A::FormatText
+                | A::SplitColumn
+                | A::MergeColumns
+                | A::CombineStruct
+                | A::CollectList
+                | A::CustomColumn
+                | A::DuplicateColumn
+                | A::IndexColumn
+                | A::Cut
+                | A::Paste
+                | A::FillUp
+                | A::MoveColumnLeft
+                | A::MoveColumnRight
+                | A::ExpandAll
+        )
+    }
+
+    /// Where the action is carried out.
+    pub fn area(self) -> Area {
+        use Action as A;
         match self {
-            Action::New => Some("Ctrl+N"),
-            Action::Open => Some("Ctrl+O"),
-            Action::Close => Some("Ctrl+W"),
-            Action::Save => Some("Ctrl+S"),
-            Action::SaveAs => Some("Ctrl+Shift+S"),
-            Action::Undo => Some("Ctrl+Z"),
-            Action::Redo => Some("Ctrl+Y"),
-            Action::Copy => Some("Ctrl+C"),
-            Action::Cut => Some("Ctrl+X"),
-            Action::Paste => Some("Ctrl+V"),
-            Action::Settings => Some("Ctrl+,"),
-            _ => None,
+            A::Copy | A::Cut | A::Paste => Area::Clipboard,
+            A::FillUp
+            | A::FillDown
+            | A::MoveColumnLeft
+            | A::MoveColumnRight
+            | A::ReplaceValues
+            | A::FormatText
+            | A::CustomColumn
+            | A::DuplicateColumn
+            | A::IndexColumn
+            | A::SplitColumn
+            | A::MergeColumns
+            | A::CombineStruct
+            | A::CollectList
+            | A::DataType
+            | A::AddColumn
+            | A::RenameColumn
+            | A::RemoveColumns
+            | A::KeepColumns => Area::Columns,
+            A::ExpandAll | A::Undo | A::Redo | A::ExpandStruct | A::ExplodeList => Area::Editing,
+            A::Import
+            | A::Export
+            | A::New
+            | A::LoadRecipe
+            | A::SaveRecipe
+            | A::Open
+            | A::Close
+            | A::Save
+            | A::SaveAs
+            | A::FileMetadata
+            | A::WriterSettings => Area::Documents,
+            A::FilterRows | A::CustomSort | A::SortAscending | A::SortDescending => Area::Filter,
+            A::InsertRowsAt | A::KeepRows | A::RemoveRows => Area::Rows,
+            A::ToggleDetails
+            | A::AppliedSteps
+            | A::StatisticsPane
+            | A::Mode(_)
+            | A::ZoomIn
+            | A::ZoomOut
+            | A::ZoomReset
+            | A::Settings
+            | A::About => Area::General,
         }
     }
 
@@ -295,6 +410,27 @@ impl Context {
 mod tests {
     use super::layout::groups;
     use super::*;
+
+    #[test]
+    fn shortcuts_come_from_one_table() {
+        assert_eq!(Action::for_key("s", false), Some(Action::Save));
+        // Shift may arrive as an upper-case letter.
+        assert_eq!(Action::for_key("S", true), Some(Action::SaveAs));
+        assert_eq!(Action::for_key("z", true), Some(Action::Redo));
+        assert_eq!(Action::for_key("q", false), None);
+        // The label is an action's first shortcut.
+        assert_eq!(Action::Redo.shortcut(), Some("Ctrl+Y"));
+        assert_eq!(Action::Settings.shortcut(), Some("Ctrl+,"));
+        for (action, key, shift, _) in SHORTCUTS {
+            assert!(
+                SHORTCUTS
+                    .iter()
+                    .filter(|(_, k, s, _)| k == key && s == shift)
+                    .all(|(a, ..)| a == action),
+                "{key} bound twice"
+            );
+        }
+    }
 
     #[test]
     fn selecting_a_tab_expands_a_collapsed_ribbon() {

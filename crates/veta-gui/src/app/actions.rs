@@ -2,6 +2,7 @@
 //! (panes, theme, settings) are handled here.
 
 use super::*;
+use crate::ribbon::Area;
 
 /// Zoom levels of the table, in percent.
 pub(crate) const ZOOM_LEVELS: [u16; 13] =
@@ -24,86 +25,23 @@ pub(crate) fn zoom_step(zoom: u16, steps: i32) -> u16 {
 
 impl App {
     pub(crate) fn perform(&mut self, action: Action) -> Task<Message> {
-        let changes_data = matches!(
-            action,
-            Action::InsertRowsAt
-                | Action::AddColumn
-                | Action::RenameColumn
-                | Action::RemoveColumns
-                | Action::KeepColumns
-                | Action::SortAscending
-                | Action::SortDescending
-                | Action::CustomSort
-                | Action::ExpandStruct
-                | Action::ExplodeList
-                | Action::DataType
-                | Action::ReplaceValues
-                | Action::FillDown
-                | Action::FormatText
-                | Action::SplitColumn
-                | Action::MergeColumns
-                | Action::CombineStruct
-                | Action::CollectList
-                | Action::CustomColumn
-                | Action::DuplicateColumn
-                | Action::IndexColumn
-                | Action::Cut
-                | Action::Paste
-                | Action::FillUp
-                | Action::MoveColumnLeft
-                | Action::MoveColumnRight
-                | Action::ExpandAll
-        );
-        if changes_data
+        if action.changes_data()
             && let Some(id) = self.active
             && !self.editable(id)
         {
             self.not_editable(id);
             return Task::none();
         }
+        match action.area() {
+            Area::Clipboard => return self.clipboard_action(action),
+            Area::Columns => return self.columns_action(action),
+            Area::Editing => return self.editing_action(action),
+            Area::Documents => return self.documents_action(action),
+            Area::Filter => return self.filter_action(action),
+            Area::Rows => return self.rows_action(action),
+            Area::General => {}
+        }
         match action {
-            a @ (Action::Copy | Action::Cut | Action::Paste) => return self.clipboard_action(a),
-            a @ (Action::FillUp
-            | Action::MoveColumnLeft
-            | Action::MoveColumnRight
-            | Action::ReplaceValues
-            | Action::FillDown
-            | Action::FormatText
-            | Action::CustomColumn
-            | Action::DuplicateColumn
-            | Action::IndexColumn
-            | Action::SplitColumn
-            | Action::MergeColumns
-            | Action::CombineStruct
-            | Action::CollectList
-            | Action::DataType
-            | Action::AddColumn
-            | Action::RenameColumn
-            | Action::RemoveColumns
-            | Action::KeepColumns) => return self.columns_action(a),
-            a @ (Action::ExpandAll
-            | Action::Undo
-            | Action::Redo
-            | Action::ExpandStruct
-            | Action::ExplodeList) => return self.editing_action(a),
-            a @ (Action::Import
-            | Action::Export
-            | Action::New
-            | Action::LoadRecipe
-            | Action::SaveRecipe
-            | Action::Open
-            | Action::Close
-            | Action::Save
-            | Action::SaveAs
-            | Action::FileMetadata
-            | Action::WriterSettings) => return self.documents_action(a),
-            a @ (Action::FilterRows
-            | Action::CustomSort
-            | Action::SortAscending
-            | Action::SortDescending) => return self.filter_action(a),
-            a @ (Action::InsertRowsAt | Action::KeepRows | Action::RemoveRows) => {
-                return self.rows_action(a);
-            }
             Action::ToggleDetails => self.show_side_pane = !self.show_side_pane,
             Action::AppliedSteps => {
                 self.show_side_pane = true;
@@ -124,6 +62,7 @@ impl App {
                 self.dialog = Some(Dialog::Settings(Box::new(Draft::new(&self.config))))
             }
             Action::About => self.dialog = Some(Dialog::About),
+            _ => unreachable!("handled by its area"),
         }
         Task::none()
     }

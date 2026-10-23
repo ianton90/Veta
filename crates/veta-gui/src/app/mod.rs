@@ -326,22 +326,9 @@ impl App {
                 if modifiers.command() && status == event::Status::Ignored =>
             {
                 match key.as_ref() {
-                    keyboard::Key::Character("z") if modifiers.shift() => {
-                        Some(Message::Action(Action::Redo))
+                    keyboard::Key::Character(c) => {
+                        Action::for_key(c, modifiers.shift()).map(Message::Action)
                     }
-                    keyboard::Key::Character("z") => Some(Message::Action(Action::Undo)),
-                    keyboard::Key::Character("y") => Some(Message::Action(Action::Redo)),
-                    keyboard::Key::Character("s") if modifiers.shift() => {
-                        Some(Message::Action(Action::SaveAs))
-                    }
-                    keyboard::Key::Character("s") => Some(Message::Action(Action::Save)),
-                    keyboard::Key::Character("c") => Some(Message::Action(Action::Copy)),
-                    keyboard::Key::Character("x") => Some(Message::Action(Action::Cut)),
-                    keyboard::Key::Character("v") => Some(Message::Action(Action::Paste)),
-                    keyboard::Key::Character("n") => Some(Message::Action(Action::New)),
-                    keyboard::Key::Character("o") => Some(Message::Action(Action::Open)),
-                    keyboard::Key::Character("w") => Some(Message::Action(Action::Close)),
-                    keyboard::Key::Character(",") => Some(Message::Action(Action::Settings)),
                     _ => None,
                 }
             }

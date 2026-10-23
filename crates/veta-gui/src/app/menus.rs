@@ -58,6 +58,30 @@ pub(crate) enum MenuItem {
     ExcludeValue,
 }
 
+impl MenuItem {
+    /// The ribbon action this item does, when it does exactly that.
+    fn action(self) -> Option<Action> {
+        Some(match self {
+            MenuItem::Cut => Action::Cut,
+            MenuItem::Copy => Action::Copy,
+            MenuItem::Paste => Action::Paste,
+            MenuItem::RenameColumn => Action::RenameColumn,
+            MenuItem::MoveColumnLeft => Action::MoveColumnLeft,
+            MenuItem::MoveColumnRight => Action::MoveColumnRight,
+            MenuItem::FilterColumn => Action::FilterRows,
+            MenuItem::ChangeType => Action::DataType,
+            MenuItem::ReplaceValues => Action::ReplaceValues,
+            MenuItem::FillDown => Action::FillDown,
+            MenuItem::FillUp => Action::FillUp,
+            MenuItem::FormatText => Action::FormatText,
+            MenuItem::DuplicateColumn => Action::DuplicateColumn,
+            MenuItem::SortAscending => Action::SortAscending,
+            MenuItem::SortDescending => Action::SortDescending,
+            _ => return None,
+        })
+    }
+}
+
 impl App {
     /// Right-click menu messages.
     pub(crate) fn menus_message(&mut self, message: Message) -> Task<Message> {
@@ -66,14 +90,14 @@ impl App {
                 let Some(menu) = self.menu.take() else {
                     return Task::none();
                 };
+                // Items that are ribbon actions go the same way (on the menu's
+                // document, which is the active one).
+                if let Some(action) = item.action() {
+                    self.active = Some(menu.document);
+                    return self.perform(action);
+                }
                 let id = menu.document;
-                let views_only = matches!(
-                    item,
-                    MenuItem::KeepValue
-                        | MenuItem::ExcludeValue
-                        | MenuItem::FilterColumn
-                        | MenuItem::Copy
-                );
+                let views_only = matches!(item, MenuItem::KeepValue | MenuItem::ExcludeValue);
                 if !views_only && !self.editable(id) {
                     self.not_editable(id);
                     return Task::none();
@@ -119,38 +143,12 @@ impl App {
                         };
                         return self.open_column_dialog(id, ColumnDialog::add(at));
                     }
-                    MenuItem::RenameColumn => return self.rename_column(id),
                     MenuItem::RemoveColumns => self.keep_or_remove_columns(id, false, true),
                     MenuItem::KeepColumns => self.keep_or_remove_columns(id, true, true),
-                    MenuItem::FilterColumn => return self.open_filter_dialog(id),
-                    MenuItem::ChangeType => self.open_cast_dialog(id, None),
-                    MenuItem::ReplaceValues => return self.open_replace_dialog(id, None),
-                    MenuItem::FillDown | MenuItem::FillUp => {
-                        self.fill_selected(id, item == MenuItem::FillUp);
-                    }
-                    MenuItem::FormatText => self.open_format_dialog(id),
-                    MenuItem::DuplicateColumn => self.duplicate_column(id),
-                    MenuItem::Cut => return self.copy_selection(id, true),
-                    MenuItem::Copy => return self.copy_selection(id, false),
-                    MenuItem::Paste => return iced::clipboard::read().map(Message::Pasted),
-                    MenuItem::SortAscending | MenuItem::SortDescending => {
-                        self.sort_selected(id, item == MenuItem::SortDescending);
-                    }
                     MenuItem::KeepValue | MenuItem::ExcludeValue => {
                         self.quick_filter(id, item == MenuItem::KeepValue);
                     }
-                    MenuItem::MoveColumnLeft | MenuItem::MoveColumnRight => {
-                        if let Some(c) = self.selected_columns(id) {
-                            let to = if item == MenuItem::MoveColumnLeft {
-                                c.start.checked_sub(1)
-                            } else {
-                                Some(c.start + 1)
-                            };
-                            if let Some(to) = to {
-                                self.move_column(id, c.start, to);
-                            }
-                        }
-                    }
+                    _ => unreachable!("ribbon actions are performed above"),
                 }
             }
             Message::CloseMenu => self.menu = None,

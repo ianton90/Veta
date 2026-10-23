@@ -191,9 +191,24 @@ pub fn menu_sections(
     sections.push((
         "ST_MENU_SECTION_CLIPBOARD",
         vec![
-            entry(Icon::Scissors, "ST_MENU_CUT", "Ctrl+X", MenuItem::Cut),
-            entry(Icon::Copy, "ST_MENU_COPY", "Ctrl+C", MenuItem::Copy),
-            entry(Icon::Paste, "ST_MENU_PASTE", "Ctrl+V", MenuItem::Paste),
+            entry(
+                Icon::Scissors,
+                "ST_MENU_CUT",
+                shortcut(Action::Cut),
+                MenuItem::Cut,
+            ),
+            entry(
+                Icon::Copy,
+                "ST_MENU_COPY",
+                shortcut(Action::Copy),
+                MenuItem::Copy,
+            ),
+            entry(
+                Icon::Paste,
+                "ST_MENU_PASTE",
+                shortcut(Action::Paste),
+                MenuItem::Paste,
+            ),
         ],
     ));
     if target == MenuTarget::Cell {
@@ -460,4 +475,9 @@ fn add_inside(column_type: Option<&DataType>) -> Option<MenuEntry> {
         _ => return None,
     };
     Some((Icon::Plus, tr(label), "", item))
+}
+
+/// An action's shortcut label, as the ribbon shows it.
+fn shortcut(action: Action) -> &'static str {
+    action.shortcut().unwrap_or_default()
 }
