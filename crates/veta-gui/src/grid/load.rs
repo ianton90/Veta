@@ -244,9 +244,31 @@ impl GridView {
     fn install(&mut self, start: usize, batch: veta_core::Result<RecordBatch>) {
         let formatted = batch.and_then(|batch| {
             let batch = self.display_batch(batch)?;
-            let mut cells = format_batch(&batch)?;
+            // Lists and maps show only a summary ("[3 items]"): their
+            // contents aren't formatted (a column of embeddings would format
+            // thousands of numbers per row for nothing).
+            let items: Vec<bool> = batch
+                .columns()
+                .iter()
+                .map(|c| has_items(c.data_type()))
+                .collect();
+            let plain: Vec<usize> = (0..items.len()).filter(|&i| !items[i]).collect();
+            let formatted = match plain.is_empty() {
+                true => vec![Vec::new(); batch.num_rows()],
+                false => format_batch(&batch.project(&plain)?)?,
+            };
+            let mut cells: Vec<Vec<Option<String>>> = formatted
+                .into_iter()
+                .map(|row| {
+                    let mut values = row.into_iter();
+                    items
+                        .iter()
+                        .map(|&item| if item { None } else { values.next().flatten() })
+                        .collect()
+                })
+                .collect();
             for (i, column) in batch.columns().iter().enumerate() {
-                if !has_items(column.data_type()) {
+                if !items[i] {
                     continue;
                 }
                 for (row, cells) in cells.iter_mut().enumerate() {
