@@ -83,19 +83,23 @@ pub fn open_parquet(path: &Path, options: OpenOptions) -> Result<OpenedFile> {
         ArrowReaderOptions::new().with_page_index_policy(PageIndexPolicy::Optional);
     let arrow_metadata = ArrowReaderMetadata::load(&file, reader_options)?;
     let parquet_metadata = arrow_metadata.metadata().clone();
+    check_row_counts(&parquet_metadata)?;
 
     let info = file_info(&parquet_metadata, file_size);
-    let fits = usize::try_from(info.uncompressed_size()).is_ok_and(|s| s <= options.memory_budget);
-
-    let source: Arc<dyn DataSource> = if fits && !options.force_paged {
-        let schema = arrow_metadata.schema().clone();
-        let reader =
-            ParquetRecordBatchReaderBuilder::new_with_metadata(file, arrow_metadata).build()?;
-        let batches = reader.collect::<std::result::Result<Vec<_>, _>>()?;
-        Arc::new(MemorySource::new(schema, batches)?)
-    } else {
-        let cache = crate::memory::page_cache(options.memory_budget);
-        Arc::new(PagedSource::new(file, arrow_metadata, cache).with_path(path))
+    // The footer's sizes can't be trusted: the file is read into memory only
+    // while what it decodes to stays within the budget.
+    let fits = usize::try_from(info.uncompressed_size().max(file_size))
+        .is_ok_and(|s| s <= options.memory_budget);
+    let in_memory = match fits && !options.force_paged {
+        true => read_within(&file, &arrow_metadata, options.memory_budget)?,
+        false => None,
+    };
+    let source: Arc<dyn DataSource> = match in_memory {
+        Some(source) => Arc::new(source),
+        None => {
+            let cache = crate::memory::page_cache(options.memory_budget);
+            Arc::new(PagedSource::new(file, arrow_metadata, cache).with_path(path))
+        }
     };
 
     Ok(OpenedFile {
@@ -105,6 +109,45 @@ pub fn open_parquet(path: &Path, options: OpenOptions) -> Result<OpenedFile> {
         info,
         footer: parquet_metadata,
     })
+}
+
+/// Refuses footers whose row counts can't be right (#157): negative, fewer
+/// values in a column than rows, or a total too large to count. Row groups
+/// are trusted to that extent; data that doesn't match fails when read.
+fn check_row_counts(metadata: &ParquetMetaData) -> Result<()> {
+    let mut total: usize = 0;
+    for (row_group, rg) in metadata.row_groups().iter().enumerate() {
+        let wrong = || invalid!(FileRowCounts, row_group = row_group + 1);
+        let rows = usize::try_from(rg.num_rows()).map_err(|_| wrong())?;
+        if rg.columns().iter().any(|c| c.num_values() < rg.num_rows()) {
+            return Err(wrong());
+        }
+        total = total.checked_add(rows).ok_or_else(wrong)?;
+    }
+    Ok(())
+}
+
+/// The whole file as a memory source, or `None` if it decodes to more than
+/// `budget` bytes (it is then read as needed instead).
+fn read_within(
+    file: &File,
+    metadata: &ArrowReaderMetadata,
+    budget: usize,
+) -> Result<Option<MemorySource>> {
+    let reader =
+        ParquetRecordBatchReaderBuilder::new_with_metadata(file.try_clone()?, metadata.clone())
+            .build()?;
+    let mut batches = Vec::new();
+    let mut bytes = 0usize;
+    for batch in reader {
+        let batch = batch?;
+        bytes = bytes.saturating_add(batch.get_array_memory_size());
+        if bytes > budget {
+            return Ok(None);
+        }
+        batches.push(batch);
+    }
+    Ok(Some(MemorySource::new(metadata.schema().clone(), batches)?))
 }
 
 fn file_info(metadata: &ParquetMetaData, file_size: u64) -> FileInfo {
@@ -578,8 +621,70 @@ pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::{Error, ErrorCode};
     use crate::source::SourceMode;
     use veta_testkit::{TempDir, fixtures};
+
+    #[test]
+    fn impossible_row_counts_are_refused() {
+        let dir = TempDir::new();
+        let path = dir.join("all.parquet");
+        fixtures::all_types(&path);
+        let file = File::open(&path).unwrap();
+        let metadata = ArrowReaderMetadata::load(&file, ArrowReaderOptions::new()).unwrap();
+        let footer = metadata.metadata();
+        assert!(check_row_counts(footer).is_ok());
+        // The first row group claiming `rows`, its columns `values` each.
+        let with = |rows: i64, values: Option<i64>| {
+            let rg = footer.row_group(0).clone();
+            let columns = rg
+                .columns()
+                .iter()
+                .map(|c| match values {
+                    Some(v) => c.clone().into_builder().set_num_values(v).build().unwrap(),
+                    None => c.clone(),
+                })
+                .collect();
+            let rg = rg
+                .into_builder()
+                .set_num_rows(rows)
+                .set_column_metadata(columns);
+            ParquetMetaData::new(footer.file_metadata().clone(), vec![rg.build().unwrap()])
+        };
+        let code = |m: &ParquetMetaData| match check_row_counts(m) {
+            Err(Error::Invalid(e)) => Some(e.code),
+            _ => None,
+        };
+        assert_eq!(code(&with(-1, None)), Some(ErrorCode::FileRowCounts));
+        assert_eq!(
+            code(&with(1 << 62, None)),
+            Some(ErrorCode::FileRowCounts),
+            "more rows than values"
+        );
+        // Huge but consistent counts open; reading them fails later.
+        assert_eq!(code(&with(1 << 62, Some(1 << 62))), None);
+        // Chunks are worked out, not listed, so a huge count costs nothing.
+        let chunks = crate::source::chunk_count(&[1 << 62, 5, 0]);
+        assert_eq!(
+            chunks,
+            (1usize << 62).div_ceil(crate::source::CHUNK_ROWS) + 1
+        );
+    }
+
+    #[test]
+    fn files_decoding_past_the_budget_are_not_read_into_memory() {
+        let dir = TempDir::new();
+        let path = dir.join("all.parquet");
+        fixtures::all_types(&path);
+        let file = File::open(&path).unwrap();
+        let metadata = ArrowReaderMetadata::load(&file, ArrowReaderOptions::new()).unwrap();
+        assert!(read_within(&file, &metadata, 1).unwrap().is_none());
+        let all = read_within(&file, &metadata, usize::MAX).unwrap().unwrap();
+        assert_eq!(
+            all.num_rows(),
+            metadata.metadata().file_metadata().num_rows() as usize
+        );
+    }
 
     #[test]
     fn small_file_opens_in_memory() {

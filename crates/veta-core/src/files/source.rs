@@ -150,7 +150,7 @@ pub struct PagedSource {
     file: File,
     metadata: ArrowReaderMetadata,
     schema: SchemaRef,
-    chunks: Vec<ChunkSpan>,
+    chunks: Chunks,
     num_rows: usize,
     budget: usize,
     cache: Mutex<ChunkCache>,
@@ -239,6 +239,88 @@ struct ChunkSpan {
     len: usize,
 }
 
+/// How many chunks row groups of these sizes make.
+#[cfg(test)]
+pub(crate) fn chunk_count(row_counts: &[usize]) -> usize {
+    Chunks::new(row_counts.iter().copied()).len()
+}
+
+/// The file's chunks, worked out from its row groups' sizes: a list of every
+/// chunk would grow with the row count a file claims (#157).
+#[derive(Debug)]
+struct Chunks {
+    /// Row groups with rows, in order.
+    groups: Vec<GroupSpan>,
+    rows: usize,
+    count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GroupSpan {
+    row_group: usize,
+    /// First row of the row group within the file.
+    start: usize,
+    rows: usize,
+    /// Index of the row group's first chunk.
+    first_chunk: usize,
+}
+
+impl Chunks {
+    /// From each row group's row count, in order.
+    fn new(row_counts: impl Iterator<Item = usize>) -> Self {
+        let (mut groups, mut rows, mut count) = (Vec::new(), 0usize, 0usize);
+        for (row_group, n) in row_counts.enumerate().filter(|(_, n)| *n > 0) {
+            groups.push(GroupSpan {
+                row_group,
+                start: rows,
+                rows: n,
+                first_chunk: count,
+            });
+            rows = rows.saturating_add(n);
+            count = count.saturating_add(n.div_ceil(CHUNK_ROWS));
+        }
+        Self {
+            groups,
+            rows,
+            count,
+        }
+    }
+
+    fn rows(&self) -> usize {
+        self.rows
+    }
+
+    fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Chunk `index` (below [`Self::len`]).
+    fn get(&self, index: usize) -> ChunkSpan {
+        let g = self.groups[self.groups.partition_point(|g| g.first_chunk <= index) - 1];
+        let offset = (index - g.first_chunk) * CHUNK_ROWS;
+        ChunkSpan {
+            row_group: g.row_group,
+            offset_in_group: offset,
+            start: g.start + offset,
+            len: CHUNK_ROWS.min(g.rows - offset),
+        }
+    }
+
+    /// The chunks holding rows of `range` (within the file), with their
+    /// indices.
+    fn covering(&self, range: Range<usize>) -> impl Iterator<Item = (usize, ChunkSpan)> + '_ {
+        let first = if range.is_empty() {
+            self.count
+        } else {
+            let g = self.groups[self.groups.partition_point(|g| g.start <= range.start) - 1];
+            g.first_chunk + (range.start - g.start) / CHUNK_ROWS
+        };
+        (first..self.count)
+            .map(|index| (index, self.get(index)))
+            .take_while(move |(_, span)| span.start < range.end)
+    }
+}
+
 #[derive(Debug, Default)]
 struct ChunkCache {
     batches: HashMap<usize, RecordBatch>,
@@ -250,29 +332,19 @@ struct ChunkCache {
 impl PagedSource {
     /// `metadata` must have been loaded from `file`.
     pub fn new(file: File, metadata: ArrowReaderMetadata, budget: usize) -> Self {
-        let mut chunks = Vec::new();
-        let mut start = 0;
-        for (row_group, rg) in metadata.metadata().row_groups().iter().enumerate() {
-            let rows = usize::try_from(rg.num_rows()).unwrap_or(0);
-            let mut offset = 0;
-            while offset < rows {
-                let len = CHUNK_ROWS.min(rows - offset);
-                chunks.push(ChunkSpan {
-                    row_group,
-                    offset_in_group: offset,
-                    start: start + offset,
-                    len,
-                });
-                offset += len;
-            }
-            start += rows;
-        }
+        let chunks = Chunks::new(
+            metadata
+                .metadata()
+                .row_groups()
+                .iter()
+                .map(|rg| usize::try_from(rg.num_rows()).unwrap_or(0)),
+        );
         Self {
             schema: metadata.schema().clone(),
             file,
             metadata,
+            num_rows: chunks.rows(),
             chunks,
-            num_rows: start,
             budget,
             cache: Mutex::new(ChunkCache::default()),
             cursors: Mutex::new(Vec::new()),
@@ -350,7 +422,7 @@ impl PagedSource {
     /// (in the schema's order). Continues the last chunk's reader when this
     /// chunk follows it in the same row group.
     fn load_chunk_columns(&self, index: usize, columns: Option<&[usize]>) -> Result<RecordBatch> {
-        let span = self.chunks[index];
+        let span = self.chunks.get(index);
         if columns.is_some_and(<[usize]>::is_empty) {
             let options =
                 arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(span.len));
@@ -555,14 +627,8 @@ impl DataSource for PagedSource {
 
     fn read(&self, range: Range<usize>) -> Result<RecordBatch> {
         let range = clamp(range, self.num_rows);
-        let first = self
-            .chunks
-            .partition_point(|c| c.start + c.len <= range.start);
         let mut parts = Vec::new();
-        for (index, span) in self.chunks.iter().enumerate().skip(first) {
-            if span.start >= range.end {
-                break;
-            }
+        for (index, span) in self.chunks.covering(range.clone()) {
             let batch = self.chunk(index)?;
             let from = range.start.max(span.start) - span.start;
             let to = range.end.min(span.start + span.len) - span.start;
@@ -582,14 +648,8 @@ impl DataSource for PagedSource {
             .map(|(i, _)| i)
             .collect();
         let schema = Arc::new(self.schema.project(&columns)?);
-        let first = self
-            .chunks
-            .partition_point(|c| c.start + c.len <= range.start);
         let mut parts = Vec::new();
-        for (index, span) in self.chunks.iter().enumerate().skip(first) {
-            if span.start >= range.end {
-                break;
-            }
+        for (index, span) in self.chunks.covering(range.clone()) {
             // A chunk already decoded in full is used; others are decoded
             // with only these columns, and not kept.
             let cached = self.lock_cache().batches.get(&index).cloned();

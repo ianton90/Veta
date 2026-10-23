@@ -59,6 +59,7 @@ error_codes! {
     FieldGone => "that field no longer exists",
     FieldNameEmpty => "field name cannot be empty",
     FieldNotFound => "{at} has no field \"{field}\"",
+    FileRowCounts => "the file's row counts are not valid (row group {row_group})",
     FilterNoConditions => "a filter needs at least one condition",
     FilterNoValue => "enter a value to compare {column} with",
     FilterOpNotForNested => "this condition doesn't apply to {column}: use equals, contains, starts/ends with or null tests",

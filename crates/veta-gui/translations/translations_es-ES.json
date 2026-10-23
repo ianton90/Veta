@@ -28,6 +28,7 @@
   "ERR_FIELD_GONE": "ese campo ya no existe",
   "ERR_FIELD_NAME_EMPTY": "el nombre del campo no puede estar vacío",
   "ERR_FIELD_NOT_FOUND": "{at} no tiene ningún campo «{field}»",
+  "ERR_FILE_ROW_COUNTS": "los recuentos de filas del archivo no son válidos (grupo de filas {row_group})",
   "ERR_FILTER_NO_CONDITIONS": "un filtro necesita al menos una condición",
   "ERR_FILTER_NO_VALUE": "escribe un valor con el que comparar {column}",
   "ERR_FILTER_OP_NOT_FOR_NESTED": "esta condición no se aplica a {column}: usa es igual a, contiene, empieza o termina por, o las pruebas de nulo",

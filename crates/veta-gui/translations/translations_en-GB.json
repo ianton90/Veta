@@ -28,6 +28,7 @@
   "ERR_FIELD_GONE": "that field no longer exists",
   "ERR_FIELD_NAME_EMPTY": "field name cannot be empty",
   "ERR_FIELD_NOT_FOUND": "{at} has no field \"{field}\"",
+  "ERR_FILE_ROW_COUNTS": "the file's row counts are not valid (row group {row_group})",
   "ERR_FILTER_NO_CONDITIONS": "a filter needs at least one condition",
   "ERR_FILTER_NO_VALUE": "enter a value to compare {column} with",
   "ERR_FILTER_OP_NOT_FOR_NESTED": "this condition doesn't apply to {column}: use equals, contains, starts/ends with or null tests",
