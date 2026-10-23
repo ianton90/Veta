@@ -30,23 +30,31 @@ impl Fill {
 }
 
 /// The value carried into the next batch: the last non-null value of
-/// `column` (first, when filling up), or `carry` if there is none.
-pub(crate) fn carry_out(column: &ArrayRef, carry: Option<ArrayRef>, up: bool) -> Option<ArrayRef> {
+/// `column` (first, when filling up), or `carry` if there is none. A copy:
+/// a slice would keep the whole batch in memory while the value is kept.
+pub(crate) fn carry_out(
+    column: &ArrayRef,
+    carry: Option<ArrayRef>,
+    up: bool,
+) -> Result<Option<ArrayRef>> {
     let n = column.len();
     let found = if up {
         (0..n).find(|&i| column.is_valid(i))
     } else {
         (0..n).rev().find(|&i| column.is_valid(i))
     };
-    match found {
-        Some(i) => Some(column.slice(i, 1)),
+    Ok(match found {
+        Some(i) => Some(take(column, &UInt32Array::from(vec![i as u32]), None)?),
         None => carry,
-    }
+    })
 }
 
 /// Fills nulls in `column`, using `carry` (one value) for nulls before the
 /// first value (after the last one, when filling up).
 pub(crate) fn fill(column: &ArrayRef, carry: Option<&ArrayRef>, up: bool) -> Result<ArrayRef> {
+    if column.null_count() == 0 {
+        return Ok(column.clone());
+    }
     let n = column.len();
     // Index 0 is the carried value; row i is index i + 1.
     let first = match carry {
@@ -110,16 +118,25 @@ mod tests {
 
         let empty: ArrayRef = Arc::new(Int64Array::from(vec![None, None]));
         assert_eq!(
-            carry_out(&empty, Some(carry.clone()), false).map(|c| ints(&c)),
+            carry_out(&empty, Some(carry.clone()), false)
+                .unwrap()
+                .map(|c| ints(&c)),
             Some(vec![Some(9)])
         );
         assert_eq!(
-            carry_out(&column, None, false).map(|c| ints(&c)),
+            carry_out(&column, None, false).unwrap().map(|c| ints(&c)),
             Some(vec![Some(2)])
         );
         assert_eq!(
-            carry_out(&column, None, true).map(|c| ints(&c)),
+            carry_out(&column, None, true).unwrap().map(|c| ints(&c)),
             Some(vec![Some(1)])
         );
+
+        // The carry is a copy, not a view of the whole batch; a batch without
+        // nulls comes back as it is.
+        let big: ArrayRef = Arc::new(Int64Array::from_iter_values(0..100_000));
+        let carry = carry_out(&big, None, false).unwrap().unwrap();
+        assert!(carry.get_array_memory_size() < 1024);
+        assert!(Arc::ptr_eq(&fill(&big, None, false).unwrap(), &big));
     }
 }

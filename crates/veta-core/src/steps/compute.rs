@@ -380,7 +380,7 @@ impl ComputeJob {
                 carried_up[b] = carry.clone();
                 let batch = read(range)?;
                 for (k, &i) in indices.iter().enumerate() {
-                    carry[k] = carry_out(batch.column(i), carry[k].take(), true);
+                    carry[k] = carry_out(batch.column(i), carry[k].take(), true)?;
                 }
                 if !progress(first_share * (done + 1) as f32 / batches.len() as f32) {
                     return Err(Error::Cancelled);
@@ -405,7 +405,7 @@ impl ComputeJob {
                     };
                     columns[i] = fill(&columns[i], incoming.as_ref(), f.up)?;
                     if !f.up {
-                        carry[k] = carry_out(batch.column(i), carry[k].take(), false);
+                        carry[k] = carry_out(batch.column(i), carry[k].take(), false)?;
                     }
                 }
                 let fraction = (b + 1) as f32 / batches.len() as f32;
