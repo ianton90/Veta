@@ -13,6 +13,7 @@ mod compute;
 mod edits;
 mod level;
 mod pipeline;
+mod read;
 mod rows;
 
 use std::ops::Range;

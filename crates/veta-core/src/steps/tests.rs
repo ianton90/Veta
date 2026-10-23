@@ -507,3 +507,164 @@ fn stale_temp_files_are_removed() {
     }
     let _ = std::fs::remove_file(&stale);
 }
+
+/// A source that records which columns are read, and how.
+#[derive(Debug)]
+struct Tracking {
+    inner: MemorySource,
+    full_reads: std::sync::atomic::AtomicUsize,
+    columns: std::sync::Mutex<std::collections::BTreeSet<String>>,
+}
+
+impl DataSource for Tracking {
+    fn schema(&self) -> arrow::datatypes::SchemaRef {
+        self.inner.schema()
+    }
+    fn num_rows(&self) -> usize {
+        self.inner.num_rows()
+    }
+    fn mode(&self) -> crate::source::SourceMode {
+        self.inner.mode()
+    }
+    fn read(&self, range: Range<usize>) -> crate::error::Result<RecordBatch> {
+        self.full_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.read(range)
+    }
+    fn read_columns(
+        &self,
+        range: Range<usize>,
+        names: &[String],
+    ) -> crate::error::Result<RecordBatch> {
+        self.columns.lock().unwrap().extend(names.iter().cloned());
+        self.inner.read_columns(range, names)
+    }
+}
+
+#[test]
+fn column_reads_take_only_what_they_need() {
+    use crate::steps::{Cast, CastOptions, Condition, CustomColumn, Filter, FilterOp, Replace};
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+        Field::new("score", DataType::Int64, true),
+        Field::new("unused", DataType::Utf8, true),
+    ]));
+    let rows = 50i64;
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from_iter_values(0..rows)),
+            Arc::new(StringArray::from_iter_values(
+                (0..rows).map(|i| format!("n{i}")),
+            )),
+            Arc::new(Int64Array::from_iter_values((0..rows).map(|i| i * 10))),
+            Arc::new(StringArray::from_iter_values((0..rows).map(|_| "x"))),
+        ],
+    )
+    .unwrap();
+    let source = Arc::new(Tracking {
+        inner: MemorySource::new(schema, vec![batch]).unwrap(),
+        full_reads: Default::default(),
+        columns: Default::default(),
+    });
+    let mut p = Pipeline::new(source.clone());
+    let mut edits = CellEdits::default();
+    edits.set("score", 3, value(-1));
+    edits.set("unused", 4, Arc::new(StringArray::from(vec!["edited"])));
+    let steps = [
+        Step::EditCells(edits),
+        Step::InsertRows { at: 2, count: 3 },
+        Step::DeleteRows { rows: vec![5..8] },
+        Step::AddColumn {
+            name: "extra".into(),
+            data_type: DataType::Float64,
+            at: 1,
+        },
+        Step::RenameColumn {
+            from: "name".into(),
+            to: "label".into(),
+        },
+        Step::MoveColumn {
+            name: "label".into(),
+            to: 0,
+        },
+        Step::Cast(Cast {
+            column: "unused".into(),
+            to: DataType::Int64,
+            options: CastOptions::default(),
+        }),
+        Step::Replace(Replace {
+            column: "label".into(),
+            find: Some("n1".into()),
+            with: Some("one".into()),
+            whole_cell: true,
+        }),
+        Step::CustomColumn(CustomColumn {
+            name: "double".into(),
+            expression: "[score] * 2".into(),
+            at: 0,
+        }),
+        Step::Filter(Filter {
+            conditions: vec![Condition {
+                column: "id".into(),
+                op: FilterOp::Greater,
+                value: "10".into(),
+                case_sensitive: false,
+            }],
+            match_all: true,
+            exclude: false,
+        }),
+    ];
+    for step in steps {
+        p.push(step).unwrap();
+        while let Some(job) = p.compute_job() {
+            let computed = job.run(&mut |_| true).unwrap();
+            p.install(computed);
+        }
+    }
+    assert_eq!(p.status(), &Status::Ready);
+    // At every level, any set of columns reads the same as a full read.
+    for level in 0..=p.steps().len() {
+        let all = p.schema_at(level).unwrap();
+        let rows = p.num_rows_at(level).unwrap();
+        let names: Vec<String> = all.fields().iter().map(|f| f.name().clone()).collect();
+        for pick in 1..(1usize << names.len()) {
+            let wanted: Vec<String> = (0..names.len())
+                .filter(|i| pick & (1 << i) != 0)
+                .map(|i| names[i].clone())
+                .collect();
+            for range in [0..rows, 1..rows.min(9), rows / 2..rows] {
+                let expected =
+                    crate::source::project(&p.read_at(level, range.clone()).unwrap(), &wanted)
+                        .unwrap();
+                let got = p.read_columns_at(level, range, &wanted).unwrap();
+                assert_eq!(got, expected, "level {level}, {wanted:?}");
+            }
+        }
+    }
+    // The ids after every step come from the id column alone.
+    source.columns.lock().unwrap().clear();
+    let before = source.full_reads.load(std::sync::atomic::Ordering::Relaxed);
+    let last = p.steps().len();
+    let rows = p.num_rows_at(last).unwrap();
+    p.read_columns_at(last, 0..rows, &["id".to_string()])
+        .unwrap();
+    assert_eq!(
+        source.full_reads.load(std::sync::atomic::Ordering::Relaxed),
+        before
+    );
+    assert_eq!(
+        source.columns.lock().unwrap().iter().collect::<Vec<_>>(),
+        ["id"]
+    );
+    // A computed column reads its step's input, but no further than needed.
+    source.columns.lock().unwrap().clear();
+    p.read_columns_at(last, 0..rows, &["double".to_string()])
+        .unwrap();
+    assert_eq!(
+        source.full_reads.load(std::sync::atomic::Ordering::Relaxed),
+        before + 1,
+        "the formula step reads its whole input"
+    );
+}

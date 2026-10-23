@@ -4,19 +4,15 @@ use crate::error::invalid;
 use std::ops::Range;
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, new_null_array};
-use arrow::compute::concat_batches;
 use arrow::datatypes::SchemaRef;
-use arrow::record_batch::{RecordBatch, RecordBatchOptions};
+use arrow::record_batch::RecordBatch;
 
 use super::Step;
 use super::compute::{Cache, ComputeJob, Computed, PASS_ROWS};
 use super::edits::CellEdits;
 use super::level::Level;
-use super::rows::kept_ranges;
 use crate::error::{Error, Result};
 use crate::source::DataSource;
-use crate::transforms::text::map_columns;
 
 /// Rows per piece of a full pass read on several threads
 /// ([`Pipeline::read_parallel`]).
@@ -59,17 +55,17 @@ impl Eq for Status {}
 /// output is that of the last evaluated step (see [`Pipeline::status`]).
 #[derive(Debug, Clone)]
 pub struct Pipeline {
-    source: Arc<dyn DataSource>,
-    steps: Vec<Step>,
+    pub(super) source: Arc<dyn DataSource>,
+    pub(super) steps: Vec<Step>,
     /// Identity of each step's current content, to tell whether a computed
     /// result still matches the steps it was computed for.
     ids: Vec<u64>,
     next_id: u64,
     /// Computed results of full-pass steps, by step index.
-    caches: Vec<Option<Arc<Cache>>>,
+    pub(super) caches: Vec<Option<Arc<Cache>>>,
     /// `levels[0]` is the source; `levels[i + 1]` is the output of
     /// `steps[i]`, for the steps that are evaluated.
-    levels: Vec<Level>,
+    pub(super) levels: Vec<Level>,
     status: Status,
 }
 
@@ -372,8 +368,8 @@ impl Pipeline {
     }
 
     /// Like [`Self::read_at`], with only the columns named in `names` (in
-    /// the level's order). Reads only those columns from the file where it
-    /// can (straight from the source, or from a computed step's data).
+    /// the level's order). Only what those columns need is read, down to the
+    /// file (#171).
     pub fn read_columns_at(
         &self,
         steps: usize,
@@ -385,234 +381,6 @@ impl Pipeline {
         };
         let end = range.end.min(level.num_rows);
         let range = range.start.min(end)..end;
-        if steps == 0 {
-            return self.source.read_columns(range, names);
-        }
-        if let Some(cache) = &self.caches[steps - 1]
-            && let Cache::Data(source) = cache.as_ref()
-        {
-            return source.read_columns(range, names);
-        }
-        crate::source::project(&self.read_level(steps, range)?, names)
-    }
-
-    /// Reads rows of level `level`; `range` must be within it.
-    fn read_level(&self, level: usize, range: Range<usize>) -> Result<RecordBatch> {
-        if level == 0 {
-            return self.source.read(range);
-        }
-        let schema = self.levels[level].schema.clone();
-        let previous = level - 1;
-        if let Some(cache) = &self.caches[previous]
-            && !matches!(cache.as_ref(), Cache::Checked(_))
-        {
-            return match cache.as_ref() {
-                Cache::Rows(rows) => {
-                    // Kept rows close together are read as one span and
-                    // picked out with a mask: a filter keeping scattered rows
-                    // has millions of short runs, too many to read one by one.
-                    let parts = span_groups(&rows.map(range))
-                        .into_iter()
-                        .map(|(span, runs)| {
-                            let batch = self.read_level(previous, span.clone())?;
-                            if runs.len() == 1 && runs[0] == span {
-                                return Ok(batch);
-                            }
-                            let mut mask = arrow::array::BooleanBufferBuilder::new(span.len());
-                            mask.append_n(span.len(), false);
-                            for run in runs {
-                                for i in run.start - span.start..run.end - span.start {
-                                    mask.set_bit(i, true);
-                                }
-                            }
-                            let mask = arrow::array::BooleanArray::new(mask.finish(), None);
-                            Ok(arrow::compute::filter_record_batch(&batch, &mask)?)
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-                    concat(&schema, parts)
-                }
-                Cache::Data(source) => source.read(range),
-                Cache::Project(_) => {
-                    let batch = self.read_level(previous, range)?;
-                    let input = batch.schema();
-                    let columns = schema
-                        .fields()
-                        .iter()
-                        .map(|f| Ok(batch.column(input.index_of(f.name())?).clone()))
-                        .collect::<Result<Vec<_>>>()?;
-                    with_schema(schema, columns, batch.num_rows())
-                }
-                // Read window by window below.
-                Cache::Checked(_) => unreachable!("handled above"),
-            };
-        }
-        match &self.steps[previous] {
-            Step::EditCells(edits) => {
-                edits.apply(&self.read_level(previous, range.clone())?, range.start)
-            }
-            Step::InsertRows { at, count } => {
-                let (at, count) = (*at, *count);
-                let mut parts = Vec::new();
-                let before = range.start..range.end.min(at);
-                if !before.is_empty() {
-                    parts.push(self.read_level(previous, before)?);
-                }
-                let inserted = range.start.max(at)..range.end.min(at + count);
-                if !inserted.is_empty() {
-                    parts.push(empty_rows(&schema, inserted.len())?);
-                }
-                let after = range.start.max(at + count)..range.end;
-                if !after.is_empty() {
-                    parts.push(self.read_level(previous, after.start - count..after.end - count)?);
-                }
-                concat(&schema, parts)
-            }
-            Step::DeleteRows { rows } => {
-                let parts = kept_ranges(rows, range)
-                    .into_iter()
-                    .map(|r| self.read_level(previous, r))
-                    .collect::<Result<Vec<_>>>()?;
-                concat(&schema, parts)
-            }
-            Step::AddColumn { name, .. } => {
-                let batch = self.read_level(previous, range)?;
-                let index = schema.index_of(name)?;
-                let mut columns = batch.columns().to_vec();
-                columns.insert(
-                    index,
-                    new_null_array(schema.field(index).data_type(), batch.num_rows()),
-                );
-                with_schema(schema, columns, batch.num_rows())
-            }
-            // Full-pass steps are read through their cache above.
-            Step::Cast(cast) => cast.apply(&self.read_level(previous, range)?, &schema),
-            Step::Split(split) => split.apply(&self.read_level(previous, range)?, &schema),
-            Step::CustomColumn(custom) => custom.apply(
-                &self.read_level(previous, range.clone())?,
-                range.start,
-                &schema,
-            ),
-            Step::Merge(merge) => merge.apply(&self.read_level(previous, range)?, &schema),
-            Step::AddField { column, .. } | Step::RemoveField { column, .. } => {
-                crate::transforms::nested::change_field(
-                    &self.read_level(previous, range)?,
-                    column,
-                    &schema,
-                )
-            }
-            Step::CombineStruct { columns, name } => crate::transforms::nested::combine(
-                &self.read_level(previous, range)?,
-                columns,
-                name,
-                &schema,
-            ),
-            Step::Replace(replace) => map_columns(
-                &self.read_level(previous, range)?,
-                &schema,
-                std::slice::from_ref(&replace.column),
-                |c| replace.apply(c),
-            ),
-            Step::FormatText { columns, op } => {
-                map_columns(&self.read_level(previous, range)?, &schema, columns, |c| {
-                    op.apply(c)
-                })
-            }
-            Step::ExpandStruct { column, all_levels } => {
-                let input = self.read_level(previous, range)?;
-                crate::transforms::nested::expand_levels(&input, column, *all_levels, &schema)
-            }
-            Step::Filter(_)
-            | Step::Sort(_)
-            | Step::Fill(_)
-            | Step::RemoveEmptyColumn { .. }
-            | Step::ExplodeList { .. }
-            | Step::CollectList { .. } => Err(invalid!(ComputeFirst)),
-            Step::RemoveColumns { .. }
-            | Step::KeepColumns { .. }
-            | Step::RenameColumn { .. }
-            | Step::MoveColumn { .. } => {
-                // Pick the previous columns by name in the new order; renames
-                // map the new name back to the old one.
-                let batch = self.read_level(previous, range)?;
-                let prev_schema = &self.levels[previous].schema;
-                let columns = schema
-                    .fields()
-                    .iter()
-                    .map(|f| {
-                        let name = match &self.steps[previous] {
-                            Step::RenameColumn { from, to } if f.name() == to => from,
-                            _ => f.name(),
-                        };
-                        Ok(batch.column(prev_schema.index_of(name)?).clone())
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                with_schema(schema, columns, batch.num_rows())
-            }
-        }
-    }
-}
-
-/// Rows skipped between runs that are still read as one span (see
-/// [`span_groups`]).
-const SPAN_GAP: usize = 4096;
-
-/// Groups input row runs (in order) into spans to read at once: runs less
-/// than [`SPAN_GAP`] rows apart share a span. Returns each span with its runs.
-fn span_groups(runs: &[Range<usize>]) -> Vec<(Range<usize>, Vec<Range<usize>>)> {
-    let mut groups: Vec<(Range<usize>, Vec<Range<usize>>)> = Vec::new();
-    for run in runs {
-        match groups.last_mut() {
-            Some((span, members)) if run.start <= span.end + SPAN_GAP => {
-                span.end = run.end;
-                members.push(run.clone());
-            }
-            _ => groups.push((run.clone(), vec![run.clone()])),
-        }
-    }
-    groups
-}
-
-/// A batch of `rows` rows with every value null.
-fn empty_rows(schema: &SchemaRef, rows: usize) -> Result<RecordBatch> {
-    let columns = schema
-        .fields()
-        .iter()
-        .map(|f| new_null_array(f.data_type(), rows))
-        .collect();
-    with_schema(schema.clone(), columns, rows)
-}
-
-fn with_schema(schema: SchemaRef, columns: Vec<ArrayRef>, rows: usize) -> Result<RecordBatch> {
-    let options = RecordBatchOptions::new().with_row_count(Some(rows));
-    Ok(RecordBatch::try_new_with_options(
-        schema, columns, &options,
-    )?)
-}
-
-/// Concatenates parts, giving them `schema` (parts may differ only in
-/// nullability).
-fn concat(schema: &SchemaRef, parts: Vec<RecordBatch>) -> Result<RecordBatch> {
-    let parts = parts
-        .into_iter()
-        .map(|b| {
-            let rows = b.num_rows();
-            with_schema(schema.clone(), b.columns().to_vec(), rows)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(concat_batches(schema, &parts)?)
-}
-
-#[cfg(test)]
-mod span_tests {
-    use super::*;
-
-    #[test]
-    fn runs_close_together_share_a_span() {
-        let runs = [0..2, 5..6, 4000..4001, 20_000..20_010, 20_011..20_012];
-        let groups = span_groups(&runs);
-        let spans: Vec<_> = groups.iter().map(|(s, _)| s.clone()).collect();
-        assert_eq!(spans, [0..4001, 20_000..20_012]);
-        assert_eq!(groups[0].1, [0..2, 5..6, 4000..4001]);
-        assert!(span_groups(&[]).is_empty());
+        self.read_level_columns(steps, range, names)
     }
 }

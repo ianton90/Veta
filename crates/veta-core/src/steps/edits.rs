@@ -97,6 +97,10 @@ impl CellEdits {
             }
             columns[i] = interleave(&arrays, &indices)?;
         }
-        Ok(RecordBatch::try_new(schema, columns)?)
+        let options =
+            arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+        Ok(RecordBatch::try_new_with_options(
+            schema, columns, &options,
+        )?)
     }
 }

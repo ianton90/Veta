@@ -55,6 +55,16 @@ pub(crate) fn project(batch: &RecordBatch, names: &[String]) -> Result<RecordBat
         .filter(|(_, f)| names.contains(f.name()))
         .map(|(i, _)| i)
         .collect();
+    if indices.is_empty() {
+        // No columns, but still the rows (a step adding columns needs them).
+        let options =
+            arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+        let schema = Arc::new(Schema::new_with_metadata(
+            Vec::<arrow::datatypes::Field>::new(),
+            batch.schema().metadata().clone(),
+        ));
+        return Ok(RecordBatch::try_new_with_options(schema, vec![], &options)?);
+    }
     Ok(batch.project(&indices)?)
 }
 

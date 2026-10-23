@@ -64,8 +64,10 @@ veta-core/src/
     mod.rs               execute / undo / redo; plan() hands each command
                          to its area: cells, nested, rows, columns,
                          metadata, steps
-  steps/                 Step, Pipeline (lazy evaluation), level (each
-                         step's output schema and row count), full passes
+  steps/                 Step, Pipeline (lazy evaluation), read.rs (a
+                         window of a step's output, all or some columns),
+                         level (each step's output schema and row count),
+                         full passes
                          (compute), checkpoints (temporary files, private
                          temp folder), cell edits, row ranges
   transforms/            what steps do: cast/, filter/, sort/ (in memory,
@@ -264,6 +266,11 @@ Every data change is a `Step`, Power Query style:
 Each step transforms the output of the previous one. A list of steps saved
 as JSON (`files/recipe/`, a `type` and `settings` per step) is a recipe the
 GUI and the CLI can replay.
+
+Reads of some columns (filter tests, statistics, sort keys) read only what
+those columns need, down to the file: rows map through row steps, names
+through renames, and columns a step doesn't compute pass through it; a
+column a step computes (a formula, a cast) needs that step's whole input.
 
 Evaluation is lazy and windowed: to display rows `a..b` the steps are
 evaluated only for that window when each is row-preserving (map-like) or
