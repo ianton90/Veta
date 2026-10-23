@@ -167,6 +167,11 @@ impl Node {
         Some(node)
     }
 
+    /// The value as a one-value array; `None` for null.
+    pub fn value(&self) -> Option<ArrayRef> {
+        (!self.null).then(|| self.array.slice(self.index, 1))
+    }
+
     /// The value as text, e.g. `42`, `{x: 1, y: 2}`, `[a, b]`; `None` for
     /// null.
     pub fn text(&self) -> Option<String> {

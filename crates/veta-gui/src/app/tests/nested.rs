@@ -272,6 +272,10 @@ fn list_items_edit_in_place() {
     grid(&mut app, GridEvent::Navigate(Nav::Up));
     grid(&mut app, GridEvent::ClearCell);
     assert_eq!(tags(&app, 0).as_deref(), Some("[null, B]"));
+    // Cut on an item clears just that item, as Delete does.
+    grid(&mut app, GridEvent::Navigate(Nav::Down));
+    let _ = app.update(Message::Action(Action::Cut));
+    assert_eq!(tags(&app, 0).as_deref(), Some("[null, null]"));
 
     // Typing on a list cell adds an item at the end; a null list too.
     grid(&mut app, GridEvent::Select { row: 3, column: 2 });

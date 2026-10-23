@@ -47,6 +47,10 @@ impl App {
     /// removes the rows or columns.
     pub(crate) fn copy_selection(&mut self, id: DocumentId, cut: bool) -> Task<Message> {
         self.commit_edit();
+        // An item inside an open cell: just its value.
+        if let Some(item) = self.selected_cell_item(id).filter(|i| !i.item.is_slot()) {
+            return self.copy_item(id, &item, cut);
+        }
         let (Some(tab), Some(doc)) = (self.tabs.iter().find(|t| t.id == id), self.workbook.get(id))
         else {
             return Task::none();
@@ -107,6 +111,34 @@ impl App {
                 Selection::Rows(_) => self.delete_rows(id),
                 Selection::Columns(_) => self.keep_or_remove_columns(id, false, true),
                 Selection::None => {}
+            }
+        }
+        iced::clipboard::write(text)
+    }
+
+    /// Copies the value of `item` (an item, entry or field line of an open
+    /// cell); with `cut`, then clears it as Delete does.
+    fn copy_item(&mut self, id: DocumentId, item: &CellItem, cut: bool) -> Task<Message> {
+        let Some(doc) = self.workbook.get(id) else {
+            return Task::none();
+        };
+        let text = doc
+            .schema()
+            .index_of(&item.column)
+            .map_err(veta_core::Error::from)
+            .and_then(|c| veta_core::clipboard::copy_value(doc, item.row, c, &item.path()));
+        let text = match text {
+            Ok(text) => text,
+            Err(e) => {
+                self.errors
+                    .push(tr_with("ST_MSG_COPY_FAILED", &[("error", &error_text(&e))]));
+                return Task::none();
+            }
+        };
+        if cut {
+            match self.set_item_value(id, item, None) {
+                Ok(()) => self.refresh(id),
+                Err(e) => self.errors.push(e),
             }
         }
         iced::clipboard::write(text)

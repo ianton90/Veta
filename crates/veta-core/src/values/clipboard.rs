@@ -6,9 +6,11 @@ use std::ops::Range;
 
 use arrow::array::Array;
 
+use crate::display::PathPart;
 use crate::display::{field_array, json_column};
 use crate::error::Result;
 use crate::model::Document;
+use crate::values::node::Node;
 
 /// The cells in `rows` × `columns` as tab-separated text, with the column
 /// names first if `header`. Nulls are empty; nested values are JSON.
@@ -54,35 +56,45 @@ pub fn copy_fields(
             .iter()
             .map(|(c, path)| field_array(batch.column(*c), path).ok_or_else(missing))
             .collect::<Result<Vec<_>>>()?;
-        let options = arrow::util::display::FormatOptions::default().with_null("null");
-        let mut columns = Vec::new();
-        for array in &arrays {
-            let json = array
-                .data_type()
-                .is_nested()
-                .then(|| json_column(array.as_ref()))
-                .transpose()?;
-            columns.push(json);
-        }
-        let formatters = arrays
+        let columns = arrays
             .iter()
-            .map(|a| arrow::util::display::ArrayFormatter::try_new(a.as_ref(), &options))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+            .map(|a| cell_texts(a.as_ref()))
+            .collect::<Result<Vec<_>>>()?;
         for r in 0..batch.num_rows() {
-            lines.push(
-                arrays
-                    .iter()
-                    .zip(&columns)
-                    .zip(&formatters)
-                    .map(|((array, json), formatter)| match json {
-                        Some(json) => json.is_valid(r).then(|| json.value(r).to_owned()),
-                        None => array.is_valid(r).then(|| formatter.value(r).to_string()),
-                    })
-                    .collect(),
-            );
+            lines.push(columns.iter().map(|c| c[r].clone()).collect());
         }
     }
     Ok(to_tsv(&lines))
+}
+
+/// The value at `path` inside cell (`row`, `column`) as clipboard text:
+/// JSON for nested values, empty for null.
+pub fn copy_value(doc: &Document, row: usize, column: usize, path: &[PathPart]) -> Result<String> {
+    let batch = doc.read(row..row + 1)?;
+    let node = Node::new(batch.column(column).clone(), 0)
+        .get(path)
+        .ok_or_else(|| invalid!(EntryGone))?;
+    let text = match node.value() {
+        Some(value) => cell_texts(value.as_ref())?.remove(0),
+        None => None,
+    };
+    Ok(to_tsv(&[vec![text]]))
+}
+
+/// Each value of `array` as copied: JSON for nested values, `None` for
+/// null.
+fn cell_texts(array: &dyn Array) -> Result<Vec<Option<String>>> {
+    if array.data_type().is_nested() {
+        let json = json_column(array)?;
+        return Ok((0..json.len())
+            .map(|r| json.is_valid(r).then(|| json.value(r).to_owned()))
+            .collect());
+    }
+    let options = arrow::util::display::FormatOptions::default().with_null("null");
+    let formatter = arrow::util::display::ArrayFormatter::try_new(array, &options)?;
+    Ok((0..array.len())
+        .map(|r| array.is_valid(r).then(|| formatter.value(r).to_string()))
+        .collect())
 }
 
 /// Tab-separated text; values with tabs, line breaks or quotes are quoted.
@@ -145,6 +157,31 @@ pub fn parse_tsv(text: &str) -> Vec<Vec<Option<String>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copies_one_nested_value() {
+        let dir = veta_testkit::TempDir::new();
+        let path = dir.join("n.parquet");
+        veta_testkit::fixtures::nested(&path);
+        let doc = Document::open(&path, crate::io::OpenOptions::default()).unwrap();
+        let column = |name: &str| doc.schema().index_of(name).unwrap();
+        let copy =
+            |row, name: &str, path: &[PathPart]| copy_value(&doc, row, column(name), path).unwrap();
+        assert_eq!(copy(0, "tags", &[PathPart::Index(1)]), "b\n");
+        assert_eq!(
+            copy(3, "tags", &[PathPart::Index(1)]),
+            "\n",
+            "null is empty"
+        );
+        assert_eq!(copy(0, "point", &[PathPart::Field("x".into())]), "1\n");
+        let item = parse_tsv(&copy(0, "path", &[PathPart::Index(1)]));
+        assert_eq!(
+            item,
+            [[Some(r#"{"x":3,"y":4}"#.to_owned())]],
+            "nested values as JSON"
+        );
+        assert!(copy_value(&doc, 0, column("tags"), &[PathPart::Index(9)]).is_err());
+    }
 
     #[test]
     fn tsv_round_trip() {
