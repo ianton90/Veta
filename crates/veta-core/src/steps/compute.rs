@@ -257,7 +257,9 @@ impl ComputeJob {
             }
             Step::Cast(cast) => {
                 // Converts every row once so an invalid value breaks the
-                // step instead of failing later reads.
+                // step instead of failing later reads. Only the column is
+                // read, in pieces on all cores; the first failure in row
+                // order counts.
                 let input = self
                     .pipeline
                     .schema_at(self.step)
@@ -266,44 +268,70 @@ impl ComputeJob {
                     cast.output_fields(&input)?,
                     input.metadata().clone(),
                 ));
-                let mut start = 0;
-                while start < input_rows {
-                    let end = (start + PASS_ROWS).min(input_rows);
-                    let batch = self.pipeline.read_at(self.step, start..end)?;
-                    if let Some((row, value)) = cast.first_failure(&batch)? {
+                let checked = cast.clone();
+                let pieces = self.pipeline.read_parallel(
+                    self.step,
+                    0..input_rows,
+                    Some(vec![cast.column.clone()]),
+                    move |batches, first| {
+                        let mut start = first;
+                        for batch in &batches {
+                            if let Some((row, value)) = checked.first_failure(batch)? {
+                                return Ok((Some((start + row, value)), start));
+                            }
+                            start += batch.num_rows();
+                        }
+                        Ok((None, start))
+                    },
+                );
+                for piece in pieces {
+                    let (failure, end) = piece?;
+                    if let Some((row, value)) = failure {
                         return Err(invalid!(
                             RowValueType,
-                            row = start + row + 1,
+                            row = row + 1,
                             value = value,
                             column = cast.column,
                             data_type = crate::display::type_name(&cast.to)
                         ));
                     }
-                    start = end;
-                    if !progress(start as f32 / input_rows as f32) {
+                    if !progress(end as f32 / input_rows as f32) {
                         return Err(Error::Cancelled);
                     }
                 }
                 Cache::Checked(schema)
             }
             Step::RemoveEmptyColumn { name } => {
-                let mut values = 0;
-                let mut example = None;
-                let mut start = 0;
-                while start < input_rows {
-                    let end = (start + PASS_ROWS).min(input_rows);
-                    let batch = self.pipeline.read_at(self.step, start..end)?;
-                    let column = batch
-                        .column_by_name(name)
-                        .ok_or_else(|| invalid!(ColumnNotFound, column = name))?;
-                    values += column.len() - column.null_count();
-                    if example.is_none()
-                        && let Some(i) = (0..column.len()).find(|&i| column.is_valid(i))
-                    {
-                        example = arrow::util::display::array_value_to_string(column, i).ok();
-                    }
-                    start = end;
-                    if !progress(start as f32 / input_rows as f32) {
+                // Only the column is read, in pieces on all cores.
+                let column = name.clone();
+                let pieces = self.pipeline.read_parallel(
+                    self.step,
+                    0..input_rows,
+                    Some(vec![name.clone()]),
+                    move |batches, first| {
+                        let (mut values, mut example, mut end) = (0, None, first);
+                        for batch in &batches {
+                            let array = batch
+                                .column_by_name(&column)
+                                .ok_or_else(|| invalid!(ColumnNotFound, column = column))?;
+                            values += array.len() - array.null_count();
+                            if example.is_none()
+                                && let Some(i) = (0..array.len()).find(|&i| array.is_valid(i))
+                            {
+                                example =
+                                    arrow::util::display::array_value_to_string(array, i).ok();
+                            }
+                            end += batch.num_rows();
+                        }
+                        Ok((values, example, end))
+                    },
+                );
+                let (mut values, mut example) = (0, None);
+                for piece in pieces {
+                    let (count, first, end) = piece?;
+                    values += count;
+                    example = example.or(first);
+                    if !progress(end as f32 / input_rows as f32) {
                         return Err(Error::Cancelled);
                     }
                 }
@@ -364,57 +392,95 @@ impl ComputeJob {
             .iter()
             .map(|c| schema.index_of(c))
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        let batches: Vec<Range<usize>> = (0..input_rows)
-            .step_by(PASS_ROWS)
-            .map(|start| start..(start + PASS_ROWS).min(input_rows))
-            .collect();
-        let read = |range: &Range<usize>| self.pipeline.read_at(self.step, range.clone());
+        let batches = input_rows.div_ceil(PASS_ROWS);
+        let up = f.up;
 
-        // Values carried into each batch, per filled column (filling up).
-        let mut carried_up: Vec<Vec<Option<ArrayRef>>> = Vec::new();
-        let first_share = if f.up { 0.5 } else { 0.0 };
-        if f.up {
-            let mut carry: Vec<Option<ArrayRef>> = vec![None; indices.len()];
-            carried_up = vec![Vec::new(); batches.len()];
-            for (done, (b, range)) in batches.iter().enumerate().rev().enumerate() {
-                carried_up[b] = carry.clone();
-                let batch = read(range)?;
-                for (k, &i) in indices.iter().enumerate() {
-                    carry[k] = carry_out(batch.column(i), carry[k].take(), true)?;
-                }
-                if !progress(first_share * (done + 1) as f32 / batches.len() as f32) {
-                    return Err(Error::Cancelled);
+        // First, only the filled columns: each batch's value to carry on
+        // (its last value, or its first when filling up), on all cores.
+        let columns = f.columns.clone();
+        let pieces = self.pipeline.read_parallel(
+            self.step,
+            0..input_rows,
+            Some(f.columns.clone()),
+            move |batches, first| {
+                let carries = batches
+                    .iter()
+                    .map(|batch| {
+                        columns
+                            .iter()
+                            .map(|c| {
+                                let column = batch
+                                    .column_by_name(c)
+                                    .ok_or_else(|| invalid!(ColumnNotFound, column = c))?;
+                                carry_out(column, None, up)
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
+                Ok((carries, first + rows))
+            },
+        );
+        let mut found: Vec<Vec<Option<ArrayRef>>> = Vec::with_capacity(batches);
+        for piece in pieces {
+            let (carries, end) = piece?;
+            found.extend(carries);
+            if !progress(0.3 * end as f32 / input_rows.max(1) as f32) {
+                return Err(Error::Cancelled);
+            }
+        }
+        // The value carried into each batch: the nearest found before it
+        // (after it, when filling up).
+        let mut incoming: Vec<Vec<Option<ArrayRef>>> = vec![vec![None; indices.len()]; batches];
+        let mut carry: Vec<Option<ArrayRef>> = vec![None; indices.len()];
+        let order: Box<dyn Iterator<Item = usize>> = match up {
+            true => Box::new((0..batches).rev()),
+            false => Box::new(0..batches),
+        };
+        for b in order {
+            incoming[b] = carry.clone();
+            for (k, value) in found[b].iter().enumerate() {
+                if value.is_some() {
+                    carry[k] = value.clone();
                 }
             }
         }
 
-        let mut carry: Vec<Option<ArrayRef>> = vec![None; indices.len()];
-        let mut next = 0;
-        let mut produce = || -> Option<Result<RecordBatch>> {
-            let range = batches.get(next)?;
-            let b = next;
-            next += 1;
-            let result = (|| {
-                let batch = read(range)?;
-                let mut columns = batch.columns().to_vec();
-                for (k, &i) in indices.iter().enumerate() {
-                    let incoming = if f.up {
-                        carried_up[b][k].clone()
-                    } else {
-                        carry[k].clone()
-                    };
-                    columns[i] = fill(&columns[i], incoming.as_ref(), f.up)?;
-                    if !f.up {
-                        carry[k] = carry_out(batch.column(i), carry[k].take(), false)?;
+        // Then every column, each batch filled on its own, on all cores.
+        let incoming = Arc::new(incoming);
+        let pieces =
+            self.pipeline
+                .read_parallel(self.step, 0..input_rows, None, move |batches, first| {
+                    let mut start = first;
+                    let mut filled = Vec::with_capacity(batches.len());
+                    for batch in batches {
+                        let carries = &incoming[start / PASS_ROWS];
+                        start += batch.num_rows();
+                        let mut columns = batch.columns().to_vec();
+                        for (k, &i) in indices.iter().enumerate() {
+                            columns[i] = fill(&columns[i], carries[k].as_ref(), up)?;
+                        }
+                        filled.push(RecordBatch::try_new(batch.schema(), columns)?);
                     }
+                    Ok((filled, start))
+                });
+        let mut pieces = pieces.into_iter();
+        let mut ready = std::collections::VecDeque::new();
+        let mut produce = || -> Option<Result<RecordBatch>> {
+            loop {
+                if let Some(batch) = ready.pop_front() {
+                    return Some(Ok(batch));
                 }
-                let fraction = (b + 1) as f32 / batches.len() as f32;
-                if !progress(first_share + (1.0 - first_share) * fraction) {
-                    return Err(Error::Cancelled);
+                match pieces.next()? {
+                    Ok((filled, end)) => {
+                        if !progress(0.3 + 0.7 * end as f32 / input_rows.max(1) as f32) {
+                            return Some(Err(Error::Cancelled));
+                        }
+                        ready.extend(filled);
+                    }
+                    Err(e) => return Some(Err(e)),
                 }
-                Ok(RecordBatch::try_new(schema.clone(), columns)?)
-            })();
-            Some(result)
+            }
         };
         self.materialize(schema.clone(), &mut produce)
     }
