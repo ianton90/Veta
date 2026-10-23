@@ -227,51 +227,27 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         }
         let state = tree.state.downcast_mut::<State>();
         let regions = Regions::new(layout.bounds(), self.view);
-        let view = self.view;
 
         // Report the body size whenever it changes so the app reads the
         // right number of rows.
         let size = (regions.full_rows(), regions.body.width.round() as u32);
         if state.reported != Some(size) {
             state.reported = Some(size);
-            shell.publish((self.on_event)(GridEvent::Resized {
-                rows: size.0,
-                width: regions.body.width,
-            }));
+            self.emit(
+                shell,
+                GridEvent::Resized {
+                    rows: size.0,
+                    width: regions.body.width,
+                },
+            );
         }
 
         match event {
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                if !cursor.is_over(regions.bounds) {
-                    return;
-                }
-                if state.modifiers.command() {
-                    let up = match *delta {
-                        ScrollDelta::Lines { y, .. } | ScrollDelta::Pixels { y, .. } => y,
-                    };
-                    if up != 0.0 {
-                        shell.publish((self.on_event)(GridEvent::Zoom(if up > 0.0 {
-                            1
-                        } else {
-                            -1
-                        })));
-                    }
+                if cursor.is_over(regions.bounds) {
+                    self.wheel(state, &regions, *delta, shell);
                     shell.capture_event();
-                    return;
                 }
-                let (dx, dy) = match *delta {
-                    ScrollDelta::Lines { x, y } => {
-                        (x * 40.0, y * WHEEL_LINES * regions.m.row_height)
-                    }
-                    ScrollDelta::Pixels { x, y } => (x, y),
-                };
-                let rows = (-dy / regions.m.row_height).round() as isize;
-                let first_row = view.first_row.saturating_add_signed(rows);
-                shell.publish((self.on_event)(GridEvent::Scroll {
-                    first_row,
-                    scroll_x: view.scroll_x - dx,
-                }));
-                shell.capture_event();
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let Some(position) = cursor.position_over(regions.bounds) else {
@@ -280,118 +256,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 };
                 state.focused = true;
                 shell.capture_event();
-
-                if regions.row_numbers.contains(position) {
-                    if let Some(row) = self.row_at(&regions, position.y) {
-                        shell.publish((self.on_event)(GridEvent::SelectRows {
-                            row,
-                            extend: state.modifiers.shift(),
-                        }));
-                    }
-                } else if let Some(column) = self.column_border_at(&regions, position) {
-                    let now = Instant::now();
-                    let double = state.last_edge_click.is_some_and(|(at, c)| {
-                        c == column && now.duration_since(at) < DOUBLE_CLICK
-                    });
-                    if double {
-                        state.last_edge_click = None;
-                        shell.publish((self.on_event)(GridEvent::AutoFit { column }));
-                    } else {
-                        state.last_edge_click = Some((now, column));
-                        state.drag = Drag::Column {
-                            column,
-                            origin_x: position.x,
-                            origin_width: view.columns[column].width,
-                        };
-                    }
-                } else if regions.header.contains(position) {
-                    if let Some(event) = self.toggle_at(&regions, position) {
-                        shell.publish((self.on_event)(event));
-                    } else if let Some(column) = self.column_at(&regions, position.x) {
-                        shell.publish((self.on_event)(GridEvent::SelectColumns {
-                            column,
-                            extend: state.modifiers.shift(),
-                        }));
-                        state.drag = Drag::Header {
-                            column,
-                            origin_x: position.x,
-                            x: position.x,
-                            moving: false,
-                        };
-                    }
-                } else if regions.v_track.contains(position) {
-                    if let Some((offset, length)) = regions.v_thumb(view) {
-                        let local = position.y - regions.v_track.y;
-                        if local >= offset && local <= offset + length {
-                            state.drag = Drag::VerticalThumb {
-                                grab: local - offset,
-                            };
-                        } else {
-                            let page = view.visible_rows.max(1);
-                            let first_row = if local < offset {
-                                view.first_row.saturating_sub(page)
-                            } else {
-                                view.first_row + page
-                            };
-                            shell.publish((self.on_event)(GridEvent::Scroll {
-                                first_row,
-                                scroll_x: view.scroll_x,
-                            }));
-                        }
-                    }
-                } else if regions.h_track.contains(position) {
-                    if let Some((offset, length)) = regions.h_thumb(view) {
-                        let local = position.x - regions.h_track.x;
-                        if local >= offset && local <= offset + length {
-                            state.drag = Drag::HorizontalThumb {
-                                grab: local - offset,
-                            };
-                        } else {
-                            let page = regions.body.width;
-                            let scroll_x = if local < offset {
-                                view.scroll_x - page
-                            } else {
-                                view.scroll_x + page
-                            };
-                            shell.publish((self.on_event)(GridEvent::Scroll {
-                                first_row: view.first_row,
-                                scroll_x,
-                            }));
-                        }
-                    }
-                } else if let Some((row, column)) = self.cell_at(&regions, position) {
-                    let item = self.item_at(&regions, position).map(|(_, _, i)| i);
-                    match item {
-                        Some(item) => {
-                            shell.publish((self.on_event)(GridEvent::SelectItem {
-                                row,
-                                column,
-                                item,
-                            }));
-                            if self.line_toggle_at(&regions, position) {
-                                shell.publish((self.on_event)(GridEvent::ToggleNode));
-                                state.last_click = None;
-                                return;
-                            }
-                        }
-                        None => shell.publish((self.on_event)(GridEvent::Select { row, column })),
-                    }
-                    if item.is_none() && self.items_toggle_at(&regions, position) == Some(row) {
-                        shell.publish((self.on_event)(GridEvent::ToggleItems { row }));
-                        state.last_click = None;
-                        return;
-                    }
-                    let now = Instant::now();
-                    let double = state.last_click.is_some_and(|(at, cell)| {
-                        cell == (row, column, item) && now.duration_since(at) < DOUBLE_CLICK
-                    });
-                    if double {
-                        state.last_click = None;
-                        shell.publish((self.on_event)(GridEvent::StartEdit { initial: None }));
-                    } else {
-                        state.last_click = Some((now, (row, column, item)));
-                    }
-                }
+                self.left_press(state, &regions, position, shell);
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
                 let Some(position) = cursor.position_over(regions.bounds) else {
@@ -399,54 +264,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 };
                 state.focused = true;
                 shell.capture_event();
-                let in_rows = |row: usize| view.selected_rows().is_some_and(|r| r.contains(&row));
-                let target = if let Some((row, column, item)) = self.item_at(&regions, position) {
-                    shell.publish((self.on_event)(GridEvent::SelectItem { row, column, item }));
-                    let parent = view
-                        .tree(row, column)
-                        .and_then(|t| t.lines.get(item))
-                        .and_then(|l| match l.what {
-                            What::Node { at, .. } | What::Slot(at) => Some(at.parent),
-                            What::More(_) => None,
-                        });
-                    match parent {
-                        Some(NodeKind::Struct) => Some(MenuTarget::Field),
-                        Some(NodeKind::Map) => Some(MenuTarget::Entry),
-                        _ => Some(MenuTarget::Item),
-                    }
-                } else if let Some((row, column)) = self.cell_at(&regions, position) {
-                    if !(view.rows.is_some() && in_rows(row)) {
-                        shell.publish((self.on_event)(GridEvent::Select { row, column }));
-                    }
-                    Some(MenuTarget::Cell)
-                } else if regions.row_numbers.contains(position) {
-                    self.row_at(&regions, position.y).map(|row| {
-                        if !(view.rows.is_some() && in_rows(row)) {
-                            shell.publish((self.on_event)(GridEvent::SelectRows {
-                                row,
-                                extend: false,
-                            }));
-                        }
-                        MenuTarget::Rows
-                    })
-                } else if regions.header.contains(position) {
-                    self.column_at(&regions, position.x).map(|column| {
-                        let selected = view
-                            .selected_display_columns()
-                            .is_some_and(|c| c.contains(&column));
-                        if !selected {
-                            shell.publish((self.on_event)(GridEvent::SelectColumns {
-                                column,
-                                extend: false,
-                            }));
-                        }
-                        MenuTarget::Column(view.columns[column].source)
-                    })
-                } else {
-                    Some(MenuTarget::Blank)
-                };
-                if let Some(target) = target {
-                    shell.publish((self.on_event)(GridEvent::ContextMenu { target, position }));
+                if let Some(target) = self.menu_target(&regions, position, shell) {
+                    self.emit(shell, GridEvent::ContextMenu { target, position });
                 }
             }
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
@@ -457,63 +276,9 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
             Event::Window(iced::window::Event::Focused | iced::window::Event::Unfocused) => {
                 state.drag = Drag::None;
             }
-            Event::Mouse(mouse::Event::CursorMoved { position }) => match state.drag {
-                Drag::None => {}
-                Drag::Header {
-                    column,
-                    origin_x,
-                    moving,
-                    ..
-                } => {
-                    state.drag = Drag::Header {
-                        column,
-                        origin_x,
-                        x: position.x,
-                        moving: moving || (position.x - origin_x).abs() > DRAG_THRESHOLD,
-                    };
-                    shell.request_redraw();
-                }
-                Drag::Column {
-                    column,
-                    origin_x,
-                    origin_width,
-                } => {
-                    shell.publish((self.on_event)(GridEvent::ColumnResized {
-                        column,
-                        width: (origin_width + position.x - origin_x).max(MIN_COLUMN_WIDTH),
-                    }));
-                }
-                Drag::VerticalThumb { grab } => {
-                    if let Some((_, length)) = regions.v_thumb(view) {
-                        let offset = offset_for_thumb(
-                            regions.v_track.height,
-                            length,
-                            view.num_rows as f32,
-                            view.visible_rows as f32,
-                            position.y - regions.v_track.y - grab,
-                        );
-                        shell.publish((self.on_event)(GridEvent::Scroll {
-                            first_row: offset.round() as usize,
-                            scroll_x: view.scroll_x,
-                        }));
-                    }
-                }
-                Drag::HorizontalThumb { grab } => {
-                    if let Some((_, length)) = regions.h_thumb(view) {
-                        let scroll_x = offset_for_thumb(
-                            regions.h_track.width,
-                            length,
-                            view.content_width(),
-                            regions.body.width,
-                            position.x - regions.h_track.x - grab,
-                        );
-                        shell.publish((self.on_event)(GridEvent::Scroll {
-                            first_row: view.first_row,
-                            scroll_x,
-                        }));
-                    }
-                }
-            },
+            Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                self.drag_to(state, &regions, *position, shell);
+            }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 if let Drag::Header {
                     column,
@@ -522,19 +287,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                     ..
                 } = state.drag
                 {
-                    // Fields of an expanded struct move with their column.
-                    let slot = self.drop_slot(&regions, x);
-                    let from = view.columns[column].source;
-                    let slot = view
-                        .columns
-                        .get(slot)
-                        .map_or(view.columns.last().map_or(0, |c| c.source + 1), |c| {
-                            c.source
-                        });
-                    let to = if slot > from { slot - 1 } else { slot };
-                    if to != from {
-                        shell.publish((self.on_event)(GridEvent::MoveColumn { from, to }));
-                    }
+                    self.drop_column(&regions, column, x, shell);
                 }
                 state.drag = Drag::None;
             }
@@ -544,66 +297,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
                 text,
                 ..
             }) if state.focused => {
-                let ctrl = modifiers.command();
-                let rows = match key.as_ref() {
-                    keyboard::Key::Character("-") if ctrl => Some(GridEvent::DeleteRows),
-                    keyboard::Key::Character("+" | "=") if ctrl => Some(GridEvent::InsertRows),
-                    _ => None,
-                };
-                if let Some(event) = rows {
-                    if view.selected.is_some() {
-                        shell.publish((self.on_event)(event));
-                        shell.capture_event();
-                    }
-                    return;
-                }
-                // Space opens and closes structs, lists and maps.
-                if key.as_ref() == keyboard::Key::Named(Named::Space)
-                    && !ctrl
-                    && view.selected_is_container()
-                {
-                    shell.publish((self.on_event)(GridEvent::ToggleNode));
-                    shell.capture_event();
-                    return;
-                }
-                let edit = match key.as_ref() {
-                    keyboard::Key::Named(Named::Enter | Named::F2) => {
-                        Some(GridEvent::StartEdit { initial: None })
-                    }
-                    keyboard::Key::Named(Named::Delete) => Some(GridEvent::ClearCell),
-                    keyboard::Key::Named(Named::Backspace) => Some(GridEvent::StartEdit {
-                        initial: Some(String::new()),
-                    }),
-                    _ if !ctrl && !modifiers.alt() => text
-                        .as_ref()
-                        .filter(|t| t.chars().all(|c| !c.is_control()) && !t.is_empty())
-                        .map(|t| GridEvent::StartEdit {
-                            initial: Some(t.to_string()),
-                        }),
-                    _ => None,
-                };
-                if let Some(event) = edit {
-                    if view.selected.is_some() {
-                        shell.publish((self.on_event)(event));
-                        shell.capture_event();
-                    }
-                    return;
-                }
-                let nav = match key.as_ref() {
-                    keyboard::Key::Named(Named::ArrowUp) => Some(Nav::Up),
-                    keyboard::Key::Named(Named::ArrowDown) => Some(Nav::Down),
-                    keyboard::Key::Named(Named::ArrowLeft) => Some(Nav::Left),
-                    keyboard::Key::Named(Named::ArrowRight) => Some(Nav::Right),
-                    keyboard::Key::Named(Named::PageUp) => Some(Nav::PageUp),
-                    keyboard::Key::Named(Named::PageDown) => Some(Nav::PageDown),
-                    keyboard::Key::Named(Named::Home) if ctrl => Some(Nav::Top),
-                    keyboard::Key::Named(Named::End) if ctrl => Some(Nav::Bottom),
-                    keyboard::Key::Named(Named::Home) => Some(Nav::RowStart),
-                    keyboard::Key::Named(Named::End) => Some(Nav::RowEnd),
-                    _ => None,
-                };
-                if let Some(nav) = nav {
-                    shell.publish((self.on_event)(GridEvent::Navigate(nav)));
+                if let Some(event) = self.key_event(key.as_ref(), *modifiers, text.as_deref()) {
+                    self.emit(shell, event);
                     shell.capture_event();
                 }
             }
@@ -657,6 +352,408 @@ impl<Message> Widget<Message, Theme, Renderer> for Grid<'_, Message> {
         viewport: &Rectangle,
     ) {
         self.draw_grid(tree, renderer, theme, style, layout, cursor, viewport);
+    }
+}
+
+/// Where a press on a scrollbar track lands.
+enum TrackPress {
+    /// On the thumb, this far from its start: drag it.
+    Thumb(f32),
+    /// Before or after the thumb: page that way.
+    Back,
+    Forward,
+}
+
+impl TrackPress {
+    /// A press at `local` along a track whose thumb is at `offset` and
+    /// `length` long.
+    fn at(local: f32, (offset, length): (f32, f32)) -> Self {
+        if local < offset {
+            Self::Back
+        } else if local <= offset + length {
+            Self::Thumb(local - offset)
+        } else {
+            Self::Forward
+        }
+    }
+}
+
+/// Input handlers of [`Widget::update`].
+impl<Message> Grid<'_, Message> {
+    fn emit(&self, shell: &mut Shell<'_, Message>, event: GridEvent) {
+        shell.publish((self.on_event)(event));
+    }
+
+    /// The wheel scrolls; with Ctrl it zooms.
+    fn wheel(
+        &self,
+        state: &State,
+        regions: &Regions,
+        delta: ScrollDelta,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        let view = self.view;
+        if state.modifiers.command() {
+            let up = match delta {
+                ScrollDelta::Lines { y, .. } | ScrollDelta::Pixels { y, .. } => y,
+            };
+            if up != 0.0 {
+                self.emit(shell, GridEvent::Zoom(if up > 0.0 { 1 } else { -1 }));
+            }
+            return;
+        }
+        let (dx, dy) = match delta {
+            ScrollDelta::Lines { x, y } => (x * 40.0, y * WHEEL_LINES * regions.m.row_height),
+            ScrollDelta::Pixels { x, y } => (x, y),
+        };
+        let rows = (-dy / regions.m.row_height).round() as isize;
+        self.emit(
+            shell,
+            GridEvent::Scroll {
+                first_row: view.first_row.saturating_add_signed(rows),
+                scroll_x: view.scroll_x - dx,
+            },
+        );
+    }
+
+    fn left_press(
+        &self,
+        state: &mut State,
+        regions: &Regions,
+        position: Point,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        let view = self.view;
+        if regions.row_numbers.contains(position) {
+            if let Some(row) = self.row_at(regions, position.y) {
+                let extend = state.modifiers.shift();
+                self.emit(shell, GridEvent::SelectRows { row, extend });
+            }
+        } else if let Some(column) = self.column_border_at(regions, position) {
+            let now = Instant::now();
+            let double = state
+                .last_edge_click
+                .is_some_and(|(at, c)| c == column && now.duration_since(at) < DOUBLE_CLICK);
+            if double {
+                state.last_edge_click = None;
+                self.emit(shell, GridEvent::AutoFit { column });
+            } else {
+                state.last_edge_click = Some((now, column));
+                state.drag = Drag::Column {
+                    column,
+                    origin_x: position.x,
+                    origin_width: view.columns[column].width,
+                };
+            }
+        } else if regions.header.contains(position) {
+            if let Some(event) = self.toggle_at(regions, position) {
+                self.emit(shell, event);
+            } else if let Some(column) = self.column_at(regions, position.x) {
+                let extend = state.modifiers.shift();
+                self.emit(shell, GridEvent::SelectColumns { column, extend });
+                state.drag = Drag::Header {
+                    column,
+                    origin_x: position.x,
+                    x: position.x,
+                    moving: false,
+                };
+            }
+        } else if regions.v_track.contains(position) {
+            let Some(thumb) = regions.v_thumb(view) else {
+                return;
+            };
+            let page = view.visible_rows.max(1);
+            let first_row = match TrackPress::at(position.y - regions.v_track.y, thumb) {
+                TrackPress::Thumb(grab) => {
+                    state.drag = Drag::VerticalThumb { grab };
+                    return;
+                }
+                TrackPress::Back => view.first_row.saturating_sub(page),
+                TrackPress::Forward => view.first_row + page,
+            };
+            let scroll_x = view.scroll_x;
+            self.emit(
+                shell,
+                GridEvent::Scroll {
+                    first_row,
+                    scroll_x,
+                },
+            );
+        } else if regions.h_track.contains(position) {
+            let Some(thumb) = regions.h_thumb(view) else {
+                return;
+            };
+            let page = regions.body.width;
+            let scroll_x = match TrackPress::at(position.x - regions.h_track.x, thumb) {
+                TrackPress::Thumb(grab) => {
+                    state.drag = Drag::HorizontalThumb { grab };
+                    return;
+                }
+                TrackPress::Back => view.scroll_x - page,
+                TrackPress::Forward => view.scroll_x + page,
+            };
+            let first_row = view.first_row;
+            self.emit(
+                shell,
+                GridEvent::Scroll {
+                    first_row,
+                    scroll_x,
+                },
+            );
+        } else if let Some((row, column)) = self.cell_at(regions, position) {
+            self.press_cell(state, regions, position, (row, column), shell);
+        }
+    }
+
+    /// A press in a cell selects it (or the line in it), opens or closes
+    /// what the arrow points at, or with a double-click starts editing.
+    fn press_cell(
+        &self,
+        state: &mut State,
+        regions: &Regions,
+        position: Point,
+        (row, column): (usize, usize),
+        shell: &mut Shell<'_, Message>,
+    ) {
+        let item = self.item_at(regions, position).map(|(_, _, i)| i);
+        match item {
+            Some(item) => {
+                self.emit(shell, GridEvent::SelectItem { row, column, item });
+                if self.line_toggle_at(regions, position) {
+                    self.emit(shell, GridEvent::ToggleNode);
+                    state.last_click = None;
+                    return;
+                }
+            }
+            None => {
+                self.emit(shell, GridEvent::Select { row, column });
+                if self.items_toggle_at(regions, position) == Some(row) {
+                    self.emit(shell, GridEvent::ToggleItems { row });
+                    state.last_click = None;
+                    return;
+                }
+            }
+        }
+        let now = Instant::now();
+        let double = state.last_click.is_some_and(|(at, cell)| {
+            cell == (row, column, item) && now.duration_since(at) < DOUBLE_CLICK
+        });
+        if double {
+            state.last_click = None;
+            self.emit(shell, GridEvent::StartEdit { initial: None });
+        } else {
+            state.last_click = Some((now, (row, column, item)));
+        }
+    }
+
+    /// What a right-click at `position` opens a menu for, selecting it
+    /// first unless it is already selected.
+    fn menu_target(
+        &self,
+        regions: &Regions,
+        position: Point,
+        shell: &mut Shell<'_, Message>,
+    ) -> Option<MenuTarget> {
+        let view = self.view;
+        let in_rows = |row: usize| {
+            view.rows.is_some() && view.selected_rows().is_some_and(|r| r.contains(&row))
+        };
+        if let Some((row, column, item)) = self.item_at(regions, position) {
+            self.emit(shell, GridEvent::SelectItem { row, column, item });
+            let parent = view
+                .tree(row, column)
+                .and_then(|t| t.lines.get(item))
+                .and_then(|l| match l.what {
+                    What::Node { at, .. } | What::Slot(at) => Some(at.parent),
+                    What::More(_) => None,
+                });
+            Some(match parent {
+                Some(NodeKind::Struct) => MenuTarget::Field,
+                Some(NodeKind::Map) => MenuTarget::Entry,
+                _ => MenuTarget::Item,
+            })
+        } else if let Some((row, column)) = self.cell_at(regions, position) {
+            if !in_rows(row) {
+                self.emit(shell, GridEvent::Select { row, column });
+            }
+            Some(MenuTarget::Cell)
+        } else if regions.row_numbers.contains(position) {
+            let row = self.row_at(regions, position.y)?;
+            if !in_rows(row) {
+                let extend = false;
+                self.emit(shell, GridEvent::SelectRows { row, extend });
+            }
+            Some(MenuTarget::Rows)
+        } else if regions.header.contains(position) {
+            let column = self.column_at(regions, position.x)?;
+            let selected = view
+                .selected_display_columns()
+                .is_some_and(|c| c.contains(&column));
+            if !selected {
+                let extend = false;
+                self.emit(shell, GridEvent::SelectColumns { column, extend });
+            }
+            Some(MenuTarget::Column(view.columns[column].source))
+        } else {
+            Some(MenuTarget::Blank)
+        }
+    }
+
+    /// Moving the mouse continues a drag: a column (to move or resize it)
+    /// or a scrollbar thumb.
+    fn drag_to(
+        &self,
+        state: &mut State,
+        regions: &Regions,
+        position: Point,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        let view = self.view;
+        match state.drag {
+            Drag::None => {}
+            Drag::Header {
+                column,
+                origin_x,
+                moving,
+                ..
+            } => {
+                state.drag = Drag::Header {
+                    column,
+                    origin_x,
+                    x: position.x,
+                    moving: moving || (position.x - origin_x).abs() > DRAG_THRESHOLD,
+                };
+                shell.request_redraw();
+            }
+            Drag::Column {
+                column,
+                origin_x,
+                origin_width,
+            } => {
+                let width = (origin_width + position.x - origin_x).max(MIN_COLUMN_WIDTH);
+                self.emit(shell, GridEvent::ColumnResized { column, width });
+            }
+            Drag::VerticalThumb { grab } => {
+                if let Some((_, length)) = regions.v_thumb(view) {
+                    let offset = offset_for_thumb(
+                        regions.v_track.height,
+                        length,
+                        view.num_rows as f32,
+                        view.visible_rows as f32,
+                        position.y - regions.v_track.y - grab,
+                    );
+                    let (first_row, scroll_x) = (offset.round() as usize, view.scroll_x);
+                    self.emit(
+                        shell,
+                        GridEvent::Scroll {
+                            first_row,
+                            scroll_x,
+                        },
+                    );
+                }
+            }
+            Drag::HorizontalThumb { grab } => {
+                if let Some((_, length)) = regions.h_thumb(view) {
+                    let scroll_x = offset_for_thumb(
+                        regions.h_track.width,
+                        length,
+                        view.content_width(),
+                        regions.body.width,
+                        position.x - regions.h_track.x - grab,
+                    );
+                    let first_row = view.first_row;
+                    self.emit(
+                        shell,
+                        GridEvent::Scroll {
+                            first_row,
+                            scroll_x,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    /// Dropping dragged column `column` at `x` moves it there. Fields of an
+    /// expanded struct move with their column.
+    fn drop_column(
+        &self,
+        regions: &Regions,
+        column: usize,
+        x: f32,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        let view = self.view;
+        let slot = self.drop_slot(regions, x);
+        let from = view.columns[column].source;
+        let slot = view
+            .columns
+            .get(slot)
+            .map_or(view.columns.last().map_or(0, |c| c.source + 1), |c| {
+                c.source
+            });
+        let to = if slot > from { slot - 1 } else { slot };
+        if to != from {
+            self.emit(shell, GridEvent::MoveColumn { from, to });
+        }
+    }
+
+    /// What a key press does in the grid: insert or delete rows, open or
+    /// close a value, start editing, clear the cell or move.
+    fn key_event(
+        &self,
+        key: keyboard::Key<&str>,
+        modifiers: keyboard::Modifiers,
+        text: Option<&str>,
+    ) -> Option<GridEvent> {
+        let view = self.view;
+        let ctrl = modifiers.command();
+        let selected = view.selected.is_some();
+        match key {
+            keyboard::Key::Character("-") if ctrl => {
+                return selected.then_some(GridEvent::DeleteRows);
+            }
+            keyboard::Key::Character("+" | "=") if ctrl => {
+                return selected.then_some(GridEvent::InsertRows);
+            }
+            // Space opens and closes structs, lists and maps.
+            keyboard::Key::Named(Named::Space) if !ctrl && view.selected_is_container() => {
+                return Some(GridEvent::ToggleNode);
+            }
+            _ => {}
+        }
+        let edit = match key {
+            keyboard::Key::Named(Named::Enter | Named::F2) => {
+                Some(GridEvent::StartEdit { initial: None })
+            }
+            keyboard::Key::Named(Named::Delete) => Some(GridEvent::ClearCell),
+            keyboard::Key::Named(Named::Backspace) => Some(GridEvent::StartEdit {
+                initial: Some(String::new()),
+            }),
+            _ if !ctrl && !modifiers.alt() => text
+                .filter(|t| t.chars().all(|c| !c.is_control()) && !t.is_empty())
+                .map(|t| GridEvent::StartEdit {
+                    initial: Some(t.to_string()),
+                }),
+            _ => None,
+        };
+        if edit.is_some() {
+            return edit.filter(|_| selected);
+        }
+        let nav = match key {
+            keyboard::Key::Named(Named::ArrowUp) => Nav::Up,
+            keyboard::Key::Named(Named::ArrowDown) => Nav::Down,
+            keyboard::Key::Named(Named::ArrowLeft) => Nav::Left,
+            keyboard::Key::Named(Named::ArrowRight) => Nav::Right,
+            keyboard::Key::Named(Named::PageUp) => Nav::PageUp,
+            keyboard::Key::Named(Named::PageDown) => Nav::PageDown,
+            keyboard::Key::Named(Named::Home) if ctrl => Nav::Top,
+            keyboard::Key::Named(Named::End) if ctrl => Nav::Bottom,
+            keyboard::Key::Named(Named::Home) => Nav::RowStart,
+            keyboard::Key::Named(Named::End) => Nav::RowEnd,
+            _ => return None,
+        };
+        Some(GridEvent::Navigate(nav))
     }
 }
 
