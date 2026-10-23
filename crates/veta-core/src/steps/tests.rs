@@ -102,6 +102,55 @@ fn insert_rows() {
     p.push(Step::InsertRows { at: 8, count: 1 }).unwrap();
     assert_eq!(ids(&p.read(7..9).unwrap()), [Some(4), None]);
     assert!(p.push(Step::InsertRows { at: 100, count: 1 }).is_err());
+    // Recipes can't ask for more rows than a step may insert, or overflow.
+    let code = |r: crate::error::Result<()>| match r {
+        Err(Error::Invalid(e)) => Some(e.code),
+        _ => None,
+    };
+    let too_many = Some(crate::error::ErrorCode::InsertTooMany);
+    for count in [MAX_INSERT_ROWS + 1, usize::MAX] {
+        assert_eq!(code(p.push(Step::InsertRows { at: 0, count })), too_many);
+    }
+    assert!(
+        p.push(Step::InsertRows {
+            at: 0,
+            count: MAX_INSERT_ROWS
+        })
+        .is_ok()
+    );
+}
+
+#[test]
+fn splits_are_capped() {
+    use crate::transforms::split::{MAX_SPLIT_PARTS, Split, SplitBy};
+    let schema = Schema::new(vec![Field::new(
+        "s",
+        arrow::datatypes::DataType::Utf8,
+        true,
+    )]);
+    let split = |by| Split {
+        column: "s".into(),
+        by,
+    };
+    let delimiter = |parts| SplitBy::Delimiter {
+        delimiter: ",".into(),
+        parts,
+    };
+    assert!(
+        split(delimiter(MAX_SPLIT_PARTS))
+            .output_fields(&schema)
+            .is_ok()
+    );
+    for by in [
+        delimiter(MAX_SPLIT_PARTS + 1),
+        delimiter(1_000_000_000_000),
+        SplitBy::Positions((1..=MAX_SPLIT_PARTS).collect()),
+    ] {
+        match split(by).output_fields(&schema) {
+            Err(Error::Invalid(e)) => assert_eq!(e.code, crate::error::ErrorCode::SplitTooMany),
+            other => panic!("{other:?}"),
+        }
+    }
 }
 
 #[test]

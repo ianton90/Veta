@@ -10,6 +10,9 @@ use arrow::record_batch::RecordBatch;
 
 use crate::error::Result;
 
+/// Most columns a split makes (a recipe could ask for billions).
+pub const MAX_SPLIT_PARTS: usize = 1000;
+
 /// Splits a column's text into `parts` new text columns named
 /// `<column>.1`, `<column>.2`, …, which replace it.
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +47,9 @@ impl Split {
 
     pub(crate) fn output_fields(&self, schema: &Schema) -> Result<Vec<Field>> {
         let index = column_index(schema, &self.column)?;
+        if self.parts() > MAX_SPLIT_PARTS {
+            return Err(invalid!(SplitTooMany, max = MAX_SPLIT_PARTS));
+        }
         match &self.by {
             SplitBy::Delimiter { delimiter, parts } => {
                 if delimiter.is_empty() {

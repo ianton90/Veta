@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 
-use super::Step;
 use super::compute::Cache;
+use super::{MAX_INSERT_ROWS, Step};
 use crate::error::Result;
 
 /// Shape of the data after a step.
@@ -96,9 +96,14 @@ impl Level {
                 if *count == 0 {
                     return Err(invalid!(NothingToInsert));
                 }
+                let too_many = || invalid!(InsertTooMany, max = MAX_INSERT_ROWS);
+                if *count > MAX_INSERT_ROWS {
+                    return Err(too_many());
+                }
+                let num_rows = self.num_rows.checked_add(*count).ok_or_else(too_many)?;
                 // Inserted rows are empty, so every column must allow nulls.
                 let fields = fields.into_iter().map(|f| f.with_nullable(true)).collect();
-                Ok(with_fields(fields, self.num_rows + count))
+                Ok(with_fields(fields, num_rows))
             }
             Step::DeleteRows { rows } => {
                 if rows.is_empty() {

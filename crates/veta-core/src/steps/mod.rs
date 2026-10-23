@@ -33,6 +33,9 @@ pub use edits::CellEdits;
 pub use pipeline::{Pipeline, Status};
 pub use rows::normalize_ranges;
 
+/// Most rows one step inserts (a recipe could ask for any number).
+pub const MAX_INSERT_ROWS: usize = 10_000_000;
+
 /// One transformation of the data.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
