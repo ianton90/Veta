@@ -14,6 +14,7 @@
   "ERR_COLUMN_TWICE": "{column} aparece dos veces",
   "ERR_COMBINE_NO_COLUMNS": "no hay columnas que combinar",
   "ERR_COMPUTE_FIRST": "antes hay que calcular este paso",
+  "ERR_CSV_RECORD_TOO_LONG": "un registro ocupa más de {mb} MB: comprueba si hay unas comillas sin cerrar",
   "ERR_DOCUMENT_NOT_FOUND": "no se encontró el documento {id}",
   "ERR_EDIT_TYPE": "el valor editado no coincide con el tipo de {column}",
   "ERR_ENTRY_GONE": "esa entrada ya no existe",

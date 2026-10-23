@@ -161,9 +161,13 @@ pub(super) fn text_schema(schema: &Schema) -> SchemaRef {
     ))
 }
 
+/// Most text read to guess types or preview rows: with a quote that is never
+/// closed, the first record would run to the end of the file (#160).
+const SAMPLE_BYTES: u64 = 256 * 1024 * 1024;
+
 /// Column names and guessed types.
 pub(super) fn infer_csv(path: &Path, options: &CsvOptions) -> Result<SchemaRef> {
-    let input = Input::open(path, options.encoding, None)?;
+    let input = Input::open(path, options.encoding, None)?.take(SAMPLE_BYTES);
     let (schema, _) = csv_format(options).infer_schema(input, Some(INFER_ROWS))?;
     let mut fields: Vec<Field> = schema
         .fields()
@@ -203,7 +207,7 @@ pub(super) fn read_csv_text(
     schema: &SchemaRef,
     rows: usize,
 ) -> Result<RecordBatch> {
-    let input = Input::open(path, options.encoding, None)?;
+    let input = Input::open(path, options.encoding, None)?.take(SAMPLE_BYTES);
     let mut reader = arrow::csv::ReaderBuilder::new(schema.clone())
         .with_format(csv_format(options))
         .with_batch_size(rows.max(1))

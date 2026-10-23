@@ -14,6 +14,7 @@
   "ERR_COLUMN_TWICE": "{column} is listed twice",
   "ERR_COMBINE_NO_COLUMNS": "there are no columns to combine",
   "ERR_COMPUTE_FIRST": "this step must be computed first",
+  "ERR_CSV_RECORD_TOO_LONG": "a record is longer than {mb} MB: check for a quote that is never closed",
   "ERR_DOCUMENT_NOT_FOUND": "document {id} not found",
   "ERR_EDIT_TYPE": "edited value does not match the type of {column}",
   "ERR_ENTRY_GONE": "that entry no longer exists",

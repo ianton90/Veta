@@ -17,6 +17,10 @@ use crate::error::Result;
 /// Bytes of text per chunk.
 const CHUNK_BYTES: usize = 16 * 1024 * 1024;
 
+/// Longest record (#160): with an unmatched quote no record ever ends, and
+/// the whole file would be read into one buffer.
+const MAX_RECORD_BYTES: usize = 256 * 1024 * 1024;
+
 type Parsed = Result<Vec<RecordBatch>>;
 
 /// The rows of CSV text read from `input`, parsed as `schema` (all text)
@@ -25,6 +29,7 @@ pub(super) struct ParallelCsv<'a, R: Read> {
     input: &'a mut R,
     quote: Option<u8>,
     chunk_bytes: usize,
+    max_record: usize,
     /// Whether the first record (the header) is still to be skipped.
     header: bool,
     /// Text read but not yet sent: the start of an unfinished record.
@@ -81,6 +86,7 @@ impl<'a, R: Read> ParallelCsv<'a, R> {
             input,
             quote,
             chunk_bytes: CHUNK_BYTES,
+            max_record: MAX_RECORD_BYTES,
             header,
             rest: Vec::new(),
             at_end: false,
@@ -98,6 +104,23 @@ impl<'a, R: Read> ParallelCsv<'a, R> {
     fn with_chunk_bytes(mut self, bytes: usize) -> Self {
         self.chunk_bytes = bytes;
         self
+    }
+
+    #[cfg(test)]
+    fn with_max_record(mut self, bytes: usize) -> Self {
+        self.max_record = bytes;
+        self
+    }
+
+    /// Refuses a record still unfinished after `max_record` bytes.
+    fn check_record(&self) -> Result<()> {
+        if self.rest.len() > self.max_record {
+            return Err(invalid!(
+                CsvRecordTooLong,
+                mb = self.max_record / (1024 * 1024)
+            ));
+        }
+        Ok(())
     }
 
     /// Reads and sends the next chunk. Returns `false` at the end of the
@@ -126,6 +149,7 @@ impl<'a, R: Read> ParallelCsv<'a, R> {
                         self.header = false;
                     }
                     None => {
+                        self.check_record()?;
                         target *= 2;
                         continue;
                     }
@@ -138,6 +162,7 @@ impl<'a, R: Read> ParallelCsv<'a, R> {
                     Some(end) => end + 1,
                     // A record longer than a chunk: read more.
                     None => {
+                        self.check_record()?;
                         target = self.rest.len() * 2;
                         continue;
                     }
@@ -289,5 +314,29 @@ mod tests {
             }
         }
         assert_eq!(row, 200_000);
+    }
+
+    #[test]
+    fn unfinished_records_stop_at_the_limit() {
+        let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, true)]));
+        // An unmatched quote: no record ends after it.
+        let mut text = String::from("s\na\n\"b\n");
+        text.push_str(&"x\n".repeat(1_000_000));
+        let mut input = text.as_bytes();
+        let csv = ParallelCsv::new(
+            &mut input,
+            schema,
+            Format::default(),
+            true,
+            Some(b'"'),
+            1000,
+        )
+        .with_chunk_bytes(1000)
+        .with_max_record(2 * 1024 * 1024 / 16);
+        let error = csv.filter_map(Result::err).next().expect("an error");
+        assert!(
+            matches!(&error, crate::error::Error::Invalid(e) if e.code == crate::error::ErrorCode::CsvRecordTooLong),
+            "{error}"
+        );
     }
 }

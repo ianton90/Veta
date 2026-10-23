@@ -46,6 +46,7 @@ error_codes! {
     ColumnTwice => "{column} is listed twice",
     CombineNoColumns => "there are no columns to combine",
     ComputeFirst => "this step must be computed first",
+    CsvRecordTooLong => "a record is longer than {mb} MB: check for a quote that is never closed",
     EditType => "edited value does not match the type of {column}",
     EntryGone => "that entry no longer exists",
     EntryNeedsKey => "a map entry needs a key",
