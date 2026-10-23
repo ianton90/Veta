@@ -204,7 +204,7 @@ impl App {
                         .zip(names)
                         .filter_map(|((_, path), column)| {
                             let (name, parents) = path.split_last()?;
-                            Some(Command::RemoveField {
+                            Some(Command::AddStep(Step::RemoveField {
                                 column,
                                 path: parents
                                     .iter()
@@ -212,7 +212,7 @@ impl App {
                                     .map(veta_core::display::PathPart::Field)
                                     .collect(),
                                 name: name.clone(),
-                            })
+                            }))
                         })
                         .collect();
                     if commands.len() < targets.len() {

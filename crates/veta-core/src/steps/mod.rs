@@ -15,6 +15,7 @@ mod level;
 mod pipeline;
 mod read;
 mod rows;
+mod transform;
 
 use std::ops::Range;
 
@@ -29,10 +30,14 @@ pub use crate::transforms::filter::{Condition, Filter, FilterOp};
 pub use crate::transforms::sort::{Sort, SortKey};
 pub use crate::transforms::split::{Merge, Split, SplitBy, count_parts};
 pub use crate::transforms::text::{Replace, TextOp};
+pub(crate) use compute::{Cache, PASS_ROWS, RowMap};
 pub use compute::{ComputeJob, Computed};
 pub use edits::CellEdits;
+pub(crate) use level::Level;
 pub use pipeline::{Pipeline, Status};
+pub(crate) use read::with_schema;
 pub use rows::normalize_ranges;
+pub(crate) use transform::{Input, Transform, compute_first};
 
 /// Most rows one step inserts (a recipe could ask for any number).
 pub const MAX_INSERT_ROWS: usize = 10_000_000;
@@ -140,24 +145,13 @@ impl Step {
     /// Whether evaluating the step needs a full pass over its input (done in
     /// the background, then cached).
     pub fn needs_full_pass(&self) -> bool {
-        matches!(
-            self,
-            Step::Filter(_)
-                | Step::Sort(_)
-                | Step::Fill(_)
-                | Step::RemoveEmptyColumn { .. }
-                | Step::ExplodeList { .. }
-                | Step::CollectList { .. }
-        ) || matches!(self, Step::Cast(c) if c.options.on_error == OnError::Fail)
+        self.with_transform(|t| t.full_pass())
     }
 
     /// Whether the step refers to rows by position, so changing an earlier
     /// step can make it apply to different rows.
     pub fn is_positional(&self) -> bool {
-        matches!(
-            self,
-            Step::EditCells(_) | Step::InsertRows { .. } | Step::DeleteRows { .. }
-        )
+        self.with_transform(|t| t.positional())
     }
 }
 
@@ -171,11 +165,11 @@ pub fn schema_after(
         schema: schema.clone(),
         num_rows: usize::MAX / 4,
     };
-    if step.needs_full_pass() {
-        level.check(step)?;
-        return Ok(schema.clone());
+    let after = step.with_transform(|t| t.level(&level))?;
+    match step.needs_full_pass() {
+        true => Ok(schema.clone()),
+        false => Ok(after.schema),
     }
-    Ok(level.next(step)?.schema)
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ use arrow::compute::interleave;
 use arrow::record_batch::RecordBatch;
 
 use super::level::Level;
+use super::transform::{Input, Transform};
 use crate::error::Result;
 
 /// Edited cell values: column name → row → new value (a one-element array of
@@ -57,7 +58,7 @@ impl CellEdits {
         self.columns.is_empty()
     }
 
-    pub(super) fn validate(&self, level: &Level) -> Result<()> {
+    fn validate(&self, level: &Level) -> Result<()> {
         for (column, rows) in &self.columns {
             let field = level.field(column)?;
             if let Some((&row, _)) = rows.range(level.num_rows..).next() {
@@ -76,7 +77,7 @@ impl CellEdits {
     }
 
     /// Applies the edits to `batch`, whose first row is row `start`.
-    pub(super) fn apply(&self, batch: &RecordBatch, start: usize) -> Result<RecordBatch> {
+    fn edit(&self, batch: &RecordBatch, start: usize) -> Result<RecordBatch> {
         let schema = batch.schema();
         let window = start..start + batch.num_rows();
         let mut columns = batch.columns().to_vec();
@@ -102,5 +103,26 @@ impl CellEdits {
         Ok(RecordBatch::try_new_with_options(
             schema, columns, &options,
         )?)
+    }
+}
+
+impl Transform for CellEdits {
+    fn positional(&self) -> bool {
+        true
+    }
+
+    fn level(&self, input: &Level) -> Result<Level> {
+        self.validate(input)?;
+        Ok(input.clone())
+    }
+
+    fn read(
+        &self,
+        input: &Input<'_>,
+        range: std::ops::Range<usize>,
+        names: Option<&[String]>,
+    ) -> Result<RecordBatch> {
+        let batch = self.edit(&input.read(range.clone(), names)?, range.start)?;
+        input.pick(&batch, names, str::to_owned)
     }
 }

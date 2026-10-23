@@ -5,6 +5,7 @@
 use veta_core::controller::{execute, undo};
 use veta_core::display::format_batch;
 use veta_core::recipe::{RecipeInfo, from_json, to_json};
+use veta_core::steps::Step;
 use veta_core::steps::{Condition, CustomColumn, Filter, FilterOp, Sort, SortKey, Status};
 use veta_core::{Command, Document, OpenOptions};
 use veta_testkit::{TempDir, fixtures};
@@ -15,16 +16,16 @@ fn all(doc: &Document) -> Vec<Vec<Option<String>>> {
 
 fn steps() -> Vec<Command> {
     vec![
-        Command::RenameColumn {
+        Command::AddStep(Step::RenameColumn {
             from: "name".into(),
             to: "label".into(),
-        },
-        Command::CustomColumn(CustomColumn {
+        }),
+        Command::AddStep(Step::CustomColumn(CustomColumn {
             name: "double".into(),
             expression: "id * 2".into(),
             at: 1,
-        }),
-        Command::Filter(Filter {
+        })),
+        Command::AddStep(Step::Filter(Filter {
             conditions: vec![Condition {
                 column: "flag".into(),
                 op: FilterOp::Equals,
@@ -33,14 +34,14 @@ fn steps() -> Vec<Command> {
             }],
             match_all: true,
             exclude: false,
-        }),
-        Command::Sort(Sort {
+        })),
+        Command::AddStep(Step::Sort(Sort {
             keys: vec![SortKey {
                 column: "score".into(),
                 descending: true,
                 nulls_first: false,
             }],
-        }),
+        })),
     ]
 }
 
@@ -59,7 +60,11 @@ fn recipe_from_one_file_applies_to_another() {
     // The other file: same columns, different rows.
     let other_path = dir.join("other.parquet");
     let mut other = Document::open(&path, OpenOptions::default()).unwrap();
-    execute(&mut other, Command::DeleteRows { rows: vec![0..137] }).unwrap();
+    execute(
+        &mut other,
+        Command::AddStep(Step::DeleteRows { rows: vec![0..137] }),
+    )
+    .unwrap();
     other.save(Some(other_path.clone())).unwrap();
 
     let mut doc = Document::open(&path, OpenOptions::default()).unwrap();

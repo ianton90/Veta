@@ -42,10 +42,10 @@ fn rename_carries_writer_settings() {
     let zstd = doc.writer_settings().column("id").compression;
     execute(
         &mut doc,
-        Command::RenameColumn {
+        Command::AddStep(Step::RenameColumn {
             from: "id".into(),
             to: "key".into(),
-        },
+        }),
     )
     .unwrap();
     assert_eq!(doc.writer_settings().column("key").compression, zstd);
@@ -94,10 +94,10 @@ fn column_metadata_is_saved_and_follows_renames() {
     execute(&mut doc, set("score")).unwrap();
     execute(
         &mut doc,
-        Command::RenameColumn {
+        Command::AddStep(Step::RenameColumn {
             from: "score".into(),
             to: "points".into(),
-        },
+        }),
     )
     .unwrap();
     assert_eq!(doc.metadata().column("points"), Some(entries.as_slice()));

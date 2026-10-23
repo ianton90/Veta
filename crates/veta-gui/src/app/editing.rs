@@ -134,9 +134,9 @@ impl App {
             return;
         };
         let command = if explode {
-            Command::ExplodeList { column }
+            Command::AddStep(Step::ExplodeList { column })
         } else {
-            Command::ExpandStruct { column, all_levels }
+            Command::AddStep(Step::ExpandStruct { column, all_levels })
         };
         self.execute(id, command);
     }
@@ -191,11 +191,11 @@ impl App {
         };
         self.execute(
             id,
-            Command::RemoveField {
+            Command::AddStep(Step::RemoveField {
                 path: item.parent(),
                 column: item.column,
                 name,
-            },
+            }),
         );
     }
 

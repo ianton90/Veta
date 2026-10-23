@@ -6,18 +6,16 @@ use crate::error::invalid;
 use std::ops::Range;
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef};
 use arrow::record_batch::RecordBatch;
 
 use super::checkpoint::{Checkpoint, TempFile, write_parquet};
 use super::{Pipeline, Step};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::source::{DataSource, MemorySource, SourceMode};
-use crate::transforms::fill::{Fill, carry_out, fill};
-use crate::transforms::sort::{sort_external, sort_in_memory, sort_stream};
+use crate::transforms::sort::sort_stream;
 
 /// Rows read per batch during a full pass.
-pub(super) const PASS_ROWS: usize = 64 * 1024;
+pub(crate) const PASS_ROWS: usize = 64 * 1024;
 
 /// The cached result of a full pass.
 #[derive(Debug)]
@@ -45,7 +43,7 @@ pub(crate) struct RowMap {
 
 impl RowMap {
     /// Appends input rows `range`, which must come after all previous ones.
-    pub(super) fn push(&mut self, range: Range<usize>) {
+    pub(crate) fn push(&mut self, range: Range<usize>) {
         if range.is_empty() {
             return;
         }
@@ -170,7 +168,7 @@ impl ComputeJob {
                     .schema_at(self.step)
                     .ok_or_else(|| invalid!(InputNotEvaluated))?;
                 let read = |range| self.pipeline.read_at(self.step, range);
-                let names = sort_key_names(sort);
+                let names = sort.key_names();
                 let read_keys = |range| self.pipeline.read_columns_at(self.step, range, &names);
                 Ok(Box::new(sort_stream(
                     sort, &schema, input_rows, &read, &read_keys, PASS_ROWS,
@@ -187,312 +185,66 @@ impl ComputeJob {
             .pipeline
             .num_rows_at(self.step)
             .ok_or_else(|| invalid!(InputNotEvaluated))?;
-        let cache = match &self.pipeline.steps()[self.step] {
-            Step::Filter(filter) => {
-                // Only the columns the conditions test are read.
-                let mut names: Vec<String> =
-                    filter.conditions.iter().map(|c| c.column.clone()).collect();
-                names.dedup();
-                // Pieces are read and tested on several threads; the kept
-                // ranges are joined in order.
-                let tested = filter.clone();
-                let pieces = self.pipeline.read_parallel(
-                    self.step,
-                    0..input_rows,
-                    Some(names),
-                    move |batches, first| {
-                        let mut kept = Vec::new();
-                        let mut start = first;
-                        for batch in &batches {
-                            let mask = tested.evaluate(batch)?;
-                            for (from, to) in mask.values().set_slices() {
-                                kept.push(start + from..start + to);
-                            }
-                            start += batch.num_rows();
-                        }
-                        Ok((kept, start))
-                    },
-                );
-                let mut rows = RowMap::default();
-                for piece in pieces {
-                    let (kept, end) = piece?;
-                    for range in kept {
-                        rows.push(range);
-                    }
-                    if !progress(end as f32 / input_rows as f32) {
-                        return Err(Error::Cancelled);
-                    }
-                }
-                Cache::Rows(rows)
-            }
-            Step::Sort(sort) => {
-                let schema = self
-                    .pipeline
-                    .schema_at(self.step)
-                    .ok_or_else(|| invalid!(InputNotEvaluated))?;
-                let read = |range| self.pipeline.read_at(self.step, range);
-                let source: Arc<dyn DataSource> = match self.pipeline.source().mode() {
-                    SourceMode::InMemory => {
-                        let batch =
-                            sort_in_memory(sort, &schema, input_rows, &read, PASS_ROWS, progress)?;
-                        Arc::new(MemorySource::new(schema, vec![batch])?)
-                    }
-                    SourceMode::Paged => {
-                        let names = sort_key_names(sort);
-                        let read_keys =
-                            |range| self.pipeline.read_columns_at(self.step, range, &names);
-                        Arc::new(sort_external(
-                            sort, &schema, input_rows, &read, &read_keys, PASS_ROWS, None, progress,
-                        )?)
-                    }
-                };
-                Cache::Data(source)
-            }
-            Step::Fill(f) => Cache::Data(self.fill(f, input_rows, progress)?),
-            Step::ExplodeList { column } => {
-                Cache::Data(self.explode(column, input_rows, progress)?)
-            }
-            Step::CollectList { keys, columns } => {
-                Cache::Data(self.collect(keys, columns, input_rows, progress)?)
-            }
-            Step::Cast(cast) => {
-                // Converts every row once so an invalid value breaks the
-                // step instead of failing later reads. Only the column is
-                // read, in pieces on all cores; the first failure in row
-                // order counts.
-                let input = self
-                    .pipeline
-                    .schema_at(self.step)
-                    .ok_or_else(|| invalid!(InputNotEvaluated))?;
-                let schema = Arc::new(arrow::datatypes::Schema::new_with_metadata(
-                    cast.output_fields(&input)?,
-                    input.metadata().clone(),
-                ));
-                let checked = cast.clone();
-                let pieces = self.pipeline.read_parallel(
-                    self.step,
-                    0..input_rows,
-                    Some(vec![cast.column.clone()]),
-                    move |batches, first| {
-                        let mut start = first;
-                        for batch in &batches {
-                            if let Some((row, value)) = checked.first_failure(batch)? {
-                                return Ok((Some((start + row, value)), start));
-                            }
-                            start += batch.num_rows();
-                        }
-                        Ok((None, start))
-                    },
-                );
-                for piece in pieces {
-                    let (failure, end) = piece?;
-                    if let Some((row, value)) = failure {
-                        return Err(invalid!(
-                            RowValueType,
-                            row = row + 1,
-                            value = value,
-                            column = cast.column,
-                            data_type = crate::display::type_name(&cast.to)
-                        ));
-                    }
-                    if !progress(end as f32 / input_rows as f32) {
-                        return Err(Error::Cancelled);
-                    }
-                }
-                Cache::Checked(schema)
-            }
-            Step::RemoveEmptyColumn { name } => {
-                // Only the column is read, in pieces on all cores.
-                let column = name.clone();
-                let pieces = self.pipeline.read_parallel(
-                    self.step,
-                    0..input_rows,
-                    Some(vec![name.clone()]),
-                    move |batches, first| {
-                        let (mut values, mut example, mut end) = (0, None, first);
-                        for batch in &batches {
-                            let array = batch
-                                .column_by_name(&column)
-                                .ok_or_else(|| invalid!(ColumnNotFound, column = column))?;
-                            values += array.len() - array.null_count();
-                            if example.is_none()
-                                && let Some(i) = (0..array.len()).find(|&i| array.is_valid(i))
-                            {
-                                example =
-                                    arrow::util::display::array_value_to_string(array, i).ok();
-                            }
-                            end += batch.num_rows();
-                        }
-                        Ok((values, example, end))
-                    },
-                );
-                let (mut values, mut example) = (0, None);
-                for piece in pieces {
-                    let (count, first, end) = piece?;
-                    values += count;
-                    example = example.or(first);
-                    if !progress(end as f32 / input_rows as f32) {
-                        return Err(Error::Cancelled);
-                    }
-                }
-                if values > 0 {
-                    return Err(match example {
-                        Some(example) => invalid!(
-                            NotEmptyExample,
-                            column = name,
-                            values = values,
-                            example = example
-                        ),
-                        None => invalid!(NotEmpty, column = name, values = values),
-                    });
-                }
-                let schema = self
-                    .pipeline
-                    .schema_at(self.step)
-                    .ok_or_else(|| invalid!(InputNotEvaluated))?;
-                let fields: Vec<_> = schema
-                    .fields()
-                    .iter()
-                    .filter(|f| f.name() != name)
-                    .map(|f| f.as_ref().clone())
-                    .collect();
-                Cache::Project(Arc::new(arrow::datatypes::Schema::new_with_metadata(
-                    fields,
-                    schema.metadata().clone(),
-                )))
-            }
-            other => {
-                return Err(invalid!(NoComputeNeeded, step = format!("{other:?}")));
-            }
-        };
+        let step = &self.pipeline.steps()[self.step];
+        if !step.needs_full_pass() {
+            return Err(invalid!(NoComputeNeeded, step = format!("{step:?}")));
+        }
+        let cache = step.with_transform(|t| t.compute(&self, input_rows, progress))?;
         Ok(Computed {
             step: self.step,
             ids: self.ids,
             cache: Arc::new(cache),
         })
     }
-}
 
-impl ComputeJob {
-    /// Fills nulls batch by batch, carrying the last value across batches.
-    /// Filling up first finds, from the end, the value carried into each
-    /// batch.
-    fn fill(
-        &self,
-        f: &Fill,
-        input_rows: usize,
-        progress: &mut dyn FnMut(f32) -> bool,
-    ) -> Result<Arc<dyn DataSource>> {
-        let schema = self
-            .pipeline
+    /// The schema of the step's input.
+    pub(crate) fn input_schema(&self) -> Result<arrow::datatypes::SchemaRef> {
+        self.pipeline
             .schema_at(self.step)
-            .ok_or_else(|| invalid!(InputNotEvaluated))?;
-        let indices = f
-            .columns
-            .iter()
-            .map(|c| schema.index_of(c))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let batches = input_rows.div_ceil(PASS_ROWS);
-        let up = f.up;
+            .ok_or_else(|| invalid!(InputNotEvaluated))
+    }
 
-        // First, only the filled columns: each batch's value to carry on
-        // (its last value, or its first when filling up), on all cores.
-        let columns = f.columns.clone();
-        let pieces = self.pipeline.read_parallel(
-            self.step,
-            0..input_rows,
-            Some(f.columns.clone()),
-            move |batches, first| {
-                let carries = batches
-                    .iter()
-                    .map(|batch| {
-                        columns
-                            .iter()
-                            .map(|c| {
-                                let column = batch
-                                    .column_by_name(c)
-                                    .ok_or_else(|| invalid!(ColumnNotFound, column = c))?;
-                                carry_out(column, None, up)
-                            })
-                            .collect::<Result<Vec<_>>>()
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
-                Ok((carries, first + rows))
-            },
-        );
-        let mut found: Vec<Vec<Option<ArrayRef>>> = Vec::with_capacity(batches);
-        for piece in pieces {
-            let (carries, end) = piece?;
-            found.extend(carries);
-            if !progress(0.3 * end as f32 / input_rows.max(1) as f32) {
-                return Err(Error::Cancelled);
-            }
-        }
-        // The value carried into each batch: the nearest found before it
-        // (after it, when filling up).
-        let mut incoming: Vec<Vec<Option<ArrayRef>>> = vec![vec![None; indices.len()]; batches];
-        let mut carry: Vec<Option<ArrayRef>> = vec![None; indices.len()];
-        let order: Box<dyn Iterator<Item = usize>> = match up {
-            true => Box::new((0..batches).rev()),
-            false => Box::new(0..batches),
-        };
-        for b in order {
-            incoming[b] = carry.clone();
-            for (k, value) in found[b].iter().enumerate() {
-                if value.is_some() {
-                    carry[k] = value.clone();
-                }
-            }
-        }
+    /// Rows `range` of the step's input.
+    pub(crate) fn read(&self, range: Range<usize>) -> Result<RecordBatch> {
+        self.pipeline.read_at(self.step, range)
+    }
 
-        // Then every column, each batch filled on its own, on all cores.
-        let incoming = Arc::new(incoming);
-        let pieces =
-            self.pipeline
-                .read_parallel(self.step, 0..input_rows, None, move |batches, first| {
-                    let mut start = first;
-                    let mut filled = Vec::with_capacity(batches.len());
-                    for batch in batches {
-                        let carries = &incoming[start / PASS_ROWS];
-                        start += batch.num_rows();
-                        let mut columns = batch.columns().to_vec();
-                        for (k, &i) in indices.iter().enumerate() {
-                            columns[i] = fill(&columns[i], carries[k].as_ref(), up)?;
-                        }
-                        filled.push(RecordBatch::try_new(batch.schema(), columns)?);
-                    }
-                    Ok((filled, start))
-                });
-        let mut pieces = pieces.into_iter();
-        let mut ready = std::collections::VecDeque::new();
-        let mut produce = || -> Option<Result<RecordBatch>> {
-            loop {
-                if let Some(batch) = ready.pop_front() {
-                    return Some(Ok(batch));
-                }
-                match pieces.next()? {
-                    Ok((filled, end)) => {
-                        if !progress(0.3 + 0.7 * end as f32 / input_rows.max(1) as f32) {
-                            return Some(Err(Error::Cancelled));
-                        }
-                        ready.extend(filled);
-                    }
-                    Err(e) => return Some(Err(e)),
-                }
-            }
-        };
-        self.materialize(schema.clone(), &mut produce)
+    /// Rows `range` of the step's input, only the columns `names`.
+    pub(crate) fn read_columns(
+        &self,
+        range: Range<usize>,
+        names: &[String],
+    ) -> Result<RecordBatch> {
+        self.pipeline.read_columns_at(self.step, range, names)
+    }
+
+    /// The step's `input_rows` input rows (all columns, or only `names`)
+    /// in pieces mapped by `map` on all cores, in order; see
+    /// [`Pipeline::read_parallel`].
+    pub(crate) fn read_parallel<T: Send + 'static>(
+        &self,
+        input_rows: usize,
+        names: Option<Vec<String>>,
+        map: impl Fn(Vec<RecordBatch>, usize) -> Result<T> + Send + Sync + 'static,
+    ) -> crate::parallel::Ordered<T> {
+        self.pipeline
+            .read_parallel(self.step, 0..input_rows, names, map)
+    }
+
+    /// How the document's source is held: results of paged documents go to
+    /// temporary files.
+    pub(crate) fn mode(&self) -> SourceMode {
+        self.pipeline.source().mode()
     }
 
     /// Stores batches from `produce` in memory (in-memory documents) or in
     /// a temporary Parquet file (paged ones).
-    fn materialize(
+    pub(crate) fn materialize(
         &self,
         schema: arrow::datatypes::SchemaRef,
         produce: &mut dyn FnMut() -> Option<Result<RecordBatch>>,
     ) -> Result<Arc<dyn DataSource>> {
-        match self.pipeline.source().mode() {
+        match self.mode() {
             SourceMode::InMemory => {
                 let batches = std::iter::from_fn(produce).collect::<Result<Vec<_>>>()?;
                 Ok(Arc::new(MemorySource::new(schema, batches)?))
@@ -504,216 +256,6 @@ impl ComputeJob {
             }
         }
     }
-
-    /// One row per group of equal keys, the other columns collected into
-    /// lists. Rows are sorted by the keys first (stable, so items keep their
-    /// order), which also orders the groups.
-    fn collect(
-        &self,
-        keys: &[String],
-        columns: &[String],
-        input_rows: usize,
-        progress: &mut dyn FnMut(f32) -> bool,
-    ) -> Result<Arc<dyn DataSource>> {
-        use crate::transforms::sort::{Sort, SortKey};
-        let input = self
-            .pipeline
-            .schema_at(self.step)
-            .ok_or_else(|| invalid!(InputNotEvaluated))?;
-        let schema = Arc::new(arrow::datatypes::Schema::new_with_metadata(
-            crate::transforms::nested::collect_fields(&input, keys, columns)?,
-            input.metadata().clone(),
-        ));
-        let read = |range| self.pipeline.read_at(self.step, range);
-        let sorted: Option<Arc<dyn DataSource>> = if keys.is_empty() {
-            None
-        } else {
-            let sort = Sort {
-                keys: keys
-                    .iter()
-                    .map(|k| SortKey {
-                        column: k.clone(),
-                        descending: false,
-                        nulls_first: false,
-                    })
-                    .collect(),
-            };
-            let mut sort_progress = |f: f32| progress(0.5 * f);
-            Some(match self.pipeline.source().mode() {
-                SourceMode::InMemory => {
-                    let batch = sort_in_memory(
-                        &sort,
-                        &input,
-                        input_rows,
-                        &read,
-                        PASS_ROWS,
-                        &mut sort_progress,
-                    )?;
-                    Arc::new(MemorySource::new(input.clone(), vec![batch])?)
-                }
-                SourceMode::Paged => Arc::new(sort_external(
-                    &sort,
-                    &input,
-                    input_rows,
-                    &read,
-                    &|range| self.pipeline.read_columns_at(self.step, range, keys),
-                    PASS_ROWS,
-                    None,
-                    &mut sort_progress,
-                )?),
-            })
-        };
-        let read_sorted = |range: Range<usize>| match &sorted {
-            Some(source) => source.read(range),
-            None => read(range),
-        };
-        let key_columns = keys
-            .iter()
-            .map(|k| input.index_of(k))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let converter = if keys.is_empty() {
-            None
-        } else {
-            let fields = key_columns
-                .iter()
-                .map(|&i| arrow::row::SortField::new(input.field(i).data_type().clone()))
-                .collect();
-            Some(arrow::row::RowConverter::new(fields)?)
-        };
-
-        // Groups can span reads: the rows of the last, maybe unfinished,
-        // group wait in `pending` (as read, joined once the group ends) for
-        // the next read. Without keys the whole input is one group.
-        let mut start = 0;
-        let mut pending: Vec<RecordBatch> = Vec::new();
-        // Whether row `b` of `next` has the same keys as the last pending row.
-        let continues = |pending: &[RecordBatch], next: &RecordBatch| -> Result<bool> {
-            let (Some(last), Some(converter)) = (pending.last(), converter.as_ref()) else {
-                return Ok(!pending.is_empty());
-            };
-            let keys = |batch: &RecordBatch, row: usize| -> Vec<arrow::array::ArrayRef> {
-                key_columns
-                    .iter()
-                    .map(|&i| batch.column(i).slice(row, 1))
-                    .collect()
-            };
-            let a = converter.convert_columns(&keys(last, last.num_rows() - 1))?;
-            let b = converter.convert_columns(&keys(next, 0))?;
-            Ok(a.row(0) == b.row(0))
-        };
-        let mut next = |progress: &mut dyn FnMut(f32) -> bool| -> Result<Option<RecordBatch>> {
-            loop {
-                let end = (start + PASS_ROWS).min(input_rows);
-                let read = (start < end).then(|| read_sorted(start..end)).transpose()?;
-                start = end;
-                let last = start >= input_rows;
-                if !progress(0.5 + 0.5 * start as f32 / input_rows.max(1) as f32) {
-                    return Err(Error::Cancelled);
-                }
-                let read = match read {
-                    Some(read) if read.num_rows() > 0 => read,
-                    _ if pending.is_empty() => return Ok(None),
-                    // The end: the pending group is complete.
-                    _ => {
-                        let rows: usize = pending.iter().map(RecordBatch::num_rows).sum();
-                        let group = arrow::compute::concat_batches(&input, &pending)?;
-                        pending.clear();
-                        return group_lists(&group, &[0, rows], keys, &schema).map(Some);
-                    }
-                };
-                let starts = crate::transforms::nested::group_starts(
-                    &read,
-                    &key_columns,
-                    converter.as_ref(),
-                )?;
-                let joins = continues(&pending, &read)?;
-                if joins && starts.len() == 1 && !last {
-                    // All of it belongs to the pending group.
-                    pending.push(read);
-                    continue;
-                }
-                // Complete: the pending group and this read's groups up to its
-                // last one (which may go on in the next read).
-                let cut = match last {
-                    true => read.num_rows(),
-                    false => *starts.last().expect("rows read"),
-                };
-                let offset: usize = pending.iter().map(RecordBatch::num_rows).sum();
-                let mut bounds: Vec<usize> = if pending.is_empty() { vec![] } else { vec![0] };
-                bounds.extend(
-                    starts
-                        .iter()
-                        .filter(|&&s| s < cut && !(joins && s == 0))
-                        .map(|s| offset + s),
-                );
-                bounds.push(offset + cut);
-                pending.push(read.slice(0, cut));
-                let complete = arrow::compute::concat_batches(&input, &pending)?;
-                pending.clear();
-                if !last {
-                    pending.push(read.slice(cut, read.num_rows() - cut));
-                }
-                if complete.num_rows() > 0 {
-                    return group_lists(&complete, &bounds, keys, &schema).map(Some);
-                }
-            }
-        };
-        let mut produce = || next(progress).transpose();
-        self.materialize(schema.clone(), &mut produce)
-    }
-
-    /// One row per list item, batch by batch.
-    fn explode(
-        &self,
-        column: &str,
-        input_rows: usize,
-        progress: &mut dyn FnMut(f32) -> bool,
-    ) -> Result<Arc<dyn DataSource>> {
-        let input = self
-            .pipeline
-            .schema_at(self.step)
-            .ok_or_else(|| invalid!(InputNotEvaluated))?;
-        let schema = Arc::new(arrow::datatypes::Schema::new_with_metadata(
-            crate::transforms::nested::explode_fields(&input, column)?,
-            input.metadata().clone(),
-        ));
-        let mut start = 0;
-        let mut produce = || -> Option<Result<RecordBatch>> {
-            if start >= input_rows {
-                return None;
-            }
-            let end = (start + PASS_ROWS).min(input_rows);
-            let result = self
-                .pipeline
-                .read_at(self.step, start..end)
-                .and_then(|batch| crate::transforms::nested::explode(&batch, column, &schema));
-            start = end;
-            if result.is_ok() && !progress(start as f32 / input_rows as f32) {
-                return Some(Err(Error::Cancelled));
-            }
-            Some(result)
-        };
-        self.materialize(schema.clone(), &mut produce)
-    }
-}
-
-/// The columns a sort reads to sample its keys.
-/// [`collect_groups`](crate::transforms::nested::collect_groups), refusing
-/// a group too large for one list (2^31 values).
-fn group_lists(
-    batch: &RecordBatch,
-    bounds: &[usize],
-    keys: &[String],
-    schema: &Arc<arrow::datatypes::Schema>,
-) -> Result<RecordBatch> {
-    if batch.num_rows() > i32::MAX as usize {
-        return Err(invalid!(CollectTooLarge));
-    }
-    crate::transforms::nested::collect_groups(batch, bounds, keys, schema)
-}
-
-fn sort_key_names(sort: &crate::transforms::sort::Sort) -> Vec<String> {
-    sort.keys.iter().map(|k| k.column.clone()).collect()
 }
 
 #[cfg(test)]

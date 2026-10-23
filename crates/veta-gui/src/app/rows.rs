@@ -12,7 +12,9 @@ impl App {
                     let cancel = matches!(message, RowsMessage::Cancel);
                     if let Some(command) = dialog.update(message) {
                         let inserted = match &command {
-                            Command::InsertRows { at, count } => Some(*at..at + count),
+                            Command::AddStep(Step::InsertRows { at, count }) => {
+                                Some(*at..at + count)
+                            }
                             _ => None,
                         };
                         match self
@@ -100,7 +102,7 @@ impl App {
         };
         let at = if below { rows.end } else { rows.start };
         let count = rows.len();
-        if self.execute(id, Command::InsertRows { at, count }) {
+        if self.execute(id, Command::AddStep(Step::InsertRows { at, count })) {
             self.grid_do(id, |grid, doc| grid.select_rows(at..at + count, doc));
         }
     }
@@ -111,7 +113,7 @@ impl App {
         let Some(at) = self.workbook.get(id).map(Document::num_rows) else {
             return;
         };
-        if self.execute(id, Command::InsertRows { at, count: 1 }) {
+        if self.execute(id, Command::AddStep(Step::InsertRows { at, count: 1 })) {
             self.grid_do(id, |grid, doc| grid.select_rows(at..at + 1, doc));
         }
     }
@@ -151,14 +153,14 @@ impl App {
             .collect();
         if !delete.is_empty() {
             self.edit = None;
-            self.execute(id, Command::DeleteRows { rows: delete });
+            self.execute(id, Command::AddStep(Step::DeleteRows { rows: delete }));
         }
     }
 
     pub(crate) fn delete_rows(&mut self, id: DocumentId) {
         self.edit = None;
         if let Some(rows) = self.selected_rows(id) {
-            self.execute(id, Command::DeleteRows { rows: vec![rows] });
+            self.execute(id, Command::AddStep(Step::DeleteRows { rows: vec![rows] }));
         }
     }
 }

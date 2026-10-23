@@ -7,10 +7,11 @@ use arrow::array::{Array, ArrayRef, BooleanArray, Scalar, StringArray};
 use arrow::compute::kernels::cmp;
 use arrow::compute::kernels::zip::zip;
 use arrow::compute::{cast, is_null, prep_null_mask_filter};
-use arrow::datatypes::{DataType, Schema};
+use arrow::datatypes::{DataType, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 
 use crate::error::Result;
+use crate::steps::{Level, Transform};
 use crate::values::{is_text, parse_value};
 
 /// Replaces values in a column (Power Query's "Replace Values").
@@ -198,6 +199,43 @@ pub(crate) fn map_columns(
         columns[index] = f(&columns[index])?;
     }
     Ok(RecordBatch::try_new(schema.clone(), columns)?)
+}
+
+impl Transform for Replace {
+    fn level(&self, input: &Level) -> Result<Level> {
+        self.validate(&input.schema)?;
+        Ok(input.clone())
+    }
+
+    fn apply(&self, batch: &RecordBatch, _: usize, output: &SchemaRef) -> Result<RecordBatch> {
+        let columns = std::slice::from_ref(&self.column);
+        map_columns(batch, output, columns, |c| Replace::apply(self, c))
+    }
+
+    fn changed_columns(&self) -> Vec<&str> {
+        vec![&self.column]
+    }
+}
+
+/// [`Step::FormatText`](crate::steps::Step::FormatText).
+pub(crate) struct FormatText<'a> {
+    pub(crate) columns: &'a [String],
+    pub(crate) op: TextOp,
+}
+
+impl Transform for FormatText<'_> {
+    fn level(&self, input: &Level) -> Result<Level> {
+        self.op.validate(&input.schema, self.columns)?;
+        Ok(input.clone())
+    }
+
+    fn apply(&self, batch: &RecordBatch, _: usize, output: &SchemaRef) -> Result<RecordBatch> {
+        map_columns(batch, output, self.columns, |c| self.op.apply(c))
+    }
+
+    fn changed_columns(&self) -> Vec<&str> {
+        self.columns.iter().map(String::as_str).collect()
+    }
 }
 
 #[cfg(test)]

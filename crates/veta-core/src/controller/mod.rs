@@ -23,8 +23,10 @@ use crate::values::parse_value;
 ///
 /// On error the document is left unchanged.
 pub fn execute(document: &mut Document, command: Command) -> Result<()> {
-    let checked =
-        matches!(&command, Command::Cast(c) if c.options.on_error == OnError::ErrorColumn);
+    let checked = matches!(
+        &command,
+        Command::AddStep(Step::Cast(c)) if c.options.on_error == OnError::ErrorColumn
+    );
     let change = plan(document, command)?;
     change.apply(document)?;
     document.bump_revision();
@@ -128,14 +130,7 @@ fn plan(doc: &Document, command: Command) -> Result<Change> {
         | C::InsertItem { .. }
         | C::RemoveItem { .. }
         | C::SetKey { .. }) => nested::plan(doc, command),
-        command @ (C::InsertRows { .. } | C::DeleteRows { .. }) => rows::plan(command),
-        command @ (C::AddColumn { .. }
-        | C::RemoveColumns { .. }
-        | C::KeepColumns { .. }
-        | C::RenameColumn { .. }
-        | C::MoveColumn { .. }
-        | C::AddField { .. }
-        | C::RemoveField { .. }) => columns::plan(doc, command),
+        C::AddStep(step) => steps::add(doc, step),
         command => steps::plan(doc, command),
     }
 }

@@ -5,6 +5,7 @@
 
 use veta_core::controller::{execute, undo};
 use veta_core::display::format_batch;
+use veta_core::steps::Step;
 use veta_core::steps::{Condition, Filter, FilterOp, Sort, SortKey};
 use veta_core::{Command, Document, OpenOptions};
 use veta_testkit::{TempDir, fixtures};
@@ -30,20 +31,20 @@ fn edits() -> Vec<Command> {
             column: "name".into(),
             value: Some("first".into()),
         },
-        Command::InsertRows { at: 2, count: 3 },
-        Command::DeleteRows {
+        Command::AddStep(Step::InsertRows { at: 2, count: 3 }),
+        Command::AddStep(Step::DeleteRows {
             rows: vec![10..20, 15..30],
-        },
-        Command::AddColumn {
+        }),
+        Command::AddStep(Step::AddColumn {
             name: "note".into(),
             data_type: veta_core::arrow::datatypes::DataType::Utf8,
             at: 1,
-        },
-        Command::RenameColumn {
+        }),
+        Command::AddStep(Step::RenameColumn {
             from: "score".into(),
             to: "points".into(),
-        },
-        Command::Filter(Filter {
+        }),
+        Command::AddStep(Step::Filter(Filter {
             conditions: vec![Condition {
                 column: "id".into(),
                 op: FilterOp::Less,
@@ -52,14 +53,14 @@ fn edits() -> Vec<Command> {
             }],
             match_all: true,
             exclude: false,
-        }),
-        Command::Sort(Sort {
+        })),
+        Command::AddStep(Step::Sort(Sort {
             keys: vec![SortKey {
                 column: "points".into(),
                 descending: true,
                 nulls_first: false,
             }],
-        }),
+        })),
         Command::SetMetadata {
             key: "owner".into(),
             value: Some("tests".into()),
@@ -111,7 +112,11 @@ fn save_in_place_keeps_undo() {
     fixtures::mixed_settings(&path);
     let original = all(&Document::open(&path, OpenOptions::default()).unwrap());
     let mut doc = Document::open(&path, OpenOptions::paged()).unwrap();
-    execute(&mut doc, Command::DeleteRows { rows: vec![0..500] }).unwrap();
+    execute(
+        &mut doc,
+        Command::AddStep(Step::DeleteRows { rows: vec![0..500] }),
+    )
+    .unwrap();
     doc.save(None).unwrap();
     let reopened = Document::open(&path, OpenOptions::default()).unwrap();
     assert_eq!(reopened.num_rows(), 500);
@@ -132,14 +137,18 @@ fn blank_document_saves() {
     let mut doc = Document::new();
     execute(
         &mut doc,
-        Command::AddColumn {
+        Command::AddStep(Step::AddColumn {
             name: "n".into(),
             data_type: veta_core::arrow::datatypes::DataType::Int64,
             at: 0,
-        },
+        }),
     )
     .unwrap();
-    execute(&mut doc, Command::InsertRows { at: 0, count: 2 }).unwrap();
+    execute(
+        &mut doc,
+        Command::AddStep(Step::InsertRows { at: 0, count: 2 }),
+    )
+    .unwrap();
     execute(
         &mut doc,
         Command::SetCell {

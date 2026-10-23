@@ -5,6 +5,7 @@
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
+use veta_core::steps::Step;
 
 use parquet::arrow::ArrowWriter;
 use veta_core::arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray};
@@ -91,10 +92,10 @@ fn deeply_nested_values_read_edit_and_save() {
         // Expanding every struct level stops at the list.
         execute(
             &mut doc,
-            Command::ExpandStruct {
+            Command::AddStep(Step::ExpandStruct {
                 column: "deep".into(),
                 all_levels: true,
-            },
+            }),
         )
         .unwrap();
         doc.compute_all().unwrap();
@@ -127,7 +128,11 @@ fn file_without_rows() {
         assert_eq!(doc.schema().fields().len(), 2);
         assert_eq!(doc.read(0..0).unwrap().num_rows(), 0);
         assert!(doc.read(0..10).unwrap().num_rows() == 0);
-        execute(&mut doc, Command::InsertRows { at: 0, count: 1 }).unwrap();
+        execute(
+            &mut doc,
+            Command::AddStep(Step::InsertRows { at: 0, count: 1 }),
+        )
+        .unwrap();
         execute(
             &mut doc,
             Command::SetCell {
@@ -158,14 +163,18 @@ fn file_without_columns() {
         assert_eq!(doc.num_rows(), 0);
         execute(
             &mut doc,
-            Command::AddColumn {
+            Command::AddStep(Step::AddColumn {
                 name: "n".into(),
                 data_type: DataType::Int64,
                 at: 0,
-            },
+            }),
         )
         .unwrap();
-        execute(&mut doc, Command::InsertRows { at: 0, count: 2 }).unwrap();
+        execute(
+            &mut doc,
+            Command::AddStep(Step::InsertRows { at: 0, count: 2 }),
+        )
+        .unwrap();
         let out = dir.join("one-column.parquet");
         doc.save(Some(out.clone())).unwrap();
         let saved = Document::open(&out, OpenOptions::default()).unwrap();

@@ -79,7 +79,9 @@ pub(crate) fn run(command: crate::Command, out: &mut impl Write) -> Result<(), E
         }
         C::DeleteRows { rows, output } => edit(&rows.file, &output, out, |doc| {
             let rows = rows.ranges(doc.num_rows())?;
-            Ok(vec![CoreCommand::DeleteRows { rows }])
+            Ok(vec![CoreCommand::AddStep(
+                veta_core::steps::Step::DeleteRows { rows },
+            )])
         }),
         C::KeepRows { rows, output } => edit(&rows.file, &output, out, |doc| {
             let keep = rows.ranges(doc.num_rows())?;
@@ -88,7 +90,9 @@ pub(crate) fn run(command: crate::Command, out: &mut impl Write) -> Result<(), E
             Ok(if delete.is_empty() {
                 Vec::new()
             } else {
-                vec![CoreCommand::DeleteRows { rows: delete }]
+                vec![CoreCommand::AddStep(veta_core::steps::Step::DeleteRows {
+                    rows: delete,
+                })]
             })
         }),
         C::AddColumn {
@@ -101,11 +105,13 @@ pub(crate) fn run(command: crate::Command, out: &mut impl Write) -> Result<(), E
             let data_type = parse_type(&data_type)?;
             let at = at.map(row_index).transpose()?;
             edit(&file, &output, out, |doc| {
-                Ok(vec![CoreCommand::AddColumn {
-                    name,
-                    data_type,
-                    at: at.unwrap_or(doc.num_columns()),
-                }])
+                Ok(vec![CoreCommand::AddStep(
+                    veta_core::steps::Step::AddColumn {
+                        name,
+                        data_type,
+                        at: at.unwrap_or(doc.num_columns()),
+                    },
+                )])
             })
         }
         C::RemoveColumn {
@@ -113,7 +119,9 @@ pub(crate) fn run(command: crate::Command, out: &mut impl Write) -> Result<(), E
             names,
             output,
         } => edit(&file, &output, out, |_| {
-            Ok(vec![CoreCommand::RemoveColumns { names }])
+            Ok(vec![CoreCommand::AddStep(
+                veta_core::steps::Step::RemoveColumns { names },
+            )])
         }),
         C::RenameColumn {
             file,
@@ -121,7 +129,9 @@ pub(crate) fn run(command: crate::Command, out: &mut impl Write) -> Result<(), E
             to,
             output,
         } => edit(&file, &output, out, |_| {
-            Ok(vec![CoreCommand::RenameColumn { from, to }])
+            Ok(vec![CoreCommand::AddStep(
+                veta_core::steps::Step::RenameColumn { from, to },
+            )])
         }),
         C::MoveColumn {
             file,
@@ -131,7 +141,9 @@ pub(crate) fn run(command: crate::Command, out: &mut impl Write) -> Result<(), E
         } => {
             let to = row_index(to)?;
             edit(&file, &output, out, |_| {
-                Ok(vec![CoreCommand::MoveColumn { name, to }])
+                Ok(vec![CoreCommand::AddStep(
+                    veta_core::steps::Step::MoveColumn { name, to },
+                )])
             })
         }
         _ => Err(Error::Usage("not an editing command".into())),

@@ -1,16 +1,19 @@
-//! Transformation steps (filter, sort, cast, …) and managing the steps list: remove, move, replace, append.
+//! Adding steps, and managing the steps list: remove, move, replace, append.
 
 use super::*;
 use crate::error::invalid;
+use crate::steps::normalize_ranges;
 
-/// Plans one of this area's commands (see `super::plan`).
-pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
-    match command {
-        Command::Filter(filter) => Ok(Change::PushStep(Step::Filter(filter))),
-        Command::Sort(sort) => Ok(Change::PushStep(Step::Sort(sort))),
+/// Plans adding `step` at the end.
+pub(super) fn add(doc: &Document, step: Step) -> Result<Change> {
+    match step {
+        Step::DeleteRows { rows } => Ok(Change::PushStep(Step::DeleteRows {
+            rows: normalize_ranges(rows),
+        })),
+        Step::RenameColumn { from, to } => Ok(super::columns::rename(doc, from, to)),
         // With an error column, a second step removes it if nothing failed
         // (checked on every row; see `settle`).
-        Command::Cast(cast) if cast.options.on_error == OnError::ErrorColumn => {
+        Step::Cast(cast) if cast.options.on_error == OnError::ErrorColumn => {
             let name = cast.error_column();
             let before = doc.steps().to_vec();
             let keep = before.len();
@@ -22,25 +25,13 @@ pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
                 keep,
             })
         }
-        Command::Cast(cast) => Ok(Change::PushStep(Step::Cast(cast))),
-        Command::Replace(replace) => Ok(Change::PushStep(Step::Replace(replace))),
-        Command::FormatText { columns, op } => {
-            Ok(Change::PushStep(Step::FormatText { columns, op }))
-        }
-        Command::Fill(fill) => Ok(Change::PushStep(Step::Fill(fill))),
-        Command::Split(split) => Ok(Change::PushStep(Step::Split(split))),
-        Command::ExpandStruct { column, all_levels } => {
-            Ok(Change::PushStep(Step::ExpandStruct { column, all_levels }))
-        }
-        Command::ExplodeList { column } => Ok(Change::PushStep(Step::ExplodeList { column })),
-        Command::CollectList { keys, columns } => {
-            Ok(Change::PushStep(Step::CollectList { keys, columns }))
-        }
-        Command::CombineStruct { columns, name } => {
-            Ok(Change::PushStep(Step::CombineStruct { columns, name }))
-        }
-        Command::Merge(merge) => Ok(Change::PushStep(Step::Merge(merge))),
-        Command::CustomColumn(custom) => Ok(Change::PushStep(Step::CustomColumn(custom))),
+        step => Ok(Change::PushStep(step)),
+    }
+}
+
+/// Plans one of this area's commands (see `super::plan`).
+pub(super) fn plan(doc: &Document, command: Command) -> Result<Change> {
+    match command {
         Command::RemoveStep { index } => {
             let mut after = doc.steps().to_vec();
             if index >= after.len() {

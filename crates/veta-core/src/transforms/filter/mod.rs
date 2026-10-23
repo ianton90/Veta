@@ -12,8 +12,11 @@ use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
 
 use crate::display::type_name;
+use crate::error::Error;
 use crate::error::Result;
+use crate::steps::{Cache, ComputeJob, Input, Level, RowMap, Transform, compute_first};
 use crate::values::{is_text, parse_value};
+use std::ops::Range;
 
 /// Rows are kept when all (or any) conditions hold.
 #[derive(Debug, Clone, PartialEq)]
@@ -256,6 +259,58 @@ fn lowercase(array: &ArrayRef) -> ArrayRef {
             .map(|s| s.map(str::to_lowercase))
             .collect::<StringArray>(),
     )
+}
+
+impl Transform for Filter {
+    fn level(&self, input: &Level) -> Result<Level> {
+        self.validate(&input.schema)?;
+        Ok(input.clone())
+    }
+
+    fn full_pass(&self) -> bool {
+        true
+    }
+
+    fn read(&self, _: &Input<'_>, _: Range<usize>, _: Option<&[String]>) -> Result<RecordBatch> {
+        compute_first()
+    }
+
+    fn compute(
+        &self,
+        job: &ComputeJob,
+        input_rows: usize,
+        progress: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<Cache> {
+        // Only the columns the conditions test are read.
+        let mut names: Vec<String> = self.conditions.iter().map(|c| c.column.clone()).collect();
+        names.dedup();
+        // Pieces are read and tested on several threads; the kept
+        // ranges are joined in order.
+        let tested = self.clone();
+        let pieces = job.read_parallel(input_rows, Some(names), move |batches, first| {
+            let mut kept = Vec::new();
+            let mut start = first;
+            for batch in &batches {
+                let mask = tested.evaluate(batch)?;
+                for (from, to) in mask.values().set_slices() {
+                    kept.push(start + from..start + to);
+                }
+                start += batch.num_rows();
+            }
+            Ok((kept, start))
+        });
+        let mut rows = RowMap::default();
+        for piece in pieces {
+            let (kept, end) = piece?;
+            for range in kept {
+                rows.push(range);
+            }
+            if !progress(end as f32 / input_rows as f32) {
+                return Err(Error::Cancelled);
+            }
+        }
+        Ok(Cache::Rows(rows))
+    }
 }
 
 #[cfg(test)]

@@ -63,7 +63,11 @@ fn save_as_keeps_steps_and_undo() {
     let source = dir.join("mixed.parquet");
     fixtures::mixed_settings(&source);
     let mut doc = reopen(&source);
-    execute(&mut doc, Command::DeleteRows { rows: vec![0..10] }).unwrap();
+    execute(
+        &mut doc,
+        Command::AddStep(Step::DeleteRows { rows: vec![0..10] }),
+    )
+    .unwrap();
     doc.save(Some(dir.join("out.parquet"))).unwrap();
     assert_eq!(doc.steps().len(), 1, "source untouched, steps kept");
     assert!(!doc.is_modified());
@@ -81,7 +85,11 @@ fn save_in_place_keeps_steps_and_undo() {
         fixtures::mixed_settings(&path);
         let mut doc = Document::open(&path, options).unwrap();
         let rows = doc.num_rows();
-        execute(&mut doc, Command::InsertRows { at: 0, count: 1 }).unwrap();
+        execute(
+            &mut doc,
+            Command::AddStep(Step::InsertRows { at: 0, count: 1 }),
+        )
+        .unwrap();
         execute(
             &mut doc,
             Command::SetCell {
@@ -93,10 +101,10 @@ fn save_in_place_keeps_steps_and_undo() {
         .unwrap();
         execute(
             &mut doc,
-            Command::RenameColumn {
+            Command::AddStep(Step::RenameColumn {
                 from: "score".into(),
                 to: "points".into(),
-            },
+            }),
         )
         .unwrap();
         doc.save(None).unwrap();
@@ -136,7 +144,11 @@ fn failed_save_leaves_everything_alone() {
     let path = dir.join("mixed.parquet");
     fixtures::mixed_settings(&path);
     let mut doc = reopen(&path);
-    execute(&mut doc, Command::InsertRows { at: 0, count: 1 }).unwrap();
+    execute(
+        &mut doc,
+        Command::AddStep(Step::InsertRows { at: 0, count: 1 }),
+    )
+    .unwrap();
     let err = doc.save(Some(dir.join("missing-dir").join("x.parquet")));
     assert!(err.is_err());
     assert!(doc.is_modified());

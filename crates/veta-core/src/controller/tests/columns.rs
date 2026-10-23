@@ -8,9 +8,9 @@ fn keep_columns_keeps_table_order() {
     let mut doc = mixed(&dir);
     execute(
         &mut doc,
-        Command::KeepColumns {
+        Command::AddStep(Step::KeepColumns {
             names: vec!["flag".into(), "id".into()],
-        },
+        }),
     )
     .unwrap();
     let names: Vec<_> = doc
@@ -24,13 +24,19 @@ fn keep_columns_keeps_table_order() {
     assert!(
         execute(
             &mut doc,
-            Command::KeepColumns {
+            Command::AddStep(Step::KeepColumns {
                 names: vec!["nope".into()]
-            }
+            })
         )
         .is_err()
     );
-    assert!(execute(&mut doc, Command::KeepColumns { names: vec![] }).is_err());
+    assert!(
+        execute(
+            &mut doc,
+            Command::AddStep(Step::KeepColumns { names: vec![] })
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -85,11 +91,13 @@ fn add_and_remove_struct_fields() {
     fixtures::nested(&path);
     for options in [OpenOptions::default(), OpenOptions::paged()] {
         let mut doc = Document::open(&path, options).unwrap();
-        let add = |name: &str, data_type| Command::AddField {
-            column: "point".into(),
-            path: Vec::new(),
-            name: name.into(),
-            data_type,
+        let add = |name: &str, data_type| {
+            Command::AddStep(Step::AddField {
+                column: "point".into(),
+                path: Vec::new(),
+                name: name.into(),
+                data_type,
+            })
         };
         execute(&mut doc, add("z", DataType::Utf8)).unwrap();
         assert_eq!(
@@ -107,10 +115,12 @@ fn add_and_remove_struct_fields() {
             set_cell(0, "point", Some(r#"{"x": 1, "y": 2, "z": "a"}"#)),
         )
         .unwrap();
-        let remove = |name: &str| Command::RemoveField {
-            column: "point".into(),
-            path: Vec::new(),
-            name: name.into(),
+        let remove = |name: &str| {
+            Command::AddStep(Step::RemoveField {
+                column: "point".into(),
+                path: Vec::new(),
+                name: name.into(),
+            })
         };
         execute(&mut doc, remove("x")).unwrap();
         assert_eq!(cell(&doc, 0, "point").as_deref(), Some("{y: 2, z: a}"));
@@ -118,11 +128,11 @@ fn add_and_remove_struct_fields() {
         assert!(
             execute(
                 &mut doc,
-                Command::RemoveField {
+                Command::AddStep(Step::RemoveField {
                     column: "id".into(),
                     path: Vec::new(),
                     name: "x".into()
-                }
+                })
             )
             .is_err()
         );

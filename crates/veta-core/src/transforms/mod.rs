@@ -3,6 +3,7 @@
 //! finding duplicates, …) go in their own files here.
 
 pub mod cast;
+pub(crate) mod columns;
 pub mod fill;
 pub mod filter;
 pub mod nested;

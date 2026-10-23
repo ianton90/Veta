@@ -79,11 +79,11 @@ impl App {
                     let name = self.unique_name(id, &tr("ST_COLUMN_NAME_INDEX"));
                     self.execute(
                         id,
-                        Command::CustomColumn(CustomColumn {
+                        Command::AddStep(Step::CustomColumn(CustomColumn {
                             name,
                             expression: "row()".into(),
                             at,
-                        }),
+                        })),
                     );
                 }
             }
@@ -212,11 +212,11 @@ impl App {
         let name = self.unique_name(id, &tr_with("ST_COLUMN_NAME_COPY", &[("column", &column)]));
         self.execute(
             id,
-            Command::CustomColumn(CustomColumn {
+            Command::AddStep(Step::CustomColumn(CustomColumn {
                 name,
                 expression: formula_reference(&column),
                 at: range.start + 1,
-            }),
+            })),
         );
     }
 
@@ -439,7 +439,7 @@ impl App {
             self.errors.push(tr("ST_MSG_SELECT_COLUMNS_FILL"));
             return;
         }
-        self.execute(id, Command::Fill(Fill { columns, up }));
+        self.execute(id, Command::AddStep(Step::Fill(Fill { columns, up })));
     }
 
     /// Opens the change type dialog on the selected column, or on the cast
@@ -517,9 +517,9 @@ impl App {
                 return;
             }
             let command = if keep {
-                Command::KeepColumns { names: selected }
+                Command::AddStep(Step::KeepColumns { names: selected })
             } else {
-                Command::RemoveColumns { names: selected }
+                Command::AddStep(Step::RemoveColumns { names: selected })
             };
             self.execute(id, command);
             return;
@@ -542,7 +542,7 @@ impl App {
     pub(crate) fn move_column(&mut self, id: DocumentId, from: usize, to: usize) {
         self.commit_edit();
         if let Some(name) = self.column_names(id, from..from + 1).pop()
-            && self.execute(id, Command::MoveColumn { name, to })
+            && self.execute(id, Command::AddStep(Step::MoveColumn { name, to }))
         {
             self.select_columns(id, to..to + 1);
         }

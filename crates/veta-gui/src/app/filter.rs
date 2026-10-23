@@ -136,10 +136,10 @@ impl App {
         self.clear_filter(id);
         self.execute(
             id,
-            Command::Filter(Filter {
+            Command::AddStep(Step::Filter(Filter {
                 exclude: remove,
                 ..filter
-            }),
+            })),
         );
     }
 
@@ -160,7 +160,7 @@ impl App {
                 nulls_first: false,
             }],
         };
-        self.execute(id, Command::Sort(sort));
+        self.execute(id, Command::AddStep(Step::Sort(sort)));
     }
 
     /// Keeps (or removes) the rows whose value in the selected cell's

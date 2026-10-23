@@ -16,7 +16,11 @@ use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use arrow::row::{RowConverter, Rows, SortField};
 
 use crate::error::{Error, Result};
+use crate::source::{DataSource, MemorySource, SourceMode};
 use crate::steps::checkpoint::{Checkpoint, TempFile, write_parquet};
+use crate::steps::{Cache, ComputeJob, Input, Level, PASS_ROWS, Transform, compute_first};
+use std::ops::Range;
+use std::sync::Arc;
 
 pub(crate) use buckets::{Plan, Sorted};
 
@@ -296,6 +300,52 @@ fn read_batches(
         }
     }
     Ok(batches)
+}
+
+impl Sort {
+    /// The columns sorted by.
+    pub(crate) fn key_names(&self) -> Vec<String> {
+        self.keys.iter().map(|k| k.column.clone()).collect()
+    }
+}
+
+impl Transform for Sort {
+    fn level(&self, input: &Level) -> Result<Level> {
+        self.validate(&input.schema)?;
+        Ok(input.clone())
+    }
+
+    fn full_pass(&self) -> bool {
+        true
+    }
+
+    fn read(&self, _: &Input<'_>, _: Range<usize>, _: Option<&[String]>) -> Result<RecordBatch> {
+        compute_first()
+    }
+
+    fn compute(
+        &self,
+        job: &ComputeJob,
+        input_rows: usize,
+        progress: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<Cache> {
+        let schema = job.input_schema()?;
+        let read = |range| job.read(range);
+        let source: Arc<dyn DataSource> = match job.mode() {
+            SourceMode::InMemory => {
+                let batch = sort_in_memory(self, &schema, input_rows, &read, PASS_ROWS, progress)?;
+                Arc::new(MemorySource::new(schema, vec![batch])?)
+            }
+            SourceMode::Paged => {
+                let names = self.key_names();
+                let read_keys = |range| job.read_columns(range, &names);
+                Arc::new(sort_external(
+                    self, &schema, input_rows, &read, &read_keys, PASS_ROWS, None, progress,
+                )?)
+            }
+        };
+        Ok(Cache::Data(source))
+    }
 }
 
 #[cfg(test)]

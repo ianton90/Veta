@@ -33,18 +33,18 @@ fn nested_cells_edit_as_json_and_expand_explode() {
 
         execute(
             &mut doc,
-            Command::ExpandStruct {
+            Command::AddStep(Step::ExpandStruct {
                 column: "point".into(),
                 all_levels: false,
-            },
+            }),
         )
         .unwrap();
         assert_eq!(cell(&doc, 2, "point.x").as_deref(), Some("10"));
         execute(
             &mut doc,
-            Command::ExplodeList {
+            Command::AddStep(Step::ExplodeList {
                 column: "tags".into(),
-            },
+            }),
         )
         .unwrap();
         assert_eq!(doc.status(), &Status::Computing { step: 2 });
@@ -55,20 +55,20 @@ fn nested_cells_edit_as_json_and_expand_explode() {
         assert!(
             execute(
                 &mut doc,
-                Command::ExpandStruct {
+                Command::AddStep(Step::ExpandStruct {
                     column: "tags".into(),
                     all_levels: false,
-                }
+                })
             )
             .is_err()
         );
         // All levels: owner → owner.name, owner.home → owner.home.x, ….
         execute(
             &mut doc,
-            Command::ExpandStruct {
+            Command::AddStep(Step::ExpandStruct {
                 column: "owner".into(),
                 all_levels: true,
-            },
+            }),
         )
         .unwrap();
         let schema = doc.schema();
@@ -93,9 +93,11 @@ fn collect_values_into_lists() {
     fixtures::mixed_settings(&path);
     for options in [OpenOptions::default(), OpenOptions::paged()] {
         let mut doc = Document::open(&path, options).unwrap();
-        let collect = |keys: &[&str], columns: &[&str]| Command::CollectList {
-            keys: keys.iter().map(|c| c.to_string()).collect(),
-            columns: columns.iter().map(|c| c.to_string()).collect(),
+        let collect = |keys: &[&str], columns: &[&str]| {
+            Command::AddStep(Step::CollectList {
+                keys: keys.iter().map(|c| c.to_string()).collect(),
+                columns: columns.iter().map(|c| c.to_string()).collect(),
+            })
         };
         execute(&mut doc, collect(&["name"], &["score", "id"])).unwrap();
         doc.compute_all().unwrap();
@@ -136,10 +138,10 @@ fn collect_values_into_lists() {
     let mut doc = Document::open(&path, OpenOptions::paged()).unwrap();
     execute(
         &mut doc,
-        Command::CollectList {
+        Command::AddStep(Step::CollectList {
             keys: Vec::new(),
             columns: vec!["id".into()],
-        },
+        }),
     )
     .unwrap();
     doc.compute_all().unwrap();
@@ -160,13 +162,13 @@ fn collect_values_into_lists() {
         expression: "[id] % 3".into(),
         at: 0,
     };
-    execute(&mut doc, Command::CustomColumn(key)).unwrap();
+    execute(&mut doc, Command::AddStep(Step::CustomColumn(key))).unwrap();
     execute(
         &mut doc,
-        Command::CollectList {
+        Command::AddStep(Step::CollectList {
             keys: vec!["k".into()],
             columns: vec!["id".into()],
-        },
+        }),
     )
     .unwrap();
     doc.compute_all().unwrap();
@@ -221,11 +223,11 @@ fn new_nested_columns_save() {
     ] {
         execute(
             &mut doc,
-            Command::AddColumn {
+            Command::AddStep(Step::AddColumn {
                 name: name.into(),
                 data_type,
                 at: 0,
-            },
+            }),
         )
         .unwrap();
     }
@@ -273,17 +275,19 @@ fn combine_columns_into_struct() {
     fixtures::nested(&path);
     for options in [OpenOptions::default(), OpenOptions::paged()] {
         let mut doc = Document::open(&path, options).unwrap();
-        let combine = |columns: &[&str], name: &str| Command::CombineStruct {
-            columns: columns.iter().map(|c| c.to_string()).collect(),
-            name: name.into(),
+        let combine = |columns: &[&str], name: &str| {
+            Command::AddStep(Step::CombineStruct {
+                columns: columns.iter().map(|c| c.to_string()).collect(),
+                name: name.into(),
+            })
         };
         // Reverses Expand: `point.` is dropped from the field names.
         execute(
             &mut doc,
-            Command::ExpandStruct {
+            Command::AddStep(Step::ExpandStruct {
                 column: "point".into(),
                 all_levels: false,
-            },
+            }),
         )
         .unwrap();
         execute(&mut doc, combine(&["point.x", "point.y"], "point")).unwrap();
@@ -604,11 +608,11 @@ fn fixed_size_lists() {
     let xyz = crate::display::parse_type_name("fixed_size_list<float64, 3>").unwrap();
     execute(
         &mut doc,
-        Command::AddColumn {
+        Command::AddStep(Step::AddColumn {
             name: "xyz".into(),
             data_type: xyz,
             at: 0,
-        },
+        }),
     )
     .unwrap();
     // Setting an item of a null fixed-size list fills the rest with nulls.
@@ -644,11 +648,13 @@ fn struct_fields_at_any_depth() {
         let type_of = |doc: &Document, column: &str| {
             crate::display::type_name(doc.schema().field_with_name(column).unwrap().data_type())
         };
-        let add = |column: &str, path: Vec<PathPart>, name: &str| Command::AddField {
-            column: column.into(),
-            path,
-            name: name.into(),
-            data_type: DataType::Int64,
+        let add = |column: &str, path: Vec<PathPart>, name: &str| {
+            Command::AddStep(Step::AddField {
+                column: column.into(),
+                path,
+                name: name.into(),
+                data_type: DataType::Int64,
+            })
         };
         // Every order (a struct in a list) gets the field.
         execute(&mut doc, add("orders", vec![Index(0)], "discount")).unwrap();
@@ -672,11 +678,11 @@ fn struct_fields_at_any_depth() {
         assert!(type_of(&doc, "history").contains("notes: list<string>, by: int64>"));
         execute(
             &mut doc,
-            Command::RemoveField {
+            Command::AddStep(Step::RemoveField {
                 column: "history".into(),
                 path: vec![Entry(0)],
                 name: "notes".into(),
-            },
+            }),
         )
         .unwrap();
         assert_eq!(

@@ -115,26 +115,26 @@ fn row_and_column_commands_undo() {
     let dir = TempDir::new();
     let mut doc = mixed(&dir);
     let commands = vec![
-        Command::InsertRows { at: 0, count: 2 },
-        Command::DeleteRows {
+        Command::AddStep(Step::InsertRows { at: 0, count: 2 }),
+        Command::AddStep(Step::DeleteRows {
             rows: vec![10..20, 5..12],
-        },
-        Command::AddColumn {
+        }),
+        Command::AddStep(Step::AddColumn {
             name: "new".into(),
             data_type: DataType::Int32,
             at: 4,
-        },
-        Command::RenameColumn {
+        }),
+        Command::AddStep(Step::RenameColumn {
             from: "name".into(),
             to: "label".into(),
-        },
-        Command::MoveColumn {
+        }),
+        Command::AddStep(Step::MoveColumn {
             name: "flag".into(),
             to: 0,
-        },
-        Command::RemoveColumns {
+        }),
+        Command::AddStep(Step::RemoveColumns {
             names: vec!["score".into()],
-        },
+        }),
     ];
     for command in commands {
         execute(&mut doc, command).unwrap();
@@ -161,7 +161,10 @@ fn row_and_column_commands_undo() {
 fn failed_step_is_not_recorded() {
     let dir = TempDir::new();
     let mut doc = mixed(&dir);
-    let err = execute(&mut doc, Command::InsertRows { at: 5000, count: 1 });
+    let err = execute(
+        &mut doc,
+        Command::AddStep(Step::InsertRows { at: 5000, count: 1 }),
+    );
     assert!(err.is_err());
     assert!(!doc.history().can_undo());
 }
@@ -169,15 +172,19 @@ fn failed_step_is_not_recorded() {
 #[test]
 fn blank_document_takes_rows_and_columns() {
     let mut doc = Document::new();
-    execute(&mut doc, Command::InsertRows { at: 0, count: 3 }).unwrap();
+    execute(
+        &mut doc,
+        Command::AddStep(Step::InsertRows { at: 0, count: 3 }),
+    )
+    .unwrap();
     assert_eq!(doc.num_rows(), 3);
     execute(
         &mut doc,
-        Command::AddColumn {
+        Command::AddStep(Step::AddColumn {
             name: "a".into(),
             data_type: DataType::Int64,
             at: 0,
-        },
+        }),
     )
     .unwrap();
     assert_eq!((doc.num_rows(), doc.num_columns()), (3, 1));

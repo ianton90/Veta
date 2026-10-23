@@ -60,21 +60,26 @@ veta-core/src/
   model/                 Document (document/), Workbook, metadata, undo
                          history
   controller/            the only way to change a Document
-    command.rs           the Command enum
+    command.rs           the Command enum (AddStep adds any step)
     mod.rs               execute / amend / undo / redo, settle (after a
                          full pass); plan() hands each command
-                         to its area: cells, nested, rows, columns,
-                         metadata, steps
-  steps/                 Step, Pipeline (lazy evaluation), read.rs (a
-                         window of a step's output, all or some columns),
-                         level (each step's output schema and row count),
-                         full passes
-                         (compute), checkpoints (temporary files, private
-                         temp folder), cell edits, row ranges
+                         to its area: cells, nested, metadata, steps
+                         (adding steps; columns.rs renames), rows.rs
+                         (rows by place, for the GUI and the CLI)
+  steps/                 Step, Pipeline (lazy evaluation), transform.rs
+                         (the Transform trait every kind of step
+                         implements, and the one match over Step),
+                         read.rs (caches, then the step's transform),
+                         level (shape after a step), full passes
+                         (compute: the job a transform's pass runs on),
+                         checkpoints (temporary files, private temp
+                         folder), cell edits, row steps
   transforms/            what steps do: cast/, filter/, sort/ (in memory,
                          and buckets.rs for paged files), fill, text,
-                         split (and merge), nested (expand, explode,
-                         collect, combine, fields)
+                         split (and merge), columns (add, remove, keep,
+                         rename, move, remove if empty), nested/ (values;
+                         steps.rs: expand, explode, collect, combine,
+                         fields)
   formulas/              custom column expressions: parser, eval, functions
   stats/                 column statistics (summary.rs)
   files/                 parquet.rs (open, save), source/ (in memory /
@@ -148,12 +153,13 @@ How a click becomes a change on screen, e.g. Rows → Remove Rows → OK:
    (`app/mod.rs`).
 2. **Update.** `App::handle` dispatches by area to `rows_message`
    (`app/rows.rs`), which asks the dialog for its command:
-   `Command::DeleteRows { rows }`.
+   `Command::AddStep(Step::DeleteRows { rows })`.
 3. **Command.** The handler passes it to `veta_core::controller::execute`
    (most handlers do so through `App::execute`, which also refreshes the
    grid and reports errors).
-4. **Controller.** `plan()` hands it to `controller/rows.rs`, which checks it
-   and returns a `Change` (here, push a `Step::DeleteRows`).
+4. **Controller.** `plan()` hands it to `controller/steps.rs`, which
+   returns a `Change` (here, push the step, its row ranges sorted and
+   merged).
    `execute` applies the change to the `Document` and records it in the
    undo history.
 5. **Pipeline.** The document's `Pipeline` now has one more step. Nothing is
@@ -267,7 +273,17 @@ Every data change is a `Step`, Power Query style:
 - Nested values: `ExpandStruct`, `ExplodeList`, `AddField`, `RemoveField`,
   `CollectList`, `CombineStruct`.
 
-Each step transforms the output of the previous one. A list of steps saved
+Each step transforms the output of the previous one. Each kind of step
+answers for itself through the `Transform` trait (`steps/transform.rs`):
+the shape after it (checking it), how to read a window of its output (by
+default, computing it on the same window of its input), whether it needs
+a full pass and that pass, and whether it refers to rows by position. The
+pipeline only delegates, through `Step::with_transform`, the one match
+over every kind of step. A new kind of step needs its `Step` variant and
+transform, its recipe form (`files/recipe/`), its names (GUI
+`i18n/model.rs`, CLI `names.rs`) and, to edit it, a `StepDialog`.
+
+A list of steps saved
 as JSON (`files/recipe/`, a `type` and `settings` per step) is a recipe the
 GUI and the CLI can replay.
 

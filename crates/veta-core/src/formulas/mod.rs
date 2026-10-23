@@ -367,6 +367,21 @@ impl CustomColumn {
     }
 }
 
+impl crate::steps::Transform for CustomColumn {
+    fn level(&self, input: &crate::steps::Level) -> Result<crate::steps::Level> {
+        Ok(input.with_fields(self.output_fields(&input.schema)?, input.num_rows))
+    }
+
+    fn apply(
+        &self,
+        batch: &RecordBatch,
+        first_row: usize,
+        output: &arrow::datatypes::SchemaRef,
+    ) -> Result<RecordBatch> {
+        CustomColumn::apply(self, batch, first_row, output)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::eval::*;

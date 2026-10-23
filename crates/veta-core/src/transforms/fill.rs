@@ -5,7 +5,13 @@ use arrow::array::{Array, ArrayRef, UInt32Array, new_null_array};
 use arrow::compute::{concat, take};
 use arrow::datatypes::Schema;
 
-use crate::error::Result;
+use std::ops::Range;
+use std::sync::Arc;
+
+use arrow::record_batch::RecordBatch;
+
+use crate::error::{Error, Result};
+use crate::steps::{Cache, ComputeJob, Input, Level, PASS_ROWS, Transform, compute_first};
 
 /// Fills nulls in `columns` with the previous non-null value (down) or the
 /// next one (up).
@@ -26,6 +32,127 @@ impl Fill {
                 .map_err(|_| invalid!(ColumnNotFound, column = name))?;
         }
         Ok(())
+    }
+}
+
+impl Transform for Fill {
+    fn level(&self, input: &Level) -> Result<Level> {
+        self.validate(&input.schema)?;
+        Ok(input.clone())
+    }
+
+    fn full_pass(&self) -> bool {
+        true
+    }
+
+    fn read(&self, _: &Input<'_>, _: Range<usize>, _: Option<&[String]>) -> Result<RecordBatch> {
+        compute_first()
+    }
+
+    /// Fills nulls batch by batch, carrying the last value across batches.
+    /// Filling up first finds, from the end, the value carried into each
+    /// batch.
+    fn compute(
+        &self,
+        job: &ComputeJob,
+        input_rows: usize,
+        progress: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<Cache> {
+        let schema = job.input_schema()?;
+        let f = self;
+        let indices = f
+            .columns
+            .iter()
+            .map(|c| schema.index_of(c))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let batches = input_rows.div_ceil(PASS_ROWS);
+        let up = f.up;
+
+        // First, only the filled columns: each batch's value to carry on
+        // (its last value, or its first when filling up), on all cores.
+        let columns = f.columns.clone();
+        let pieces = job.read_parallel(
+            input_rows,
+            Some(f.columns.clone()),
+            move |batches, first| {
+                let carries = batches
+                    .iter()
+                    .map(|batch| {
+                        columns
+                            .iter()
+                            .map(|c| {
+                                let column = batch
+                                    .column_by_name(c)
+                                    .ok_or_else(|| invalid!(ColumnNotFound, column = c))?;
+                                carry_out(column, None, up)
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
+                Ok((carries, first + rows))
+            },
+        );
+        let mut found: Vec<Vec<Option<ArrayRef>>> = Vec::with_capacity(batches);
+        for piece in pieces {
+            let (carries, end) = piece?;
+            found.extend(carries);
+            if !progress(0.3 * end as f32 / input_rows.max(1) as f32) {
+                return Err(Error::Cancelled);
+            }
+        }
+        // The value carried into each batch: the nearest found before it
+        // (after it, when filling up).
+        let mut incoming: Vec<Vec<Option<ArrayRef>>> = vec![vec![None; indices.len()]; batches];
+        let mut carry: Vec<Option<ArrayRef>> = vec![None; indices.len()];
+        let order: Box<dyn Iterator<Item = usize>> = match up {
+            true => Box::new((0..batches).rev()),
+            false => Box::new(0..batches),
+        };
+        for b in order {
+            incoming[b] = carry.clone();
+            for (k, value) in found[b].iter().enumerate() {
+                if value.is_some() {
+                    carry[k] = value.clone();
+                }
+            }
+        }
+
+        // Then every column, each batch filled on its own, on all cores.
+        let incoming = Arc::new(incoming);
+        let pieces = job.read_parallel(input_rows, None, move |batches, first| {
+            let mut start = first;
+            let mut filled = Vec::with_capacity(batches.len());
+            for batch in batches {
+                let carries = &incoming[start / PASS_ROWS];
+                start += batch.num_rows();
+                let mut columns = batch.columns().to_vec();
+                for (k, &i) in indices.iter().enumerate() {
+                    columns[i] = fill(&columns[i], carries[k].as_ref(), up)?;
+                }
+                filled.push(RecordBatch::try_new(batch.schema(), columns)?);
+            }
+            Ok((filled, start))
+        });
+        let mut pieces = pieces.into_iter();
+        let mut ready = std::collections::VecDeque::new();
+        let mut produce = || -> Option<Result<RecordBatch>> {
+            loop {
+                if let Some(batch) = ready.pop_front() {
+                    return Some(Ok(batch));
+                }
+                match pieces.next()? {
+                    Ok((filled, end)) => {
+                        if !progress(0.3 + 0.7 * end as f32 / input_rows.max(1) as f32) {
+                            return Some(Err(Error::Cancelled));
+                        }
+                        ready.extend(filled);
+                    }
+                    Err(e) => return Some(Err(e)),
+                }
+            }
+        };
+        Ok(Cache::Data(job.materialize(schema.clone(), &mut produce)?))
     }
 }
 

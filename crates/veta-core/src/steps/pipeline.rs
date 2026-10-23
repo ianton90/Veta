@@ -146,13 +146,12 @@ impl Pipeline {
     pub fn push(&mut self, step: Step) -> Result<()> {
         self.require_ready()?;
         let id = self.new_id();
+        let level = step.with_transform(|t| t.level(self.last()))?;
         if step.needs_full_pass() {
-            self.last().check(&step)?;
             self.status = Status::Computing {
                 step: self.steps.len(),
             };
         } else {
-            let level = self.last().next(&step)?;
             self.levels.push(level);
         }
         self.steps.push(step);
@@ -194,19 +193,17 @@ impl Pipeline {
         self.levels.truncate(from + 1);
         self.status = Status::Ready;
         for (i, step) in self.steps.iter().enumerate().skip(from) {
-            let result = if step.needs_full_pass() {
-                match &self.caches[i] {
-                    Some(cache) => Ok(self.levels[i].after_pass(cache)),
-                    None => match self.levels[i].check(step) {
-                        Ok(()) => {
-                            self.status = Status::Computing { step: i };
-                            return;
-                        }
-                        Err(e) => Err(e),
-                    },
-                }
-            } else {
-                self.levels[i].next(step)
+            let level = &self.levels[i];
+            let result = match &self.caches[i] {
+                Some(cache) if step.needs_full_pass() => Ok(level.after_pass(cache)),
+                None if step.needs_full_pass() => match step.with_transform(|t| t.level(level)) {
+                    Ok(_) => {
+                        self.status = Status::Computing { step: i };
+                        return;
+                    }
+                    Err(e) => Err(e),
+                },
+                _ => step.with_transform(|t| t.level(level)),
             };
             match result {
                 Ok(level) => self.levels.push(level),

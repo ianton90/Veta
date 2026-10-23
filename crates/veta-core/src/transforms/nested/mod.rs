@@ -1,6 +1,8 @@
 //! Steps for nested columns: expanding a struct into columns and exploding
 //! a list (or map) into rows.
 
+pub(crate) mod steps;
+
 use crate::error::invalid;
 use std::sync::Arc;
 

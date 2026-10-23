@@ -5,10 +5,11 @@ use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, StringArray, StringBuilder};
 use arrow::compute::cast;
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 
 use crate::error::Result;
+use crate::steps::{Level, Transform};
 
 /// Most columns a split makes (a recipe could ask for billions).
 pub const MAX_SPLIT_PARTS: usize = 1000;
@@ -246,6 +247,26 @@ pub fn count_parts(sample: &ArrayRef, delimiter: &str) -> usize {
         .map(|s| s.matches(delimiter).count() + 1)
         .max()
         .unwrap_or(1)
+}
+
+impl Transform for Split {
+    fn level(&self, input: &Level) -> Result<Level> {
+        Ok(input.with_fields(self.output_fields(&input.schema)?, input.num_rows))
+    }
+
+    fn apply(&self, batch: &RecordBatch, _: usize, output: &SchemaRef) -> Result<RecordBatch> {
+        Split::apply(self, batch, output)
+    }
+}
+
+impl Transform for Merge {
+    fn level(&self, input: &Level) -> Result<Level> {
+        Ok(input.with_fields(self.output_fields(&input.schema)?, input.num_rows))
+    }
+
+    fn apply(&self, batch: &RecordBatch, _: usize, output: &SchemaRef) -> Result<RecordBatch> {
+        Merge::apply(self, batch, output)
+    }
 }
 
 #[cfg(test)]

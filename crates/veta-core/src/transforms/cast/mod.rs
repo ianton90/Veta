@@ -12,8 +12,11 @@ use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 
 use crate::display::type_name;
+use crate::error::Error;
 use crate::error::Result;
+use crate::steps::{Cache, ComputeJob, Level, Transform};
 use crate::values::is_text;
+use arrow::datatypes::SchemaRef;
 
 /// Converts `column` to type `to`.
 #[derive(Debug, Clone, PartialEq)]
@@ -619,6 +622,73 @@ fn parse_dates(strings: &StringArray, format: &str, to: &DataType) -> Result<Arr
             return Err(invalid!(FormatNotForType, data_type = type_name(other)));
         }
     })
+}
+
+impl Transform for Cast {
+    fn level(&self, input: &Level) -> Result<Level> {
+        Ok(input.with_fields(self.output_fields(&input.schema)?, input.num_rows))
+    }
+
+    /// Stopping on an invalid value means checking every row first.
+    fn full_pass(&self) -> bool {
+        self.options.on_error == OnError::Fail
+    }
+
+    fn apply(&self, batch: &RecordBatch, _: usize, output: &SchemaRef) -> Result<RecordBatch> {
+        Cast::apply(self, batch, output)
+    }
+
+    fn changed_columns(&self) -> Vec<&str> {
+        vec![&self.column]
+    }
+
+    fn compute(
+        &self,
+        job: &ComputeJob,
+        input_rows: usize,
+        progress: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<Cache> {
+        // Converts every row once so an invalid value breaks the
+        // step instead of failing later reads. Only the column is
+        // read, in pieces on all cores; the first failure in row
+        // order counts.
+        let input = job.input_schema()?;
+        let schema = Arc::new(arrow::datatypes::Schema::new_with_metadata(
+            self.output_fields(&input)?,
+            input.metadata().clone(),
+        ));
+        let checked = self.clone();
+        let pieces = job.read_parallel(
+            input_rows,
+            Some(vec![self.column.clone()]),
+            move |batches, first| {
+                let mut start = first;
+                for batch in &batches {
+                    if let Some((row, value)) = checked.first_failure(batch)? {
+                        return Ok((Some((start + row, value)), start));
+                    }
+                    start += batch.num_rows();
+                }
+                Ok((None, start))
+            },
+        );
+        for piece in pieces {
+            let (failure, end) = piece?;
+            if let Some((row, value)) = failure {
+                return Err(invalid!(
+                    RowValueType,
+                    row = row + 1,
+                    value = value,
+                    column = self.column,
+                    data_type = crate::display::type_name(&self.to)
+                ));
+            }
+            if !progress(end as f32 / input_rows as f32) {
+                return Err(Error::Cancelled);
+            }
+        }
+        Ok(Cache::Checked(schema))
+    }
 }
 
 #[cfg(test)]

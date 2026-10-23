@@ -6,8 +6,8 @@ use crate::error::invalid;
 use std::ops::Range;
 
 use crate::command::Command;
-use crate::history::Change;
-use crate::steps::{Step, normalize_ranges};
+
+use crate::steps::Step;
 
 use crate::error::Result;
 
@@ -69,14 +69,14 @@ pub fn rows_command(
                     return Err(invalid!(RowPastEndUse, row = at + 1, end = num_rows + 1));
                 }
             };
-            Ok(Command::InsertRows { at, count })
+            Ok(Command::AddStep(Step::InsertRows { at, count }))
         }
-        RowAction::Delete => Ok(Command::DeleteRows {
+        RowAction::Delete => Ok(Command::AddStep(Step::DeleteRows {
             rows: vec![row_range(place, count, num_rows)?],
-        }),
-        RowAction::Keep => Ok(Command::DeleteRows {
+        })),
+        RowAction::Keep => Ok(Command::AddStep(Step::DeleteRows {
             rows: keep_only(&[row_range(place, count, num_rows)?], num_rows),
-        }),
+        })),
     }
 }
 
@@ -107,22 +107,6 @@ pub fn keep_only(keep: &[Range<usize>], num_rows: usize) -> Vec<Range<usize>> {
     delete
 }
 
-/// Plans one of this area's commands (see `super::plan`).
-pub(super) fn plan(command: Command) -> Result<Change> {
-    match command {
-        Command::InsertRows { at, count } => Ok(Change::PushStep(Step::InsertRows { at, count })),
-        Command::DeleteRows { rows: ranges } => {
-            let ranges = normalize_ranges(ranges);
-            Ok(Change::PushStep(Step::DeleteRows { rows: ranges }))
-        }
-        other => Err(invalid!(
-            WrongArea,
-            area = "rows",
-            command = format!("{other:?}")
-        )),
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::single_range_in_vec_init)] // Row ranges, not a range of values.
 mod tests {
@@ -135,45 +119,45 @@ mod tests {
         let cmd = |a, p, n| rows_command(a, p, n, 10);
         assert_eq!(
             cmd(Insert, Top, 3).unwrap(),
-            Command::InsertRows { at: 0, count: 3 }
+            Command::AddStep(Step::InsertRows { at: 0, count: 3 })
         );
         assert_eq!(
             cmd(Insert, Bottom, 2).unwrap(),
-            Command::InsertRows { at: 10, count: 2 }
+            Command::AddStep(Step::InsertRows { at: 10, count: 2 })
         );
         assert_eq!(
             cmd(Insert, At(10), 1).unwrap(),
-            Command::InsertRows { at: 10, count: 1 }
+            Command::AddStep(Step::InsertRows { at: 10, count: 1 })
         );
         assert!(cmd(Insert, At(11), 1).is_err());
         assert!(cmd(Insert, Top, 0).is_err());
         assert_eq!(
             cmd(Delete, Top, 3).unwrap(),
-            Command::DeleteRows { rows: vec![0..3] }
+            Command::AddStep(Step::DeleteRows { rows: vec![0..3] })
         );
         assert_eq!(
             cmd(Delete, Bottom, 3).unwrap(),
-            Command::DeleteRows { rows: vec![7..10] }
+            Command::AddStep(Step::DeleteRows { rows: vec![7..10] })
         );
         assert_eq!(
             cmd(Delete, At(4), 2).unwrap(),
-            Command::DeleteRows { rows: vec![4..6] }
+            Command::AddStep(Step::DeleteRows { rows: vec![4..6] })
         );
         assert!(cmd(Delete, At(9), 2).is_err());
         assert!(cmd(Delete, Bottom, 11).is_err());
         assert_eq!(
             cmd(Keep, Top, 3).unwrap(),
-            Command::DeleteRows { rows: vec![3..10] }
+            Command::AddStep(Step::DeleteRows { rows: vec![3..10] })
         );
         assert_eq!(
             cmd(Keep, Bottom, 3).unwrap(),
-            Command::DeleteRows { rows: vec![0..7] }
+            Command::AddStep(Step::DeleteRows { rows: vec![0..7] })
         );
         assert_eq!(
             cmd(Keep, At(4), 2).unwrap(),
-            Command::DeleteRows {
+            Command::AddStep(Step::DeleteRows {
                 rows: vec![0..4, 6..10]
-            }
+            })
         );
         assert_eq!(keep_only(&[5..7, 0..2, 6..8], 10), vec![2..5, 8..10]);
         assert!(keep_only(&[0..10], 10).is_empty());

@@ -6,20 +6,26 @@ use super::*;
 fn step_commands_and_broken_steps() {
     let dir = TempDir::new();
     let mut doc = mixed(&dir);
-    let rename = |to: &str| Command::RenameColumn {
-        from: "name".into(),
-        to: to.into(),
+    let rename = |to: &str| {
+        Command::AddStep(Step::RenameColumn {
+            from: "name".into(),
+            to: to.into(),
+        })
     };
     execute(&mut doc, rename("label")).unwrap();
     execute(
         &mut doc,
-        Command::MoveColumn {
+        Command::AddStep(Step::MoveColumn {
             name: "label".into(),
             to: 0,
-        },
+        }),
     )
     .unwrap();
-    execute(&mut doc, Command::InsertRows { at: 0, count: 1 }).unwrap();
+    execute(
+        &mut doc,
+        Command::AddStep(Step::InsertRows { at: 0, count: 1 }),
+    )
+    .unwrap();
 
     // Removing the rename breaks the move that refers to "label".
     execute(&mut doc, Command::RemoveStep { index: 0 }).unwrap();
@@ -30,7 +36,11 @@ fn step_commands_and_broken_steps() {
     assert_eq!(doc.steps().len(), 2);
     assert!(doc.save_job(None).is_err(), "can't save while broken");
     assert!(
-        execute(&mut doc, Command::InsertRows { at: 0, count: 1 }).is_err(),
+        execute(
+            &mut doc,
+            Command::AddStep(Step::InsertRows { at: 0, count: 1 })
+        )
+        .is_err(),
         "can't add steps while broken"
     );
     undo(&mut doc);
@@ -76,7 +86,7 @@ fn filter_command_and_save_with_pending_step() {
         match_all: true,
         exclude: false,
     };
-    execute(&mut doc, Command::Filter(filter)).unwrap();
+    execute(&mut doc, Command::AddStep(Step::Filter(filter))).unwrap();
     assert_eq!(doc.status(), &Status::Computing { step: 0 });
     // Saving computes the pending step.
     let out = dir.join("out.parquet");
@@ -98,7 +108,7 @@ fn filter_command_and_save_with_pending_step() {
         match_all: true,
         exclude: false,
     };
-    assert!(execute(&mut doc, Command::Filter(bad)).is_err());
+    assert!(execute(&mut doc, Command::AddStep(Step::Filter(bad))).is_err());
 }
 
 #[test]
@@ -125,7 +135,7 @@ fn sort_command_in_memory_and_paged() {
     let mut results = Vec::new();
     for options in [OpenOptions::default(), OpenOptions::paged()] {
         let mut doc = Document::open(&path, options).unwrap();
-        execute(&mut doc, Command::Sort(sort.clone())).unwrap();
+        execute(&mut doc, Command::AddStep(Step::Sort(sort.clone()))).unwrap();
         assert_eq!(doc.status(), &Status::Computing { step: 0 });
         doc.compute_all().unwrap();
         assert_eq!(doc.num_rows(), 1000);
@@ -136,7 +146,11 @@ fn sort_command_in_memory_and_paged() {
         assert_eq!(cell(&doc, 499, "score"), None);
         assert_eq!(cell(&doc, 500, "flag").as_deref(), Some("true"));
         // Later steps work on the sorted rows.
-        execute(&mut doc, Command::DeleteRows { rows: vec![0..1] }).unwrap();
+        execute(
+            &mut doc,
+            Command::AddStep(Step::DeleteRows { rows: vec![0..1] }),
+        )
+        .unwrap();
         assert_eq!(cell(&doc, 0, "score").as_deref(), Some("498.5"));
         let out = dir.join("sorted.parquet");
         doc.save(Some(out.clone())).unwrap();
@@ -154,11 +168,11 @@ fn cast_command_with_error_column() {
     // score (float) → text with a comma decimal, then back to a number.
     execute(
         &mut doc,
-        Command::Cast(Cast {
+        Command::AddStep(Step::Cast(Cast {
             column: "score".into(),
             to: DataType::Utf8,
             options: CastOptions::default(),
-        }),
+        })),
     )
     .unwrap();
     assert_eq!(cell(&doc, 3, "score").as_deref(), Some("1.5"));
@@ -173,7 +187,7 @@ fn cast_command_with_error_column() {
     .unwrap();
     execute(
         &mut doc,
-        Command::Cast(Cast {
+        Command::AddStep(Step::Cast(Cast {
             column: "score".into(),
             to: DataType::Float64,
             options: CastOptions {
@@ -182,7 +196,7 @@ fn cast_command_with_error_column() {
                 on_error: OnError::ErrorColumn,
                 ..CastOptions::default()
             },
-        }),
+        })),
     )
     .unwrap();
     doc.compute_all().unwrap();
@@ -201,7 +215,7 @@ fn cast_command_with_error_column() {
             ..CastOptions::default()
         },
     };
-    execute(&mut doc, Command::Cast(cast.clone())).unwrap();
+    execute(&mut doc, Command::AddStep(Step::Cast(cast.clone()))).unwrap();
     assert!(doc.compute_all().is_err(), "the check fails");
     let kept = settle(&mut doc).expect("the column is kept");
     assert_eq!(kept.column, "name errors");
@@ -216,7 +230,7 @@ fn cast_command_with_error_column() {
 
     undo(&mut doc);
     cast.options.on_error = OnError::Fail;
-    execute(&mut doc, Command::Cast(cast)).unwrap();
+    execute(&mut doc, Command::AddStep(Step::Cast(cast))).unwrap();
     assert!(doc.compute_all().is_err(), "failing values break the step");
     assert!(matches!(doc.status(), crate::steps::Status::Broken { .. }));
     assert!(doc.save(Some(dir.join("fail.parquet"))).is_err());
@@ -232,30 +246,30 @@ fn replace_format_and_fill_commands() {
         let mut doc = Document::open(&path, options).unwrap();
         execute(
             &mut doc,
-            Command::Replace(Replace {
+            Command::AddStep(Step::Replace(Replace {
                 column: "name".into(),
                 find: Some("o".into()),
                 with: Some("0".into()),
                 whole_cell: false,
-            }),
+            })),
         )
         .unwrap();
         assert_eq!(cell(&doc, 1, "name").as_deref(), Some("b0"));
         execute(
             &mut doc,
-            Command::FormatText {
+            Command::AddStep(Step::FormatText {
                 columns: vec!["name".into()],
                 op: TextOp::Upper,
-            },
+            }),
         )
         .unwrap();
         assert_eq!(cell(&doc, 2, "name").as_deref(), Some("CY"));
         execute(
             &mut doc,
-            Command::Fill(Fill {
+            Command::AddStep(Step::Fill(Fill {
                 columns: vec!["name".into(), "score".into()],
                 up: false,
-            }),
+            })),
         )
         .unwrap();
         assert_eq!(doc.status(), &Status::Computing { step: 2 });
@@ -266,22 +280,22 @@ fn replace_format_and_fill_commands() {
         assert_eq!(cell(&doc, 0, "name"), None, "nothing above row 0");
         execute(
             &mut doc,
-            Command::Replace(Replace {
+            Command::AddStep(Step::Replace(Replace {
                 column: "score".into(),
                 find: None,
                 with: Some("-1".into()),
                 whole_cell: true,
-            }),
+            })),
         )
         .unwrap();
         assert_eq!(cell(&doc, 0, "score").as_deref(), Some("-1.0"));
         assert!(
             execute(
                 &mut doc,
-                Command::FormatText {
+                Command::AddStep(Step::FormatText {
                     columns: vec!["score".into()],
                     op: TextOp::Trim,
-                },
+                }),
             )
             .is_err()
         );
@@ -294,11 +308,11 @@ fn custom_column_command() {
     let dir = TempDir::new();
     let mut doc = mixed(&dir);
     let custom = |name: &str, expression: &str, at| {
-        Command::CustomColumn(CustomColumn {
+        Command::AddStep(Step::CustomColumn(CustomColumn {
             name: name.into(),
             expression: expression.into(),
             at,
-        })
+        }))
     };
     execute(&mut doc, custom("n", "row() * 10 + id", 0)).unwrap();
     assert_eq!(doc.schema().field(0).name(), "n");
@@ -331,10 +345,10 @@ fn recipe_round_trip_onto_another_document() {
     let mut doc = mixed(&dir);
     execute(
         &mut doc,
-        Command::RenameColumn {
+        Command::AddStep(Step::RenameColumn {
             from: "name".into(),
             to: "label".into(),
-        },
+        }),
     )
     .unwrap();
     execute(
@@ -348,13 +362,13 @@ fn recipe_round_trip_onto_another_document() {
     .unwrap();
     execute(
         &mut doc,
-        Command::Sort(Sort {
+        Command::AddStep(Step::Sort(Sort {
             keys: vec![SortKey {
                 column: "score".into(),
                 descending: true,
                 nulls_first: false,
             }],
-        }),
+        })),
     )
     .unwrap();
     doc.compute_all().unwrap();
@@ -408,14 +422,14 @@ fn failing_cast_breaks_its_step() {
     // "name" holds text like "ana": not a number.
     execute(
         &mut doc,
-        Command::Cast(Cast {
+        Command::AddStep(Step::Cast(Cast {
             column: "name".into(),
             to: DataType::Int64,
             options: CastOptions {
                 on_error: OnError::Fail,
                 ..CastOptions::default()
             },
-        }),
+        })),
     )
     .unwrap();
     assert!(doc.compute_all().is_err());
@@ -431,14 +445,14 @@ fn failing_cast_breaks_its_step() {
     assert!(undo(&mut doc));
     execute(
         &mut doc,
-        Command::Cast(Cast {
+        Command::AddStep(Step::Cast(Cast {
             column: "id".into(),
             to: DataType::Utf8,
             options: CastOptions {
                 on_error: OnError::Fail,
                 ..CastOptions::default()
             },
-        }),
+        })),
     )
     .unwrap();
     doc.compute_all().unwrap();

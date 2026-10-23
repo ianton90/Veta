@@ -282,10 +282,10 @@ impl App {
                 self.dialog = None;
                 return Ok(());
             }
-            step => step_command(step),
+            step => Command::AddStep(step),
         };
         let added_column = match &command {
-            Command::AddColumn { at, .. } => Some(*at),
+            Command::AddStep(Step::AddColumn { at, .. }) => Some(*at),
             _ => None,
         };
         let Some(doc) = self.workbook.get_mut(id) else {
@@ -397,43 +397,5 @@ impl App {
             }
         });
         Task::run(receiver, |message| message)
-    }
-}
-
-/// The command adding `step`, for the steps the step dialogs make.
-fn step_command(step: Step) -> Command {
-    match step {
-        Step::AddColumn {
-            name,
-            data_type,
-            at,
-        } => Command::AddColumn {
-            name,
-            data_type,
-            at,
-        },
-        Step::RenameColumn { from, to } => Command::RenameColumn { from, to },
-        Step::AddField {
-            column,
-            path,
-            name,
-            data_type,
-        } => Command::AddField {
-            column,
-            path,
-            name,
-            data_type,
-        },
-        Step::Filter(filter) => Command::Filter(filter),
-        Step::Sort(sort) => Command::Sort(sort),
-        Step::Cast(cast) => Command::Cast(cast),
-        Step::Replace(replace) => Command::Replace(replace),
-        Step::FormatText { columns, op } => Command::FormatText { columns, op },
-        Step::Split(split) => Command::Split(split),
-        Step::Merge(merge) => Command::Merge(merge),
-        Step::CombineStruct { columns, name } => Command::CombineStruct { columns, name },
-        Step::CollectList { keys, columns } => Command::CollectList { keys, columns },
-        Step::CustomColumn(custom) => Command::CustomColumn(custom),
-        step => unreachable!("no step dialog makes {step:?}"),
     }
 }

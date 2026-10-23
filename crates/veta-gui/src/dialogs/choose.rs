@@ -60,9 +60,10 @@ impl ChooseColumns {
                     .map(|(name, _)| name.clone())
                     .collect();
                 let command = if self.keep {
-                    (names.len() < self.columns.len()).then_some(Command::KeepColumns { names })
+                    (names.len() < self.columns.len())
+                        .then_some(Command::AddStep(Step::KeepColumns { names }))
                 } else {
-                    (!names.is_empty()).then_some(Command::RemoveColumns { names })
+                    (!names.is_empty()).then_some(Command::AddStep(Step::RemoveColumns { names }))
                 };
                 return Some(command);
             }
@@ -124,17 +125,17 @@ mod tests {
         keep.update(ChooseMessage::Toggle(0, true));
         assert_eq!(
             keep.update(ChooseMessage::Apply),
-            Some(Some(Command::KeepColumns {
+            Some(Some(Command::AddStep(Step::KeepColumns {
                 names: vec!["a".into()]
-            }))
+            })))
         );
         let mut remove = ChooseColumns::new(false, names, &["b".into()]);
         remove.update(ChooseMessage::Toggle(2, true));
         assert_eq!(
             remove.update(ChooseMessage::Apply),
-            Some(Some(Command::RemoveColumns {
+            Some(Some(Command::AddStep(Step::RemoveColumns {
                 names: vec!["b".into(), "c".into()]
-            }))
+            })))
         );
     }
 }

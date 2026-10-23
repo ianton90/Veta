@@ -6,6 +6,7 @@
 
 use veta_core::arrow::array::{Array, Int64Array, ListArray};
 use veta_core::controller::execute;
+use veta_core::steps::Step;
 use veta_core::steps::{Condition, CustomColumn, Filter, FilterOp, Sort, SortKey};
 use veta_core::{Command, Document, OpenOptions};
 use veta_testkit::{TempDir, fixtures};
@@ -40,13 +41,13 @@ fn sort_across_chunks() {
     for mut doc in open_large(&dir) {
         run(
             &mut doc,
-            Command::Sort(Sort {
+            Command::AddStep(Step::Sort(Sort {
                 keys: vec![SortKey {
                     column: "value".into(),
                     descending: true,
                     nulls_first: false,
                 }],
-            }),
+            })),
         );
         assert_eq!(doc.num_rows(), ROWS);
         // Every id once, high to low, read across the chunk boundary.
@@ -65,7 +66,7 @@ fn filter_across_chunks() {
     for mut doc in open_large(&dir) {
         run(
             &mut doc,
-            Command::Filter(Filter {
+            Command::AddStep(Step::Filter(Filter {
                 conditions: vec![Condition {
                     column: "label".into(),
                     op: FilterOp::EndsWith,
@@ -74,7 +75,7 @@ fn filter_across_chunks() {
                 }],
                 match_all: true,
                 exclude: false,
-            }),
+            })),
         );
         assert_eq!(doc.num_rows(), ROWS / 10);
         let all = ids(&doc, 0..doc.num_rows());
@@ -89,18 +90,18 @@ fn collect_across_chunks() {
     for mut doc in open_large(&dir) {
         run(
             &mut doc,
-            Command::CustomColumn(CustomColumn {
+            Command::AddStep(Step::CustomColumn(CustomColumn {
                 name: "group".into(),
                 expression: "id % 10".into(),
                 at: 0,
-            }),
+            })),
         );
         run(
             &mut doc,
-            Command::CollectList {
+            Command::AddStep(Step::CollectList {
                 keys: vec!["group".into()],
                 columns: vec!["id".into()],
-            },
+            }),
         );
         assert_eq!(doc.num_rows(), 10);
         let batch = doc.read(0..10).unwrap();
@@ -130,14 +131,14 @@ fn collect_across_chunks() {
 #[test]
 fn a_last_filter_or_sort_streams_into_the_saved_file() {
     let dir = TempDir::new();
-    let sort = Command::Sort(Sort {
+    let sort = Command::AddStep(Step::Sort(Sort {
         keys: vec![SortKey {
             column: "value".into(),
             descending: true,
             nulls_first: false,
         }],
-    });
-    let filter = Command::Filter(Filter {
+    }));
+    let filter = Command::AddStep(Step::Filter(Filter {
         conditions: vec![Condition {
             column: "label".into(),
             op: FilterOp::EndsWith,
@@ -146,7 +147,7 @@ fn a_last_filter_or_sort_streams_into_the_saved_file() {
         }],
         match_all: true,
         exclude: false,
-    });
+    }));
     for (k, command) in [sort, filter].into_iter().enumerate() {
         for (m, mut doc) in open_large(&dir).into_iter().enumerate() {
             // Saved while the step still needs its pass: written as it runs.
