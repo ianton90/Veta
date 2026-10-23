@@ -149,6 +149,50 @@ fn collect_values_into_lists() {
         crate::display::item_count(batch.column(0).as_ref(), 0),
         rows
     );
+
+    // Groups that span several reads keep all their rows, in order.
+    let path = dir.join("groups.parquet");
+    let rows = 3 * 64 * 1024 + 10;
+    fixtures::large(&path, rows, 50_000);
+    let mut doc = Document::open(&path, OpenOptions::paged()).unwrap();
+    let key = crate::formulas::CustomColumn {
+        name: "k".into(),
+        expression: "[id] % 3".into(),
+        at: 0,
+    };
+    execute(&mut doc, Command::CustomColumn(key)).unwrap();
+    execute(
+        &mut doc,
+        Command::CollectList {
+            keys: vec!["k".into()],
+            columns: vec!["id".into()],
+        },
+    )
+    .unwrap();
+    doc.compute_all().unwrap();
+    assert_eq!(doc.num_rows(), 3);
+    let batch = doc.read(0..3).unwrap();
+    let ids = batch.column_by_name("id").unwrap();
+    let counts: Vec<usize> = (0..3)
+        .map(|r| crate::display::item_count(ids.as_ref(), r))
+        .collect();
+    assert_eq!(counts, [65540, 65539, 65539]);
+    let first = ids
+        .as_any()
+        .downcast_ref::<arrow::array::ListArray>()
+        .unwrap()
+        .value(1);
+    let first = first
+        .as_any()
+        .downcast_ref::<arrow::array::Int64Array>()
+        .unwrap();
+    assert!(
+        first
+            .values()
+            .iter()
+            .copied()
+            .eq((1..rows as i64).step_by(3))
+    );
 }
 
 #[test]

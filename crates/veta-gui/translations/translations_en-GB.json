@@ -6,6 +6,7 @@
   "ERR_CELL_NOT_JSON": "the cell is not valid JSON: {error}",
   "ERR_CHOSEN_TWICE": "\"{column}\" is chosen twice",
   "ERR_COLLECT_NO_COLUMNS": "there are no columns to collect into lists",
+  "ERR_COLLECT_TOO_LARGE": "a group has too many rows for one list (more than 2,147,483,647)",
   "ERR_COLUMN_COUNT": "the file has {found} columns, not {expected}",
   "ERR_COLUMN_EXISTS": "a column named \"{column}\" already exists",
   "ERR_COLUMN_NAME_EMPTY": "column name cannot be empty",

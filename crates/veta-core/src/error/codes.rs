@@ -38,6 +38,7 @@ error_codes! {
     CellNotJson => "the cell is not valid JSON: {error}",
     ChosenTwice => "\"{column}\" is chosen twice",
     CollectNoColumns => "there are no columns to collect into lists",
+    CollectTooLarge => "a group has too many rows for one list (more than 2,147,483,647)",
     ColumnCount => "the file has {found} columns, not {expected}",
     ColumnExists => "a column named \"{column}\" already exists",
     ColumnNameEmpty => "column name cannot be empty",

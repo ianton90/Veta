@@ -515,51 +515,81 @@ impl ComputeJob {
             Some(arrow::row::RowConverter::new(fields)?)
         };
 
-        // Groups can span reads: the last, maybe unfinished, group of each
-        // read waits for the next one.
+        // Groups can span reads: the rows of the last, maybe unfinished,
+        // group wait in `pending` (as read, joined once the group ends) for
+        // the next read. Without keys the whole input is one group.
         let mut start = 0;
-        let mut pending: Option<RecordBatch> = None;
+        let mut pending: Vec<RecordBatch> = Vec::new();
+        // Whether row `b` of `next` has the same keys as the last pending row.
+        let continues = |pending: &[RecordBatch], next: &RecordBatch| -> Result<bool> {
+            let (Some(last), Some(converter)) = (pending.last(), converter.as_ref()) else {
+                return Ok(!pending.is_empty());
+            };
+            let keys = |batch: &RecordBatch, row: usize| -> Vec<arrow::array::ArrayRef> {
+                key_columns
+                    .iter()
+                    .map(|&i| batch.column(i).slice(row, 1))
+                    .collect()
+            };
+            let a = converter.convert_columns(&keys(last, last.num_rows() - 1))?;
+            let b = converter.convert_columns(&keys(next, 0))?;
+            Ok(a.row(0) == b.row(0))
+        };
         let mut next = |progress: &mut dyn FnMut(f32) -> bool| -> Result<Option<RecordBatch>> {
             loop {
-                if start >= input_rows && pending.is_none() {
-                    return Ok(None);
-                }
                 let end = (start + PASS_ROWS).min(input_rows);
                 let read = (start < end).then(|| read_sorted(start..end)).transpose()?;
                 start = end;
                 let last = start >= input_rows;
-                let batch = match (pending.take(), read) {
-                    (Some(p), Some(r)) => arrow::compute::concat_batches(&input, [&p, &r])?,
-                    (Some(p), None) => p,
-                    (None, Some(r)) => r,
-                    (None, None) => return Ok(None),
-                };
-                let starts = crate::transforms::nested::group_starts(
-                    &batch,
-                    &key_columns,
-                    converter.as_ref(),
-                )?;
-                let (groups, complete) = match (last, starts.last()) {
-                    (true, _) => (starts.len(), batch.num_rows()),
-                    (false, Some(&s)) => (starts.len() - 1, s),
-                    (false, None) => (0, 0),
-                };
-                if !last {
-                    pending = Some(batch.slice(complete, batch.num_rows() - complete));
-                }
                 if !progress(0.5 + 0.5 * start as f32 / input_rows.max(1) as f32) {
                     return Err(Error::Cancelled);
                 }
-                if groups == 0 {
+                let read = match read {
+                    Some(read) if read.num_rows() > 0 => read,
+                    _ if pending.is_empty() => return Ok(None),
+                    // The end: the pending group is complete.
+                    _ => {
+                        let rows: usize = pending.iter().map(RecordBatch::num_rows).sum();
+                        let group = arrow::compute::concat_batches(&input, &pending)?;
+                        pending.clear();
+                        return group_lists(&group, &[0, rows], keys, &schema).map(Some);
+                    }
+                };
+                let starts = crate::transforms::nested::group_starts(
+                    &read,
+                    &key_columns,
+                    converter.as_ref(),
+                )?;
+                let joins = continues(&pending, &read)?;
+                if joins && starts.len() == 1 && !last {
+                    // All of it belongs to the pending group.
+                    pending.push(read);
                     continue;
                 }
-                let mut bounds = starts[..groups].to_vec();
-                bounds.push(complete);
-                let complete = batch.slice(0, complete);
-                return crate::transforms::nested::collect_groups(
-                    &complete, &bounds, keys, &schema,
-                )
-                .map(Some);
+                // Complete: the pending group and this read's groups up to its
+                // last one (which may go on in the next read).
+                let cut = match last {
+                    true => read.num_rows(),
+                    false => *starts.last().expect("rows read"),
+                };
+                let offset: usize = pending.iter().map(RecordBatch::num_rows).sum();
+                let mut bounds: Vec<usize> = if pending.is_empty() { vec![] } else { vec![0] };
+                bounds.extend(
+                    starts
+                        .iter()
+                        .filter(|&&s| s < cut && !(joins && s == 0))
+                        .map(|s| offset + s),
+                );
+                bounds.push(offset + cut);
+                pending.push(read.slice(0, cut));
+                let complete = arrow::compute::concat_batches(&input, &pending)?;
+                pending.clear();
+                if !last {
+                    pending.push(read.slice(cut, read.num_rows() - cut));
+                }
+                if complete.num_rows() > 0 {
+                    return group_lists(&complete, &bounds, keys, &schema).map(Some);
+                }
             }
         };
         let mut produce = || next(progress).transpose();
@@ -602,6 +632,20 @@ impl ComputeJob {
 }
 
 /// The columns a sort reads to sample its keys.
+/// [`collect_groups`](crate::transforms::nested::collect_groups), refusing
+/// a group too large for one list (2^31 values).
+fn group_lists(
+    batch: &RecordBatch,
+    bounds: &[usize],
+    keys: &[String],
+    schema: &Arc<arrow::datatypes::Schema>,
+) -> Result<RecordBatch> {
+    if batch.num_rows() > i32::MAX as usize {
+        return Err(invalid!(CollectTooLarge));
+    }
+    crate::transforms::nested::collect_groups(batch, bounds, keys, schema)
+}
+
 fn sort_key_names(sort: &crate::transforms::sort::Sort) -> Vec<String> {
     sort.keys.iter().map(|k| k.column.clone()).collect()
 }
