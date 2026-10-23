@@ -3,56 +3,9 @@
 use super::*;
 
 impl App {
-    /// Column dialog messages.
+    /// Messages of the choose-columns dialog.
     pub(crate) fn columns_message(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::ColumnDialog(message) => {
-                if let Some(Dialog::Column {
-                    document,
-                    dialog,
-                    replace,
-                }) = &mut self.dialog
-                {
-                    let id = *document;
-                    let cancel = matches!(message, ColumnMessage::Cancel);
-                    let replace = *replace;
-                    let command = dialog.update(message);
-                    if let (Some(index), Some(command)) = (replace, command.clone()) {
-                        let step = match command {
-                            Command::AddColumn {
-                                name,
-                                data_type,
-                                at,
-                            } => Step::AddColumn {
-                                name,
-                                data_type,
-                                at,
-                            },
-                            Command::RenameColumn { from, to } => Step::RenameColumn { from, to },
-                            _ => return Task::none(),
-                        };
-                        self.dialog = None;
-                        self.change_steps(id, index, Command::ReplaceStep { index, step });
-                    } else if replace.is_some() {
-                        if cancel {
-                            self.dialog = None;
-                        }
-                    } else if let Some(command) = command {
-                        let at = match &command {
-                            Command::AddColumn { at, .. } => Some(*at),
-                            _ => None,
-                        };
-                        if self.execute(id, command) {
-                            self.dialog = None;
-                            if let Some(at) = at {
-                                self.select_columns(id, at..at + 1);
-                            }
-                        }
-                    } else if cancel {
-                        self.dialog = None;
-                    }
-                }
-            }
             Message::Choose(message) => {
                 if let Some(Dialog::Choose { document, dialog }) = &mut self.dialog {
                     let id = *document;
@@ -107,7 +60,7 @@ impl App {
             }
             Action::FormatText => {
                 if let Some(id) = self.active {
-                    self.open_format_dialog(id);
+                    return self.open_format_dialog(id, None);
                 }
             }
             Action::CustomColumn => {
@@ -151,12 +104,12 @@ impl App {
             }
             Action::CollectList => {
                 if let Some(id) = self.active {
-                    self.open_collect_dialog(id, None);
+                    return self.open_collect_dialog(id, None);
                 }
             }
             Action::DataType => {
                 if let Some(id) = self.active {
-                    self.open_cast_dialog(id, None);
+                    return self.open_cast_dialog(id, None);
                 }
             }
             Action::AddColumn => {
@@ -164,7 +117,7 @@ impl App {
                     let at = self
                         .selected_columns(id)
                         .map_or_else(|| self.column_count(id), |c| c.end);
-                    return self.open_column_dialog(id, ColumnDialog::add(at));
+                    return self.open_column_dialog(id, ColumnDialog::add(at), None);
                 }
             }
             Action::RenameColumn => {
@@ -186,7 +139,7 @@ impl App {
         self.tab(id)?.grid.selected_columns()
     }
 
-    fn select_columns(&mut self, id: DocumentId, range: std::ops::Range<usize>) {
+    pub(crate) fn select_columns(&mut self, id: DocumentId, range: std::ops::Range<usize>) {
         if let Some(tab) = self.tab_mut(id) {
             tab.grid.select_columns(range);
         }
@@ -237,12 +190,7 @@ impl App {
                     .map_or(schema.fields().len(), |c| c.end),
             },
         };
-        self.edit = None;
-        self.dialog = Some(Dialog::Step {
-            document: id,
-            dialog: Box::new(CustomDialog::new(schema, custom)),
-            replace: step.map(|(i, _)| i),
-        });
+        self.open_step_dialog(id, CustomDialog::new(schema, custom), step.map(|(i, _)| i));
         Task::batch([
             iced::widget::operation::focus(dialogs::EXPRESSION_ID),
             iced::widget::operation::move_cursor_to_end(dialogs::EXPRESSION_ID),
@@ -306,16 +254,11 @@ impl App {
         let Some(sample) = self.sample(id, step.as_ref().map(|(i, _)| *i), &column) else {
             return Task::none();
         };
-        self.edit = None;
-        self.dialog = Some(Dialog::Step {
-            document: id,
-            dialog: Box::new(SplitDialog::new(
-                column,
-                sample,
-                step.as_ref().map(|(_, s)| s),
-            )),
-            replace: step.map(|(i, _)| i),
-        });
+        self.open_step_dialog(
+            id,
+            SplitDialog::new(column, sample, step.as_ref().map(|(_, s)| s)),
+            step.map(|(i, _)| i),
+        );
         iced::widget::operation::focus(dialogs::NAME_ID)
     }
 
@@ -334,16 +277,12 @@ impl App {
             self.errors.push(tr("ST_MSG_SELECT_COLUMNS_MERGE"));
             return Task::none();
         }
-        self.edit = None;
-        self.dialog = Some(Dialog::Step {
-            document: id,
-            dialog: Box::new(MergeDialog::new(columns, step.as_ref().map(|(_, m)| m))),
-            replace: step.map(|(i, _)| i),
-        });
-        Task::batch([
-            iced::widget::operation::focus(dialogs::NAME_ID),
-            iced::widget::operation::select_all(dialogs::NAME_ID),
-        ])
+        self.open_step_dialog(
+            id,
+            MergeDialog::new(columns, step.as_ref().map(|(_, m)| m)),
+            step.map(|(i, _)| i),
+        );
+        select_name()
     }
 
     /// Opens the collect dialog on the selected columns, or on the collect
@@ -352,9 +291,9 @@ impl App {
         &mut self,
         id: DocumentId,
         step: Option<(usize, Vec<String>, Vec<String>)>,
-    ) {
+    ) -> Task<Message> {
         let Some(doc) = self.workbook.get(id) else {
-            return;
+            return Task::none();
         };
         let (replace, keys, columns, schema) = match step {
             Some((i, keys, columns)) => (Some(i), keys, columns, doc.schema_at(i)),
@@ -365,7 +304,7 @@ impl App {
         };
         if columns.is_empty() {
             self.errors.push(tr("ST_MSG_SELECT_COLUMNS_COLLECT"));
-            return;
+            return Task::none();
         }
         let others = schema
             .map(|s| {
@@ -380,12 +319,8 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
-        self.edit = None;
-        self.dialog = Some(Dialog::Step {
-            document: id,
-            dialog: Box::new(CollectDialog::new(columns, others)),
-            replace,
-        });
+        self.open_step_dialog(id, CollectDialog::new(columns, others), replace);
+        Task::none()
     }
 
     /// Opens the combine dialog on the selected columns, or on the combine
@@ -420,16 +355,8 @@ impl App {
             self.errors.push(tr("ST_MSG_SELECT_COLUMNS_COMBINE"));
             return Task::none();
         }
-        self.edit = None;
-        self.dialog = Some(Dialog::Step {
-            document: id,
-            dialog: Box::new(CombineDialog::new(columns, name)),
-            replace,
-        });
-        Task::batch([
-            iced::widget::operation::focus(dialogs::NAME_ID),
-            iced::widget::operation::select_all(dialogs::NAME_ID),
-        ])
+        self.open_step_dialog(id, CombineDialog::new(columns, name), replace);
+        select_name()
     }
 
     /// The first rows of `column` after `level` steps (all evaluated steps
@@ -478,32 +405,31 @@ impl App {
                 Some(veta_core::values::is_text(field.data_type()))
             })
             .unwrap_or(true);
-        self.edit = None;
-        self.dialog = Some(Dialog::Step {
-            document: id,
-            dialog: Box::new(ReplaceDialog::new(
-                column,
-                text_column,
-                step.as_ref().map(|(_, r)| r),
-            )),
-            replace: level,
-        });
+        self.open_step_dialog(
+            id,
+            ReplaceDialog::new(column, text_column, step.as_ref().map(|(_, r)| r)),
+            level,
+        );
         iced::widget::operation::focus(dialogs::NAME_ID)
     }
 
-    /// Opens the format text dialog on the selected columns.
-    pub(crate) fn open_format_dialog(&mut self, id: DocumentId) {
-        let columns = self.selected_column_names(id);
+    /// Opens the format text dialog on the selected columns, or on the
+    /// format step at `index`.
+    pub(crate) fn open_format_dialog(
+        &mut self,
+        id: DocumentId,
+        step: Option<(usize, Vec<String>, TextOp)>,
+    ) -> Task<Message> {
+        let (replace, columns, op) = match step {
+            Some((i, columns, op)) => (Some(i), columns, op),
+            None => (None, self.selected_column_names(id), TextOp::Trim),
+        };
         if columns.is_empty() {
             self.errors.push(tr("ST_MSG_SELECT_COLUMNS_FORMAT"));
-            return;
+            return Task::none();
         }
-        self.edit = None;
-        self.dialog = Some(Dialog::Step {
-            document: id,
-            dialog: Box::new(FormatDialog::new(columns, TextOp::Trim)),
-            replace: None,
-        });
+        self.open_step_dialog(id, FormatDialog::new(columns, op), replace);
+        Task::none()
     }
 
     /// Fills nulls in the selected columns.
@@ -518,9 +444,13 @@ impl App {
 
     /// Opens the change type dialog on the selected column, or on the cast
     /// step at `index` (previewed on that step's input).
-    pub(crate) fn open_cast_dialog(&mut self, id: DocumentId, step: Option<(usize, Cast)>) {
+    pub(crate) fn open_cast_dialog(
+        &mut self,
+        id: DocumentId,
+        step: Option<(usize, Cast)>,
+    ) -> Task<Message> {
         let Some(doc) = self.workbook.get(id) else {
-            return;
+            return Task::none();
         };
         let level = step.as_ref().map_or(doc.evaluated_steps(), |(i, _)| *i);
         let column = match &step {
@@ -535,38 +465,29 @@ impl App {
         };
         let Some(column) = column else {
             self.errors.push(tr("ST_MSG_SELECT_COLUMN_CAST"));
-            return;
+            return Task::none();
         };
         let Some(sample) = self.sample(id, Some(level), &column) else {
-            return;
+            return Task::none();
         };
-        self.edit = None;
-        self.dialog = Some(Dialog::Step {
-            document: id,
-            dialog: Box::new(CastDialog::new(
-                column,
-                sample,
-                step.as_ref().map(|(_, c)| c),
-            )),
-            replace: step.map(|(i, _)| i),
-        });
+        self.open_step_dialog(
+            id,
+            CastDialog::new(column, sample, step.as_ref().map(|(_, c)| c)),
+            step.map(|(i, _)| i),
+        );
+        Task::none()
     }
 
+    /// Opens a column dialog: adding or renaming a column or adding a
+    /// field, or editing the step at `replace`.
     pub(crate) fn open_column_dialog(
         &mut self,
         id: DocumentId,
         dialog: ColumnDialog,
+        replace: Option<usize>,
     ) -> Task<Message> {
-        self.edit = None;
-        self.dialog = Some(Dialog::Column {
-            document: id,
-            dialog,
-            replace: None,
-        });
-        Task::batch([
-            iced::widget::operation::focus(dialogs::NAME_ID),
-            iced::widget::operation::select_all(dialogs::NAME_ID),
-        ])
+        self.open_step_dialog(id, dialog, replace);
+        select_name()
     }
 
     pub(crate) fn rename_column(&mut self, id: DocumentId) -> Task<Message> {
@@ -577,7 +498,7 @@ impl App {
             .column_names(id, columns.start..columns.start + 1)
             .pop()
         {
-            Some(name) => self.open_column_dialog(id, ColumnDialog::rename(name)),
+            Some(name) => self.open_column_dialog(id, ColumnDialog::rename(name), None),
             None => Task::none(),
         }
     }
@@ -626,4 +547,12 @@ impl App {
             self.select_columns(id, to..to + 1);
         }
     }
+}
+
+/// Focuses a dialog's name field with its text selected, to type over.
+pub(crate) fn select_name() -> Task<Message> {
+    Task::batch([
+        iced::widget::operation::focus(dialogs::NAME_ID),
+        iced::widget::operation::select_all(dialogs::NAME_ID),
+    ])
 }

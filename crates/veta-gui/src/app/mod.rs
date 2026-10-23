@@ -7,15 +7,18 @@ mod clipboard;
 mod columns;
 mod documents;
 mod editing;
+mod file_settings;
 mod filter;
 mod menus;
 mod messages;
+mod recipes;
 mod rows;
 mod state;
 mod stats;
 mod steps;
 #[cfg(test)]
 mod tests;
+mod transfers;
 mod view;
 
 pub(crate) use menus::*;
@@ -25,11 +28,10 @@ pub(crate) use steps::*;
 pub(crate) use view::*;
 
 use crate::dialogs::{
-    CastDialog, ChooseColumns, ChooseMessage, CollectDialog, ColumnDialog, ColumnMessage,
-    CombineDialog, CustomDialog, ExportDialog, ExportMessage, FilterDialog, FormatDialog,
-    ImportDialog, ImportMessage, MergeDialog, MetadataDialog, MetadataMessage, ReplaceDialog,
-    RowsDialog, RowsMessage, SortDialog, SplitDialog, StepDialog, StepMessage, WriterDialog,
-    WriterMessage,
+    CastDialog, ChooseColumns, ChooseMessage, CollectDialog, ColumnDialog, CombineDialog,
+    CustomDialog, ExportDialog, ExportMessage, FilterDialog, FormatDialog, ImportDialog,
+    ImportMessage, MergeDialog, MetadataDialog, MetadataMessage, ReplaceDialog, RowsDialog,
+    RowsMessage, SortDialog, SplitDialog, StepDialog, StepMessage, WriterDialog, WriterMessage,
 };
 use crate::grid::{GRID_ID, GridEvent, GridView, MenuTarget, Nav, Selection};
 use crate::i18n::errors::{error_text, io_text};
@@ -404,56 +406,22 @@ impl App {
         {
             return Task::none();
         }
+        match message.area() {
+            Area::App => {}
+            Area::Clipboard => return self.clipboard_message(message),
+            Area::Columns => return self.columns_message(message),
+            Area::Documents => return self.documents_message(message),
+            Area::Editing => return self.editing_message(message),
+            Area::FileSettings => return self.file_settings_message(message),
+            Area::Filter => return self.filter_message(message),
+            Area::Menus => return self.menus_message(message),
+            Area::Recipes => return self.recipes_message(message),
+            Area::Rows => return self.rows_message(message),
+            Area::Stats => return self.stats_message(message),
+            Area::Steps => return self.steps_message(message),
+            Area::Transfers => return self.transfers_message(message),
+        }
         match message {
-            m @ Message::Pasted(..) => return self.clipboard_message(m),
-            m @ (Message::ColumnDialog(..) | Message::Choose(..)) => {
-                return self.columns_message(m);
-            }
-            m @ (Message::EditInput(..) | Message::CommitEdit) => return self.editing_message(m),
-            m @ (Message::OpenDialog
-            | Message::FilesPicked(..)
-            | Message::Remote(..)
-            | Message::Opened(..)
-            | Message::Imported(..)
-            | Message::SaveTo(..)
-            | Message::Saved(..)
-            | Message::SelectTab(..)
-            | Message::CloseTab(..)
-            | Message::CloseRequested
-            | Message::CloseAnswer(..)
-            | Message::ImportPicked(..)
-            | Message::Import(..)
-            | Message::Export(..)
-            | Message::ExportTo(..)
-            | Message::Exported(..)
-            | Message::TransferProgress(..)
-            | Message::TransferDone(..)
-            | Message::CancelTransfer(..)
-            | Message::SaveRecipe
-            | Message::SaveRecipeTo(..)
-            | Message::LoadRecipe
-            | Message::LoadRecipeFrom(..)
-            | Message::RecipeChoice(..)
-            | Message::Writer(..)
-            | Message::Metadata(..)) => return self.documents_message(m),
-            m @ Message::ClearFilter => {
-                return self.filter_message(m);
-            }
-            m @ (Message::Menu(..) | Message::CloseMenu) => return self.menus_message(m),
-            m @ Message::Rows(..) => return self.rows_message(m),
-            m @ (Message::StatsProgress(..) | Message::StatsDone(..)) => {
-                return self.stats_message(m);
-            }
-            m @ (Message::Step(..)
-            | Message::ComputeProgress(..)
-            | Message::ComputeDone(..)
-            | Message::CancelCompute
-            | Message::PreviewStep(..)
-            | Message::ToggleStep(..)
-            | Message::RemoveStep(..)
-            | Message::MoveStep(..)
-            | Message::EditStep(..)
-            | Message::ConfirmStep(..)) => return self.steps_message(m),
             Message::Action(action) => {
                 self.notice = None;
                 return self.perform(action);
@@ -617,6 +585,7 @@ impl App {
                     iced::theme::Mode::None => None,
                 };
             }
+            _ => unreachable!("handled by its area"),
         }
         Task::none()
     }

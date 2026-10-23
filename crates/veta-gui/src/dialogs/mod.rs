@@ -92,6 +92,7 @@ pub trait StepDialog: std::fmt::Debug {
 /// Messages of the step dialogs, by dialog.
 #[derive(Debug, Clone)]
 pub enum StepMessage {
+    Column(ColumnMessage),
     Filter(FilterMessage),
     Sort(SortMessage),
     Cast(CastMessage),

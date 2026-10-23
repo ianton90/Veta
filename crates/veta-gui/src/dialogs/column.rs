@@ -317,8 +317,8 @@ impl ColumnDialog {
         }
     }
 
-    /// Handles a message. Returns the command to run on submit.
-    pub fn update(&mut self, message: ColumnMessage) -> Option<Command> {
+    /// Handles a message. Returns the step to add on submit.
+    pub fn update(&mut self, message: ColumnMessage) -> Option<Step> {
         self.error = None;
         match message {
             ColumnMessage::Name(name) => self.name = name,
@@ -375,18 +375,18 @@ impl ColumnDialog {
                     }
                 };
                 return Some(match &self.mode {
-                    ColumnMode::Add { at } => Command::AddColumn {
+                    ColumnMode::Add { at } => Step::AddColumn {
                         name,
                         data_type,
                         at: *at,
                     },
-                    ColumnMode::AddField { column, path } => Command::AddField {
+                    ColumnMode::AddField { column, path } => Step::AddField {
                         column: column.clone(),
                         path: path.clone(),
                         name,
                         data_type,
                     },
-                    ColumnMode::Rename { from } => Command::RenameColumn {
+                    ColumnMode::Rename { from } => Step::RenameColumn {
                         from: from.clone(),
                         to: name,
                     },
@@ -455,6 +455,33 @@ impl ColumnDialog {
 }
 
 /// The kind picker for the type at `path`.
+impl StepDialog for ColumnDialog {
+    fn update(&mut self, message: StepMessage) -> Option<Step> {
+        let StepMessage::Column(message) = message else {
+            return None;
+        };
+        ColumnDialog::update(self, message)
+    }
+
+    fn cancels(&self, message: &StepMessage) -> bool {
+        matches!(message, StepMessage::Column(ColumnMessage::Cancel))
+    }
+
+    fn view(&self, tokens: Tokens) -> Element<'_, StepMessage> {
+        ColumnDialog::view(self, tokens).map(StepMessage::Column)
+    }
+
+    fn set_error(&mut self, error: String) -> Option<String> {
+        self.error = Some(error);
+        None
+    }
+
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 fn picker(spec: &TypeSpec, path: TypePath) -> Element<'_, ColumnMessage> {
     pick_list(TypeOption::all(), Some(spec.option()), move |option| {
         ColumnMessage::Type(path.clone(), option)
@@ -559,7 +586,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn add_and_rename_build_commands() {
+    fn add_and_rename_build_steps() {
         let mut add = ColumnDialog::add(2);
         add.update(ColumnMessage::Name(" total ".into()));
         add.update(ColumnMessage::Type(
@@ -568,7 +595,7 @@ mod tests {
         ));
         assert_eq!(
             add.update(ColumnMessage::Submit),
-            Some(Command::AddColumn {
+            Some(Step::AddColumn {
                 name: "total".into(),
                 data_type: DataType::Float64,
                 at: 2
@@ -585,7 +612,7 @@ mod tests {
         let scores = veta_core::display::map_type(DataType::Date32, DataType::Int64);
         assert_eq!(
             map.update(ColumnMessage::Submit),
-            Some(Command::AddColumn {
+            Some(Step::AddColumn {
                 name: "scores".into(),
                 data_type: scores.clone(),
                 at: 0
@@ -597,8 +624,8 @@ mod tests {
         xyz.update(ColumnMessage::Length(vec![], "x".into()));
         assert_eq!(xyz.update(ColumnMessage::Submit), None, "not a length");
         xyz.update(ColumnMessage::Length(vec![], "2".into()));
-        let Some(Command::AddColumn { data_type, .. }) = xyz.update(ColumnMessage::Submit) else {
-            panic!("a command");
+        let Some(Step::AddColumn { data_type, .. }) = xyz.update(ColumnMessage::Submit) else {
+            panic!("a step");
         };
         assert_eq!(
             veta_core::display::type_name(&data_type),
@@ -617,7 +644,7 @@ mod tests {
         rename.update(ColumnMessage::Name("b".into()));
         assert_eq!(
             rename.update(ColumnMessage::Submit),
-            Some(Command::RenameColumn {
+            Some(Step::RenameColumn {
                 from: "a".into(),
                 to: "b".into()
             })

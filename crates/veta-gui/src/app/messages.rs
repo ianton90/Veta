@@ -2,6 +2,25 @@
 
 use super::*;
 
+/// The part of the app that handles a message or a ribbon action: its
+/// file (`app/<area>.rs`), with `App` for what `app/mod.rs` handles itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Area {
+    App,
+    Clipboard,
+    Columns,
+    Documents,
+    Editing,
+    FileSettings,
+    Filter,
+    Menus,
+    Recipes,
+    Rows,
+    Stats,
+    Steps,
+    Transfers,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     Action(Action),
@@ -40,7 +59,6 @@ pub(crate) enum Message {
     CommitEdit,
     Menu(MenuItem),
     CloseMenu,
-    ColumnDialog(ColumnMessage),
     /// For the open step dialog (see [`StepDialog`]).
     Step(StepMessage),
     Rows(RowsMessage),
@@ -125,3 +143,67 @@ impl<T> Slot<T> {
 }
 
 pub(crate) type Loaded = Slot<Document>;
+
+impl Message {
+    /// Who handles this message (see [`App::handle`]).
+    pub(crate) fn area(&self) -> Area {
+        use Message as M;
+        match self {
+            M::Pasted(..) => Area::Clipboard,
+            M::Choose(..) => Area::Columns,
+            M::EditInput(..) | M::CommitEdit => Area::Editing,
+            M::OpenDialog
+            | M::FilesPicked(..)
+            | M::Remote(..)
+            | M::Opened(..)
+            | M::SaveTo(..)
+            | M::Saved(..)
+            | M::SelectTab(..)
+            | M::CloseTab(..)
+            | M::CloseRequested
+            | M::CloseAnswer(..) => Area::Documents,
+            M::Imported(..)
+            | M::ImportPicked(..)
+            | M::Import(..)
+            | M::Export(..)
+            | M::ExportTo(..)
+            | M::Exported(..)
+            | M::TransferProgress(..)
+            | M::TransferDone(..)
+            | M::CancelTransfer(..) => Area::Transfers,
+            M::SaveRecipe
+            | M::SaveRecipeTo(..)
+            | M::LoadRecipe
+            | M::LoadRecipeFrom(..)
+            | M::RecipeChoice(..) => Area::Recipes,
+            M::Writer(..) | M::Metadata(..) => Area::FileSettings,
+            M::ClearFilter => Area::Filter,
+            M::Menu(..) | M::CloseMenu => Area::Menus,
+            M::Rows(..) => Area::Rows,
+            M::StatsProgress(..) | M::StatsDone(..) => Area::Stats,
+            M::Step(..)
+            | M::ComputeProgress(..)
+            | M::ComputeDone(..)
+            | M::CancelCompute
+            | M::PreviewStep(..)
+            | M::ToggleStep(..)
+            | M::RemoveStep(..)
+            | M::MoveStep(..)
+            | M::EditStep(..)
+            | M::ConfirmStep(..) => Area::Steps,
+            M::Action(_)
+            | M::Ribbon(_)
+            | M::WindowResized(_)
+            | M::Frame(_)
+            | M::Grid(..)
+            | M::DismissError(_)
+            | M::Settings(_)
+            | M::LanguageChanged(_)
+            | M::CloseDialog
+            | M::Escape
+            | M::RowsRead(..)
+            | M::SideTab(_)
+            | M::SystemMode(_) => Area::App,
+        }
+    }
+}

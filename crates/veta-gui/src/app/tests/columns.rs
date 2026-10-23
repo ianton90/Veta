@@ -32,19 +32,27 @@ fn column_commands() {
         position: iced::Point::ORIGIN,
     });
     let _ = app.update(Message::Menu(MenuItem::InsertColumnRight));
-    let _ = app.update(Message::ColumnDialog(ColumnMessage::Name("note".into())));
-    let _ = app.update(Message::ColumnDialog(ColumnMessage::Submit));
+    let _ = app.update(Message::Step(StepMessage::Column(ColumnMessage::Name(
+        "note".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Column(ColumnMessage::Submit)));
     assert!(app.dialog.is_none());
     assert_eq!(names(&app), ["id", "name", "note", "score", "flag"]);
     assert_eq!(app.selected_columns(id), Some(2..3));
 
     // Rename with a clashing name keeps the dialog open.
     let _ = app.update(Message::Action(Action::RenameColumn));
-    let _ = app.update(Message::ColumnDialog(ColumnMessage::Name("id".into())));
-    let _ = app.update(Message::ColumnDialog(ColumnMessage::Submit));
-    assert!(app.dialog.is_some());
-    let _ = app.update(Message::ColumnDialog(ColumnMessage::Name("memo".into())));
-    let _ = app.update(Message::ColumnDialog(ColumnMessage::Submit));
+    let _ = app.update(Message::Step(StepMessage::Column(ColumnMessage::Name(
+        "id".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Column(ColumnMessage::Submit)));
+    let dialog = step_dialog::<ColumnDialog>(&app).expect("still open");
+    assert!(format!("{dialog:?}").contains("error: Some"), "shown in it");
+    assert!(app.errors.is_empty());
+    let _ = app.update(Message::Step(StepMessage::Column(ColumnMessage::Name(
+        "memo".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Column(ColumnMessage::Submit)));
     assert_eq!(names(&app), ["id", "name", "memo", "score", "flag"]);
 
     // Drag "memo" to the front, then remove two columns.
@@ -232,7 +240,7 @@ fn new_list_and_struct_columns() {
     let mut app = app_with(&[&path]);
     let id = app.tabs[0].id;
     let column = |app: &mut App, message| {
-        let _ = app.update(Message::ColumnDialog(message));
+        let _ = app.update(Message::Step(StepMessage::Column(message)));
     };
     let type_of = |app: &App, name: &str| {
         let doc = app.workbook.get(id).unwrap();
@@ -274,7 +282,7 @@ fn new_list_and_struct_columns() {
 
     // Editing the step shows the struct's fields again.
     let _ = app.update(Message::EditStep(1));
-    let Some(Dialog::Column { dialog, .. }) = &app.dialog else {
+    let Some(dialog) = step_dialog::<ColumnDialog>(&app) else {
         panic!("column dialog");
     };
     let debug = format!("{dialog:?}");
@@ -313,7 +321,7 @@ fn new_list_and_struct_columns() {
         "list<struct<sku: string, options: map<string, list<string>>>>"
     );
     let _ = app.update(Message::EditStep(2));
-    let Some(Dialog::Column { dialog, .. }) = &app.dialog else {
+    let Some(dialog) = step_dialog::<ColumnDialog>(&app) else {
         panic!("column dialog");
     };
     assert!(format!("{dialog:?}").contains(r#"("options", Map(Text, List(Plain(Text))))"#));

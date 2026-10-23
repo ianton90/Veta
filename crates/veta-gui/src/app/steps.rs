@@ -2,23 +2,36 @@
 
 use super::*;
 
-/// Whether the step settings dialog exists for this kind of step.
+/// Whether the step settings dialog exists for this kind of step. Every
+/// kind is listed, so a new one must be decided on here; those with a
+/// dialog are opened by `App::edit_step`.
 pub(crate) fn step_dialog_supported(step: &Step) -> bool {
-    matches!(
-        step,
-        Step::RenameColumn { .. }
-            | Step::AddColumn { .. }
-            | Step::Filter(_)
-            | Step::Sort(_)
-            | Step::Cast(_)
-            | Step::Replace(_)
-            | Step::FormatText { .. }
-            | Step::Split(_)
-            | Step::Merge(_)
-            | Step::CombineStruct { .. }
-            | Step::CollectList { .. }
-            | Step::CustomColumn(_)
-    )
+    match step {
+        Step::AddColumn { .. }
+        | Step::RenameColumn { .. }
+        | Step::AddField { .. }
+        | Step::Filter(_)
+        | Step::Sort(_)
+        | Step::Cast(_)
+        | Step::Replace(_)
+        | Step::FormatText { .. }
+        | Step::Split(_)
+        | Step::Merge(_)
+        | Step::CustomColumn(_)
+        | Step::CollectList { .. }
+        | Step::CombineStruct { .. } => true,
+        Step::EditCells(_)
+        | Step::InsertRows { .. }
+        | Step::DeleteRows { .. }
+        | Step::RemoveColumns { .. }
+        | Step::KeepColumns { .. }
+        | Step::MoveColumn { .. }
+        | Step::Fill(_)
+        | Step::ExpandStruct { .. }
+        | Step::ExplodeList { .. }
+        | Step::RemoveField { .. }
+        | Step::RemoveEmptyColumn { .. } => false,
+    }
 }
 
 impl App {
@@ -160,7 +173,23 @@ impl App {
         Task::none()
     }
 
-    /// Opens the settings dialog of the step at `index`.
+    /// Opens a dialog that adds a step, or edits the step at `replace`.
+    pub(crate) fn open_step_dialog(
+        &mut self,
+        id: DocumentId,
+        dialog: impl StepDialog + 'static,
+        replace: Option<usize>,
+    ) {
+        self.edit = None;
+        self.dialog = Some(Dialog::Step {
+            document: id,
+            dialog: Box::new(dialog),
+            replace,
+        });
+    }
+
+    /// Opens the settings dialog of the step at `index` (one of those
+    /// [`step_dialog_supported`] lists).
     fn edit_step(&mut self, id: DocumentId, index: usize) -> Task<Message> {
         let Some(step) = self
             .workbook
@@ -170,70 +199,50 @@ impl App {
         else {
             return Task::none();
         };
-        let dialog = match &step {
-            Step::RenameColumn { from, to } => ColumnDialog::rename(from.clone()).with_name(to),
+        let at = Some(index);
+        match step {
             Step::AddColumn {
                 name,
                 data_type,
-                at,
-            } => ColumnDialog::add(*at).with_name(name).with_type(data_type),
-            Step::Cast(cast) => {
-                self.open_cast_dialog(id, Some((index, cast.clone())));
-                return Task::none();
+                at: column,
+            } => {
+                let dialog = ColumnDialog::add(column)
+                    .with_name(&name)
+                    .with_type(&data_type);
+                self.open_column_dialog(id, dialog, at)
             }
-            Step::Replace(r) => return self.open_replace_dialog(id, Some((index, r.clone()))),
-            Step::Split(s) => return self.open_split_dialog(id, Some((index, s.clone()))),
-            Step::CustomColumn(c) => {
-                return self.open_custom_dialog(id, Some((index, c.clone())), String::new());
+            Step::RenameColumn { from, to } => {
+                self.open_column_dialog(id, ColumnDialog::rename(from).with_name(&to), at)
             }
-            Step::Merge(m) => return self.open_merge_dialog(id, Some((index, m.clone()))),
-            Step::CombineStruct { columns, name } => {
-                let step = (columns.clone(), name.clone());
-                return self.open_combine_dialog(id, Some((index, step)));
+            Step::AddField {
+                column,
+                path,
+                name,
+                data_type,
+            } => {
+                let dialog = ColumnDialog::add_field(column, path)
+                    .with_name(&name)
+                    .with_type(&data_type);
+                self.open_column_dialog(id, dialog, at)
             }
-            Step::CollectList { keys, columns } => {
-                self.open_collect_dialog(id, Some((index, keys.clone(), columns.clone())));
-                return Task::none();
-            }
+            Step::Filter(filter) => self.open_filter_dialog(id, Some((index, filter))),
+            Step::Sort(sort) => self.open_sort_dialog(id, Some((index, sort))),
+            Step::Cast(cast) => self.open_cast_dialog(id, Some((index, cast))),
+            Step::Replace(r) => self.open_replace_dialog(id, Some((index, r))),
             Step::FormatText { columns, op } => {
-                self.edit = None;
-                self.dialog = Some(Dialog::Step {
-                    document: id,
-                    dialog: Box::new(FormatDialog::new(columns.clone(), *op)),
-                    replace: Some(index),
-                });
-                return Task::none();
+                self.open_format_dialog(id, Some((index, columns, op)))
             }
-            Step::Filter(_) | Step::Sort(_) => {
-                let schema = self.workbook.get(id).and_then(|d| d.schema_at(index));
-                let columns = schema
-                    .as_ref()
-                    .map(|schema| schema.fields().iter().map(|f| f.name().clone()).collect())
-                    .unwrap_or_default();
-                let nested = schema.as_deref().map(nested_columns).unwrap_or_default();
-                self.edit = None;
-                self.dialog = Some(match &step {
-                    Step::Filter(filter) => Dialog::Step {
-                        document: id,
-                        dialog: Box::new(FilterDialog::edit(columns, filter).with_nested(nested)),
-                        replace: Some(index),
-                    },
-                    Step::Sort(sort) => Dialog::Step {
-                        document: id,
-                        dialog: Box::new(SortDialog::new(columns, sort)),
-                        replace: Some(index),
-                    },
-                    _ => return Task::none(),
-                });
-                return Task::none();
+            Step::Split(split) => self.open_split_dialog(id, Some((index, split))),
+            Step::Merge(merge) => self.open_merge_dialog(id, Some((index, merge))),
+            Step::CustomColumn(c) => self.open_custom_dialog(id, Some((index, c)), String::new()),
+            Step::CollectList { keys, columns } => {
+                self.open_collect_dialog(id, Some((index, keys, columns)))
             }
-            _ => return Task::none(),
-        };
-        let task = self.open_column_dialog(id, dialog);
-        if let Some(Dialog::Column { replace, .. }) = &mut self.dialog {
-            *replace = Some(index);
+            Step::CombineStruct { columns, name } => {
+                self.open_combine_dialog(id, Some((index, (columns, name))))
+            }
+            _ => Task::none(),
         }
-        task
     }
 
     /// Runs a step-list command, first asking if later steps refer to rows
@@ -284,6 +293,10 @@ impl App {
             step => step_command(step),
         };
         let check = matches!(command, Command::AppendSteps { .. });
+        let added_column = match &command {
+            Command::AddColumn { at, .. } => Some(*at),
+            _ => None,
+        };
         let Some(doc) = self.workbook.get_mut(id) else {
             return Ok(());
         };
@@ -293,6 +306,9 @@ impl App {
         }
         self.dialog = None;
         self.refresh(id);
+        if let Some(at) = added_column {
+            self.select_columns(id, at..at + 1);
+        }
         Ok(())
     }
 
@@ -414,6 +430,27 @@ impl App {
 /// The command adding `step`, for the steps the step dialogs make.
 fn step_command(step: Step) -> Command {
     match step {
+        Step::AddColumn {
+            name,
+            data_type,
+            at,
+        } => Command::AddColumn {
+            name,
+            data_type,
+            at,
+        },
+        Step::RenameColumn { from, to } => Command::RenameColumn { from, to },
+        Step::AddField {
+            column,
+            path,
+            name,
+            data_type,
+        } => Command::AddField {
+            column,
+            path,
+            name,
+            data_type,
+        },
         Step::Filter(filter) => Command::Filter(filter),
         Step::Sort(sort) => Command::Sort(sort),
         Step::Cast(cast) => Command::Cast(cast),

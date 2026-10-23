@@ -391,8 +391,10 @@ fn new_file_takes_columns_and_rows() {
     };
     blank(&mut app);
     let _ = app.update(Message::Menu(MenuItem::AddColumn));
-    let _ = app.update(Message::ColumnDialog(ColumnMessage::Name("a".into())));
-    let _ = app.update(Message::ColumnDialog(ColumnMessage::Submit));
+    let _ = app.update(Message::Step(StepMessage::Column(ColumnMessage::Name(
+        "a".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Column(ColumnMessage::Submit)));
     blank(&mut app);
     let _ = app.update(Message::Menu(MenuItem::AddRow));
     blank(&mut app);

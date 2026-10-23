@@ -2,7 +2,6 @@
 //! (panes, theme, settings) are handled here.
 
 use super::*;
-use crate::ribbon::Area;
 
 /// Zoom levels of the table, in percent.
 pub(crate) const ZOOM_LEVELS: [u16; 13] =
@@ -37,9 +36,12 @@ impl App {
             Area::Columns => return self.columns_action(action),
             Area::Editing => return self.editing_action(action),
             Area::Documents => return self.documents_action(action),
+            Area::Transfers => return self.transfers_action(action),
+            Area::Recipes => return self.recipes_action(action),
+            Area::FileSettings => return self.file_settings_action(action),
             Area::Filter => return self.filter_action(action),
             Area::Rows => return self.rows_action(action),
-            Area::General => {}
+            _ => {}
         }
         match action {
             Action::ToggleDetails => self.show_side_pane = !self.show_side_pane,

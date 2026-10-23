@@ -1,4 +1,4 @@
-//! Opening, saving, closing, importing and exporting files, and recipes.
+//! Opening, saving and closing files, and the tabs.
 
 use super::*;
 
@@ -6,42 +6,6 @@ pub(crate) fn file_label(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default()
-}
-
-/// Each top-level column with its metadata: as edited in Veta, otherwise
-/// the column's own (sorted by key).
-pub(crate) fn column_metadata(doc: &Document) -> Vec<(String, Vec<veta_core::model::KeyValue>)> {
-    doc.schema()
-        .fields()
-        .iter()
-        .map(|field| {
-            let entries = match doc.metadata().column(field.name()) {
-                Some(entries) => entries.to_vec(),
-                None => {
-                    let mut entries: Vec<_> = field
-                        .metadata()
-                        .iter()
-                        .map(|(k, v)| veta_core::model::KeyValue {
-                            key: k.clone(),
-                            value: Some(v.clone()),
-                        })
-                        .collect();
-                    entries.sort_by(|a, b| a.key.cmp(&b.key));
-                    entries
-                }
-            };
-            (field.name().clone(), entries)
-        })
-        .collect()
-}
-
-/// The file kind an export format writes.
-pub(crate) fn export_kind(choice: dialogs::ExportChoice) -> FileKind {
-    match choice {
-        dialogs::ExportChoice::Csv => FileKind::Csv,
-        dialogs::ExportChoice::JsonLines => FileKind::JsonLines,
-        dialogs::ExportChoice::JsonArray => FileKind::Json,
-    }
 }
 
 /// Runs blocking work on its own thread so the UI stays responsive.
@@ -52,9 +16,8 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
     });
     receiver.await.expect("worker thread panicked")
 }
-
 impl App {
-    /// Messages about opening, saving, closing, importing and exporting files.
+    /// Messages about opening, saving and closing files, and the tabs.
     pub(crate) fn documents_message(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::OpenDialog => return self.perform(Action::Open),
@@ -71,23 +34,6 @@ impl App {
                     Err(veta_core::Error::Cancelled) => {}
                     Err(e) => self.errors.push(tr_with(
                         "ST_MSG_OPEN_FAILED",
-                        &[("path", &path.display()), ("error", &error_text(&e))],
-                    )),
-                }
-            }
-            Message::Imported(path, result) => {
-                self.opening.retain(|p| p != &path);
-                match result.map(|slot| slot.take()) {
-                    Ok(Some((document, report))) => {
-                        self.add_document(&path, document);
-                        if let Some(summary) = crate::i18n::model::import_report(&report) {
-                            self.errors.push(summary);
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(veta_core::Error::Cancelled) => {}
-                    Err(e) => self.errors.push(tr_with(
-                        "ST_MSG_IMPORT_FAILED",
                         &[("path", &path.display()), ("error", &error_text(&e))],
                     )),
                 }
@@ -129,254 +75,14 @@ impl App {
                 return self.request_close(all, true);
             }
             Message::CloseAnswer(answer) => return self.answer_close(answer),
-            Message::ImportPicked(Some(path)) => return self.open(vec![path]),
-            Message::ImportPicked(None) => {}
-            Message::Import(message) => {
-                if let Some(Dialog::Import(dialog)) = &mut self.dialog {
-                    let cancel = matches!(message, ImportMessage::Cancel);
-                    if let Some(options) = dialog.update(message) {
-                        let path = dialog.path.clone();
-                        self.dialog = None;
-                        let budget = veta_core::memory::budget();
-                        self.opening.push(path.clone());
-                        let worker_path = path.clone();
-                        return self.start_transfer(
-                            Some(path.clone()),
-                            tr_with("ST_MSG_IMPORTING", &[("name", &file_label(&path))]),
-                            move |progress| {
-                                veta_core::convert::import_csv(
-                                    &worker_path,
-                                    &options,
-                                    budget,
-                                    progress,
-                                )
-                                .map(Slot::new)
-                            },
-                            move |result| Message::Imported(path.clone(), result),
-                        );
-                    } else if cancel {
-                        self.dialog = None;
-                    }
-                }
-            }
-            Message::Export(message) => {
-                if let Some(Dialog::Export { document, dialog }) = &mut self.dialog {
-                    let id = *document;
-                    let cancel = matches!(message, ExportMessage::Cancel);
-                    let submitted = dialog.update(message).is_some();
-                    let kind = export_kind(dialog.choice);
-                    if submitted {
-                        let doc = self.workbook.get(id);
-                        let name = doc
-                            .map(|d| {
-                                files::suggested_name(&d.title_or(&tr("ST_DOC_UNTITLED")), kind)
-                            })
-                            .unwrap_or_default();
-                        let dir = doc
-                            .and_then(Document::path)
-                            .and_then(Path::parent)
-                            .map(Path::to_path_buf);
-                        let save = files::save(tr("ST_DLG_EXPORT_TITLE"), kind, name, dir);
-                        return Task::perform(save, move |p| Message::ExportTo(id, p));
-                    } else if cancel {
-                        self.dialog = None;
-                    }
-                }
-            }
-            Message::ExportTo(id, Some(path)) => {
-                let Some(Dialog::Export { dialog, .. }) = self.dialog.take() else {
-                    return Task::none();
-                };
-                let format = dialog.format();
-                let output = match self.workbook.get(id).map(Document::output) {
-                    Some(Ok(output)) => output,
-                    Some(Err(e)) => {
-                        self.errors.push(tr_with(
-                            "ST_MSG_EXPORT_FAILED",
-                            &[("error", &error_text(&e))],
-                        ));
-                        return Task::none();
-                    }
-                    None => return Task::none(),
-                };
-                return self.start_transfer(
-                    None,
-                    tr_with("ST_MSG_EXPORTING", &[("name", &file_label(&path))]),
-                    move |progress| {
-                        veta_core::convert::export(&output, &path, &format, progress).map(|()| path)
-                    },
-                    Message::Exported,
-                );
-            }
-            Message::ExportTo(_, None) => {}
-            Message::Exported(result) => match result {
-                Ok(path) => {
-                    self.notice = Some(tr_with("ST_MSG_EXPORTED", &[("path", &path.display())]));
-                }
-                Err(veta_core::Error::Cancelled) => {
-                    self.notice = Some(tr("ST_MSG_EXPORT_CANCELLED"))
-                }
-                Err(e) => self.errors.push(tr_with(
-                    "ST_MSG_EXPORT_FAILED",
-                    &[("error", &error_text(&e))],
-                )),
-            },
-            Message::TransferProgress(id, progress) => {
-                if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
-                    t.progress = progress;
-                }
-            }
-            Message::TransferDone(id) => self.transfers.retain(|t| t.id != id),
-            Message::CancelTransfer(id) => {
-                if let Some(t) = self.transfers.iter().find(|t| t.id == id) {
-                    t.cancel.store(true, Ordering::Relaxed);
-                }
-            }
-            Message::SaveRecipe => {
-                if let Some(id) = self.active {
-                    let name = self
-                        .workbook
-                        .get(id)
-                        .map(|d| {
-                            let title = d.title_or(&tr("ST_DOC_UNTITLED"));
-                            let stem = title.rsplit_once('.').map_or(title.as_str(), |(s, _)| s);
-                            format!("{stem}-recipe.json")
-                        })
-                        .unwrap_or_default();
-                    let save = files::save(
-                        tr("ST_RIBBON_BTN_SAVE_RECIPE"),
-                        FileKind::Recipe,
-                        name,
-                        None,
-                    );
-                    return Task::perform(save, move |path| Message::SaveRecipeTo(id, path));
-                }
-            }
-            Message::SaveRecipeTo(id, Some(path)) => {
-                if let Some(doc) = self.workbook.get(id) {
-                    let name = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n.trim_end_matches(".json").trim_end_matches(".recipe"))
-                        .unwrap_or_default()
-                        .to_owned();
-                    let info = veta_core::recipe::RecipeInfo {
-                        name,
-                        source_file: doc
-                            .path()
-                            .and_then(|p| p.file_name())
-                            .map(|n| n.to_string_lossy().into_owned()),
-                    };
-                    let result = veta_core::recipe::to_json(doc.steps(), &info)
-                        .map_err(|e| error_text(&e))
-                        .and_then(|text| std::fs::write(&path, text).map_err(io_text));
-                    if let Err(e) = result {
-                        self.errors
-                            .push(tr_with("ST_MSG_RECIPE_SAVE_FAILED", &[("error", &e)]));
-                    }
-                }
-            }
-            Message::LoadRecipe => {
-                if let Some(id) = self.active {
-                    if !self.editable(id) {
-                        self.not_editable(id);
-                        return Task::none();
-                    }
-                    let open =
-                        files::open_one(tr("ST_RIBBON_BTN_LOAD_RECIPE"), vec![FileKind::Recipe]);
-                    return Task::perform(open, move |path| Message::LoadRecipeFrom(id, path));
-                }
-            }
-            Message::LoadRecipeFrom(id, Some(path)) => match std::fs::read_to_string(&path) {
-                // With steps already there, ask whether to replace them.
-                Ok(text) if self.workbook.get(id).is_some_and(|d| !d.steps().is_empty()) => {
-                    self.dialog = Some(Dialog::ConfirmRecipe { document: id, text });
-                }
-                Ok(text) => self.apply_recipe(id, &text, false),
-                Err(e) => self.errors.push(tr_with(
-                    "ST_MSG_RECIPE_LOAD_FAILED",
-                    &[("error", &io_text(e))],
-                )),
-            },
-            Message::RecipeChoice(choice) => {
-                if let Some(Dialog::ConfirmRecipe { document, text }) = self.dialog.take()
-                    && let Some(replace) = choice
-                {
-                    self.apply_recipe(document, &text, replace);
-                }
-            }
-            Message::SaveRecipeTo(_, None) | Message::LoadRecipeFrom(_, None) => {}
-            Message::Writer(message) => {
-                if let Some(Dialog::Writer { document, dialog }) = &mut self.dialog {
-                    let id = *document;
-                    let cancel = matches!(message, WriterMessage::Cancel);
-                    if let Some(command) = dialog.update(message) {
-                        if self.execute(id, command) {
-                            self.dialog = None;
-                        }
-                    } else if cancel {
-                        self.dialog = None;
-                    }
-                }
-            }
-            Message::Metadata(message) => {
-                if let Some(Dialog::Metadata { document, dialog }) = &mut self.dialog {
-                    let id = *document;
-                    let cancel = matches!(message, MetadataMessage::Cancel);
-                    if let Some(commands) = dialog.update(message) {
-                        let result = match self.workbook.get_mut(id) {
-                            Some(doc) => commands
-                                .into_iter()
-                                .try_for_each(|command| controller::execute(doc, command)),
-                            None => Ok(()),
-                        };
-                        match result {
-                            Ok(()) => self.dialog = None,
-                            Err(e) => dialog.set_error(error_text(&e)),
-                        }
-                    } else if cancel {
-                        self.dialog = None;
-                    }
-                }
-            }
             _ => unreachable!("not a documents message"),
         }
         Task::none()
     }
 
-    /// Ribbon actions on files.
     pub(crate) fn documents_action(&mut self, action: Action) -> Task<Message> {
         match action {
-            Action::Import => {
-                let open = files::open_one(
-                    tr("ST_RIBBON_BTN_IMPORT"),
-                    vec![FileKind::Csv, FileKind::Json, FileKind::JsonLines],
-                );
-                return Task::perform(open, Message::ImportPicked);
-            }
-            Action::Export => {
-                if let Some(id) = self.active {
-                    match self.workbook.get(id).map(Document::output) {
-                        Some(Ok(_)) => {
-                            self.edit = None;
-                            self.dialog = Some(Dialog::Export {
-                                document: id,
-                                dialog: ExportDialog::default(),
-                            });
-                        }
-                        Some(Err(e)) => {
-                            self.errors.push(tr_with(
-                                "ST_MSG_EXPORT_FAILED",
-                                &[("error", &error_text(&e))],
-                            ));
-                        }
-                        None => {}
-                    }
-                }
-            }
             Action::New => self.new_document(),
-            Action::LoadRecipe => return self.handle(Message::LoadRecipe),
-            Action::SaveRecipe => return self.handle(Message::SaveRecipe),
             Action::Open => {
                 let open = files::open_many(tr("ST_RIBBON_BTN_OPEN"), vec![FileKind::Parquet]);
                 return Task::perform(open, |files| {
@@ -403,42 +109,10 @@ impl App {
                     return self.save_as(id);
                 }
             }
-            Action::FileMetadata => {
-                if let Some(id) = self.active
-                    && let Some(doc) = self.workbook.get(id)
-                {
-                    self.dialog = Some(Dialog::Metadata {
-                        document: id,
-                        dialog: MetadataDialog::new(
-                            &doc.metadata().key_value,
-                            column_metadata(doc),
-                        ),
-                    });
-                }
-            }
-            Action::WriterSettings => {
-                if let Some(id) = self.active
-                    && let Some(doc) = self.workbook.get(id)
-                {
-                    let schema = doc.schema();
-                    let columns = veta_core::io::leaf_columns(&schema).unwrap_or_else(|_| {
-                        schema
-                            .fields()
-                            .iter()
-                            .map(|f| (f.name().clone(), f.data_type().clone()))
-                            .collect()
-                    });
-                    self.dialog = Some(Dialog::Writer {
-                        document: id,
-                        dialog: WriterDialog::new(doc.writer_settings().clone(), columns),
-                    });
-                }
-            }
             _ => unreachable!("not a documents action"),
         }
         Task::none()
     }
-
     /// Opens a blank document named `Untitled`, `Untitled 2`, … in a new tab.
     fn new_document(&mut self) {
         let titles: Vec<String> = self
@@ -561,73 +235,6 @@ impl App {
         }
     }
 
-    /// Adds a recipe's steps (JSON `text`) after the document's, or with
-    /// `replace`, in place of them (the recipe then applies to the source).
-    fn apply_recipe(&mut self, id: DocumentId, text: &str, replace: bool) {
-        let Some(doc) = self.workbook.get(id) else {
-            return;
-        };
-        let schema = if replace {
-            doc.schema_at(0).unwrap_or_else(|| doc.schema())
-        } else {
-            doc.schema()
-        };
-        match veta_core::recipe::from_json(text, &schema) {
-            Ok(steps) if steps.is_empty() => {
-                self.errors.push(tr("ST_MSG_RECIPE_EMPTY"));
-            }
-            Ok(steps) => {
-                let command = if replace {
-                    Command::ReplaceSteps { steps }
-                } else {
-                    Command::AppendSteps { steps }
-                };
-                if self.execute(id, command) {
-                    self.after_compute(id);
-                }
-            }
-            Err(e) => self.errors.push(tr_with(
-                "ST_MSG_RECIPE_LOAD_FAILED",
-                &[("error", &error_text(&e))],
-            )),
-        }
-    }
-
-    /// Runs `work` on a thread with progress and cancel shown in the status
-    /// bar; `done` turns its result into the message to handle.
-    fn start_transfer<T: Send + 'static>(
-        &mut self,
-        importing: Option<PathBuf>,
-        label: String,
-        work: impl FnOnce(&mut dyn FnMut(f32) -> bool) -> T + Send + 'static,
-        done: impl Fn(T) -> Message + Send + 'static,
-    ) -> Task<Message> {
-        let id = self.next_transfer;
-        self.next_transfer += 1;
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.transfers.push(Transfer {
-            id,
-            importing,
-            label,
-            progress: 0.0,
-            cancel: cancel.clone(),
-        });
-        let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
-        std::thread::spawn(move || {
-            let mut reported = 0.0;
-            let result = work(&mut |progress| {
-                if progress - reported >= 0.01 {
-                    reported = progress;
-                    let _ = sender.unbounded_send(Message::TransferProgress(id, progress));
-                }
-                !cancel.load(Ordering::Relaxed)
-            });
-            let _ = sender.unbounded_send(done(result));
-            let _ = sender.unbounded_send(Message::TransferDone(id));
-        });
-        Task::run(receiver, |message| message)
-    }
-
     /// Starts opening `files` in the background. Files already open are
     /// focused instead.
     pub(crate) fn open(&mut self, files: Vec<PathBuf>) -> Task<Message> {
@@ -675,7 +282,7 @@ impl App {
     }
 
     /// Adds a newly opened or imported document as the active tab.
-    fn add_document(&mut self, path: &Path, mut document: Document) {
+    pub(crate) fn add_document(&mut self, path: &Path, mut document: Document) {
         if document.path().is_none() {
             // Imported data: save with the user's defaults for new files.
             document.set_initial_writer_settings(self.config.new_files.settings());

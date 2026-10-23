@@ -220,12 +220,6 @@ pub(crate) enum Dialog {
     },
     Settings(Box<Draft>),
     About,
-    Column {
-        document: DocumentId,
-        dialog: ColumnDialog,
-        /// Editing the step at this index instead of adding a new one.
-        replace: Option<usize>,
-    },
     Rows {
         document: DocumentId,
         dialog: RowsDialog,

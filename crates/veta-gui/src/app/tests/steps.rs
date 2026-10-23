@@ -20,8 +20,10 @@ fn applied_steps_preview_edit_and_warnings() {
         },
     ));
     let _ = app.update(Message::Action(Action::RenameColumn));
-    let _ = app.update(Message::ColumnDialog(ColumnMessage::Name("label".into())));
-    let _ = app.update(Message::ColumnDialog(ColumnMessage::Submit));
+    let _ = app.update(Message::Step(StepMessage::Column(ColumnMessage::Name(
+        "label".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Column(ColumnMessage::Submit)));
     let _ = app.update(Message::Grid(
         id,
         GridEvent::SelectRows {
@@ -45,8 +47,10 @@ fn applied_steps_preview_edit_and_warnings() {
     // Editing the rename asks first, because a later step deletes rows
     // by position.
     let _ = app.update(Message::EditStep(0));
-    let _ = app.update(Message::ColumnDialog(ColumnMessage::Name("title".into())));
-    let _ = app.update(Message::ColumnDialog(ColumnMessage::Submit));
+    let _ = app.update(Message::Step(StepMessage::Column(ColumnMessage::Name(
+        "title".into(),
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Column(ColumnMessage::Submit)));
     assert!(matches!(app.dialog, Some(Dialog::ConfirmStep { .. })));
     let _ = app.update(Message::ConfirmStep(true));
     let schema = app.workbook.get(id).unwrap().schema();

@@ -171,7 +171,7 @@ impl App {
         });
         match column {
             Some(column) if is_struct => {
-                self.open_column_dialog(id, ColumnDialog::add_field(column, path))
+                self.open_column_dialog(id, ColumnDialog::add_field(column, path), None)
             }
             _ => {
                 self.errors.push(tr("ST_MSG_SELECT_STRUCT"));

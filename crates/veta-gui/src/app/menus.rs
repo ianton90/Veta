@@ -131,7 +131,7 @@ impl App {
                     MenuItem::AddRow => self.append_row(id),
                     MenuItem::AddColumn => {
                         let at = self.workbook.get(id).map_or(0, Document::num_columns);
-                        return self.open_column_dialog(id, ColumnDialog::add(at));
+                        return self.open_column_dialog(id, ColumnDialog::add(at), None);
                     }
                     MenuItem::DeleteRows => self.delete_rows(id),
                     MenuItem::InsertColumnLeft | MenuItem::InsertColumnRight => {
@@ -141,7 +141,7 @@ impl App {
                             (_, Some(c)) => c.end,
                             (_, None) => 0,
                         };
-                        return self.open_column_dialog(id, ColumnDialog::add(at));
+                        return self.open_column_dialog(id, ColumnDialog::add(at), None);
                     }
                     MenuItem::RemoveColumns => self.keep_or_remove_columns(id, false, true),
                     MenuItem::KeepColumns => self.keep_or_remove_columns(id, true, true),

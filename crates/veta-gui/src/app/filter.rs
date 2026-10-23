@@ -21,38 +21,12 @@ impl App {
         match action {
             Action::FilterRows => {
                 if let Some(id) = self.active {
-                    return self.open_filter_dialog(id);
+                    return self.open_filter_dialog(id, None);
                 }
             }
             Action::CustomSort => {
-                if let Some(id) = self.active
-                    && let Some(doc) = self.workbook.get(id)
-                {
-                    let columns: Vec<String> = doc
-                        .schema()
-                        .fields()
-                        .iter()
-                        .map(|f| f.name().clone())
-                        .collect();
-                    let column = self
-                        .selected_column_names(id)
-                        .into_iter()
-                        .next()
-                        .or_else(|| columns.first().cloned())
-                        .unwrap_or_default();
-                    let sort = Sort {
-                        keys: vec![SortKey {
-                            column,
-                            descending: false,
-                            nulls_first: false,
-                        }],
-                    };
-                    self.edit = None;
-                    self.dialog = Some(Dialog::Step {
-                        document: id,
-                        dialog: Box::new(SortDialog::new(columns, &sort)),
-                        replace: None,
-                    });
+                if let Some(id) = self.active {
+                    return self.open_sort_dialog(id, None);
                 }
             }
             Action::SortAscending | Action::SortDescending => {
@@ -65,34 +39,71 @@ impl App {
         Task::none()
     }
 
-    /// Opens the filter dialog on the selected column.
-    pub(crate) fn open_filter_dialog(&mut self, id: DocumentId) -> Task<Message> {
+    /// Opens the filter dialog on the selected column (or the filter
+    /// shown), or on the filter step at `index`.
+    pub(crate) fn open_filter_dialog(
+        &mut self,
+        id: DocumentId,
+        step: Option<(usize, Filter)>,
+    ) -> Task<Message> {
         let Some(doc) = self.workbook.get(id) else {
             return Task::none();
         };
-        let nested = nested_columns(&doc.schema());
-        let columns: Vec<String> = doc
-            .schema()
-            .fields()
-            .iter()
-            .map(|f| f.name().clone())
-            .collect();
-        let selected = self
-            .selected_columns(id)
-            .and_then(|c| columns.get(c.start).cloned());
-        let current = self.tab(id).and_then(|t| t.grid.filter().cloned());
-        let dialog = match current {
+        let Some(schema) = level_schema(doc, step.as_ref().map(|(i, _)| *i)) else {
+            return Task::none();
+        };
+        let columns = column_names(&schema);
+        let (replace, filter) = match step {
+            Some((i, filter)) => (Some(i), Some(filter)),
+            None => (None, self.tab(id).and_then(|t| t.grid.filter().cloned())),
+        };
+        let dialog = match filter {
             Some(filter) => FilterDialog::edit(columns, &filter),
-            None => FilterDialog::new(columns, selected),
+            None => {
+                let selected = self
+                    .selected_columns(id)
+                    .and_then(|c| columns.get(c.start).cloned());
+                FilterDialog::new(columns, selected)
+            }
         }
-        .with_nested(nested);
-        self.edit = None;
-        self.dialog = Some(Dialog::Step {
-            document: id,
-            dialog: Box::new(dialog),
-            replace: None,
-        });
+        .with_nested(nested_columns(&schema));
+        self.open_step_dialog(id, dialog, replace);
         iced::widget::operation::focus(dialogs::FILTER_VALUE_ID)
+    }
+
+    /// Opens the sort dialog on the selected column, or on the sort step at
+    /// `index`.
+    pub(crate) fn open_sort_dialog(
+        &mut self,
+        id: DocumentId,
+        step: Option<(usize, Sort)>,
+    ) -> Task<Message> {
+        let Some(doc) = self.workbook.get(id) else {
+            return Task::none();
+        };
+        let Some(schema) = level_schema(doc, step.as_ref().map(|(i, _)| *i)) else {
+            return Task::none();
+        };
+        let columns = column_names(&schema);
+        let (replace, sort) = match step {
+            Some((i, sort)) => (Some(i), sort),
+            None => {
+                let column = self
+                    .selected_column_names(id)
+                    .into_iter()
+                    .next()
+                    .or_else(|| columns.first().cloned())
+                    .unwrap_or_default();
+                let key = SortKey {
+                    column,
+                    descending: false,
+                    nulls_first: false,
+                };
+                (None, Sort { keys: vec![key] })
+            }
+        };
+        self.open_step_dialog(id, SortDialog::new(columns, &sort), replace);
+        Task::none()
     }
 
     /// Filters the rows shown (not a step). The filter is computed in the
@@ -189,4 +200,19 @@ impl App {
             self.errors.push(e);
         }
     }
+}
+
+/// The schema after `level` steps, or the current one.
+fn level_schema(
+    doc: &Document,
+    level: Option<usize>,
+) -> Option<veta_core::arrow::datatypes::SchemaRef> {
+    match level {
+        Some(i) => doc.schema_at(i),
+        None => Some(doc.schema()),
+    }
+}
+
+fn column_names(schema: &veta_core::arrow::datatypes::Schema) -> Vec<String> {
+    schema.fields().iter().map(|f| f.name().clone()).collect()
 }

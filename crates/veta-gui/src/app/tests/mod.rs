@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::dialogs::{
-    CastMessage, CollectMessage, CombineMessage, CustomMessage, FilterMessage, FormatMessage,
-    MergeMessage, ReplaceMessage, SortMessage, SplitMessage,
+    CastMessage, CollectMessage, ColumnMessage, CombineMessage, CustomMessage, FilterMessage,
+    FormatMessage, MergeMessage, ReplaceMessage, SortMessage, SplitMessage,
 };
 use veta_core::arrow::datatypes::DataType;
 use veta_testkit::{TempDir, fixtures};

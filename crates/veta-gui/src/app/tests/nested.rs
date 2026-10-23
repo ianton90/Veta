@@ -166,7 +166,7 @@ fn struct_fields_edit_in_place() {
     );
     menu(&mut app, MenuTarget::Field, MenuItem::AddField);
     let column = |app: &mut App, message| {
-        let _ = app.update(Message::ColumnDialog(message));
+        let _ = app.update(Message::Step(StepMessage::Column(message)));
     };
     column(&mut app, ColumnMessage::Name("z".into()));
     column(
@@ -179,6 +179,18 @@ fn struct_fields_edit_in_place() {
         cell(&app, 0, "point").as_deref(),
         Some("{x: 10, y: null, z: null}")
     );
+    // The step reopens in the same dialog, and can be renamed.
+    let last = app.workbook.get(id).unwrap().steps().len() - 1;
+    let _ = app.update(Message::EditStep(last));
+    let dialog = step_dialog::<ColumnDialog>(&app).expect("column dialog");
+    assert!(format!("{dialog:?}").contains(r#"name: "z""#));
+    column(&mut app, ColumnMessage::Name("w".into()));
+    column(&mut app, ColumnMessage::Submit);
+    assert!(app.dialog.is_none());
+    assert_eq!(
+        cell(&app, 0, "point").as_deref(),
+        Some("{x: 10, y: null, w: null}")
+    );
     grid(
         &mut app,
         GridEvent::SelectItem {
@@ -188,7 +200,7 @@ fn struct_fields_edit_in_place() {
         },
     );
     menu(&mut app, MenuTarget::Field, MenuItem::RemoveField);
-    assert_eq!(cell(&app, 0, "point").as_deref(), Some("{x: 10, z: null}"));
+    assert_eq!(cell(&app, 0, "point").as_deref(), Some("{x: 10, w: null}"));
 }
 
 #[test]
@@ -585,7 +597,7 @@ fn fixed_size_list_columns() {
     let mut app = app_with(&[&path]);
     let id = app.tabs[0].id;
     let column = |app: &mut App, message| {
-        let _ = app.update(Message::ColumnDialog(message));
+        let _ = app.update(Message::Step(StepMessage::Column(message)));
     };
     let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 0 }));
     let _ = app.update(Message::Action(Action::AddColumn));
@@ -671,14 +683,14 @@ fn add_and_remove_at_any_level() {
     grid(&mut app, GridEvent::StartEdit { initial: None });
     assert_eq!(at(&app).as_deref(), Some("[0].sku"));
     menu(&mut app, MenuTarget::Field, MenuItem::AddField);
-    let _ = app.update(Message::ColumnDialog(ColumnMessage::Name(
+    let _ = app.update(Message::Step(StepMessage::Column(ColumnMessage::Name(
         "discount".into(),
-    )));
-    let _ = app.update(Message::ColumnDialog(ColumnMessage::Type(
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Column(ColumnMessage::Type(
         vec![],
         TypeOption::Plain(TypeChoice::Integer),
-    )));
-    let _ = app.update(Message::ColumnDialog(ColumnMessage::Submit));
+    ))));
+    let _ = app.update(Message::Step(StepMessage::Column(ColumnMessage::Submit)));
     assert!(app.dialog.is_none());
     assert!(type_of(&app, "orders").ends_with("discount: int64>>"));
     // ...and removed again.

@@ -9,6 +9,7 @@
 //! Here: the actions, tabs, the ribbon's state and what is enabled;
 //! `layout.rs`: each tab's groups; `view.rs`: drawing.
 
+use crate::app::Area;
 use crate::settings::config::ModePreference;
 use crate::settings::theme::Tokens;
 
@@ -93,19 +94,6 @@ pub const SHORTCUTS: &[(Action, &str, bool, &str)] = &[
     (Action::Settings, ",", false, "Ctrl+,"),
 ];
 
-/// The part of the app that carries out an action (see `App::perform`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Area {
-    Clipboard,
-    Columns,
-    Editing,
-    Documents,
-    Filter,
-    Rows,
-    /// Panes, theme, zoom, settings: handled where actions are dispatched.
-    General,
-}
-
 impl Action {
     /// The action's shortcut, as shown.
     pub fn shortcut(self) -> Option<&'static str> {
@@ -183,17 +171,10 @@ impl Action {
             | A::RemoveColumns
             | A::KeepColumns => Area::Columns,
             A::ExpandAll | A::Undo | A::Redo | A::ExpandStruct | A::ExplodeList => Area::Editing,
-            A::Import
-            | A::Export
-            | A::New
-            | A::LoadRecipe
-            | A::SaveRecipe
-            | A::Open
-            | A::Close
-            | A::Save
-            | A::SaveAs
-            | A::FileMetadata
-            | A::WriterSettings => Area::Documents,
+            A::New | A::Open | A::Close | A::Save | A::SaveAs => Area::Documents,
+            A::Import | A::Export => Area::Transfers,
+            A::LoadRecipe | A::SaveRecipe => Area::Recipes,
+            A::FileMetadata | A::WriterSettings => Area::FileSettings,
             A::FilterRows | A::CustomSort | A::SortAscending | A::SortDescending => Area::Filter,
             A::InsertRowsAt | A::KeepRows | A::RemoveRows => Area::Rows,
             A::ToggleDetails
@@ -204,7 +185,7 @@ impl Action {
             | A::ZoomOut
             | A::ZoomReset
             | A::Settings
-            | A::About => Area::General,
+            | A::About => Area::App,
         }
     }
 

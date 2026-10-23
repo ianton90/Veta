@@ -266,7 +266,6 @@ impl App {
                     .map(Message::Settings)
             }
             Dialog::About => settings::about(Message::CloseDialog, ui.tokens),
-            Dialog::Column { dialog, .. } => dialog.view(ui.tokens).map(Message::ColumnDialog),
             Dialog::Step { dialog, .. } => dialog.view(ui.tokens).map(Message::Step),
             Dialog::Import(dialog) => dialog.view(ui.tokens).map(Message::Import),
             Dialog::Export { dialog, .. } => dialog.view(ui.tokens).map(Message::Export),
