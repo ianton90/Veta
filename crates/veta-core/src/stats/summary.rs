@@ -67,7 +67,7 @@ struct Accumulator {
     /// Whether min and max are kept: a type with a meaningful order whose
     /// values could be compared so far.
     orderable: bool,
-    /// Welford's running mean and sum of squared deviations.
+    /// Running mean and sum of squared deviations.
     numeric: bool,
     n: u64,
     mean: f64,
@@ -117,14 +117,19 @@ impl Accumulator {
             self.min = None;
             self.max = None;
         }
-        // Chan et al.'s formula for combining running means and deviations.
         if other.n > 0 {
-            let n = self.n + other.n;
-            let delta = other.mean - self.mean;
-            self.mean += delta * other.n as f64 / n as f64;
-            self.m2 += other.m2 + delta * delta * (self.n as f64 * other.n as f64) / n as f64;
-            self.n = n;
+            self.combine(other.n, other.mean, other.m2);
         }
+    }
+
+    /// Adds `n` values with mean `mean` and squared deviations `m2` to the
+    /// running ones (Chan et al.'s formula).
+    fn combine(&mut self, n: u64, mean: f64, m2: f64) {
+        let total = self.n + n;
+        let delta = mean - self.mean;
+        self.mean += delta * n as f64 / total as f64;
+        self.m2 += m2 + delta * delta * (self.n as f64 * n as f64) / total as f64;
+        self.n = total;
     }
 
     fn add(&mut self, array: &ArrayRef) -> Result<()> {
@@ -144,11 +149,14 @@ impl Accumulator {
                 .as_any()
                 .downcast_ref::<Float64Array>()
                 .ok_or_else(|| invalid!(ExpectedNumbers))?;
-            for x in values.iter().flatten().filter(|x| x.is_finite()) {
-                self.n += 1;
-                let delta = x - self.mean;
-                self.mean += delta / self.n as f64;
-                self.m2 += delta * (x - self.mean);
+            // The batch's mean and squared deviations in two passes, then
+            // combined with the running ones.
+            let finite = || values.iter().flatten().filter(|x| x.is_finite());
+            let (n, sum) = finite().fold((0u64, 0.0), |(n, sum), x| (n + 1, sum + x));
+            if n > 0 {
+                let mean = sum / n as f64;
+                let m2 = finite().map(|x| (x - mean) * (x - mean)).sum();
+                self.combine(n, mean, m2);
             }
         }
         Ok(())
@@ -283,63 +291,121 @@ fn batch_extremes(array: &ArrayRef) -> Option<(ArrayRef, ArrayRef)> {
     }
 }
 
-/// Adds the hashes of `array`'s valid values to `distinct`. Text and fixed
-/// width values are hashed as they are; other types through the row format.
+/// Adds the hashes of `array`'s valid values to `distinct`. Numbers are
+/// hashed from their value, text from its bytes, other types through the
+/// row format.
 fn insert_hashes(
     array: &ArrayRef,
     converter: &RowConverter,
     distinct: &mut Distinct,
 ) -> Result<()> {
     use arrow::array::AsArray;
-    let valid = |i: usize| array.is_valid(i);
     match array.data_type() {
+        // Text straight from its offsets and bytes.
         DataType::Utf8 => {
             let values = array.as_string::<i32>();
-            for i in (0..array.len()).filter(|&i| valid(i)) {
-                distinct.insert(hash_bytes(values.value(i).as_bytes()));
-            }
+            let (offsets, bytes) = (values.value_offsets(), values.value_data());
+            each_valid(array, |i| {
+                let (start, end) = (offsets[i] as usize, offsets[i + 1] as usize);
+                distinct.insert(hash_bytes(&bytes[start..end]));
+            });
         }
         DataType::LargeUtf8 => {
             let values = array.as_string::<i64>();
-            for i in (0..array.len()).filter(|&i| valid(i)) {
-                distinct.insert(hash_bytes(values.value(i).as_bytes()));
-            }
+            let (offsets, bytes) = (values.value_offsets(), values.value_data());
+            each_valid(array, |i| {
+                let (start, end) = (offsets[i] as usize, offsets[i + 1] as usize);
+                distinct.insert(hash_bytes(&bytes[start..end]));
+            });
         }
         t if t.is_primitive() && t.primitive_width().is_some_and(|w| w <= 16) => {
             let width = t.primitive_width().unwrap_or(0);
             let data = array.to_data();
             let bytes = &data.buffers()[0].as_slice()[data.offset() * width..];
-            for i in (0..array.len()).filter(|&i| valid(i)) {
-                distinct.insert(hash_bytes(&bytes[i * width..(i + 1) * width]));
+            // Little-endian words, zero-extended: the same value always
+            // gives the same hash.
+            let word = |b: &[u8]| u64::from_le_bytes(b.try_into().expect("8 bytes"));
+            match width {
+                8 => each_valid(array, |i| {
+                    distinct.insert(mix(word(&bytes[i * 8..i * 8 + 8]) ^ SEED));
+                }),
+                16 => each_valid(array, |i| {
+                    let (low, high) = (&bytes[i * 16..i * 16 + 8], &bytes[i * 16 + 8..i * 16 + 16]);
+                    distinct.insert(mix(word(low) ^ mix(word(high) ^ SEED)));
+                }),
+                _ => each_valid(array, |i| {
+                    distinct.insert(mix(tail_word(&bytes[i * width..(i + 1) * width]) ^ SEED));
+                }),
             }
         }
+        // At most two values: whether each is there.
         DataType::Boolean => {
             let values = array.as_boolean();
-            for i in (0..array.len()).filter(|&i| valid(i)) {
-                distinct.insert(mix(u64::from(values.value(i))));
+            let trues = values.true_count();
+            let valid = values.len() - values.null_count();
+            for (value, present) in [(true, trues > 0), (false, trues < valid)] {
+                if present {
+                    distinct.insert(mix(u64::from(value) ^ SEED));
+                }
             }
         }
         _ => {
             let rows = converter.convert_columns(std::slice::from_ref(array))?;
-            for i in (0..array.len()).filter(|&i| valid(i)) {
-                distinct.insert(hash_bytes(rows.row(i).data()));
-            }
+            each_valid(array, |i| distinct.insert(hash_bytes(rows.row(i).data())));
         }
     }
     Ok(())
 }
 
+/// Calls `f` with the index of each valid value of `array`.
+fn each_valid(array: &ArrayRef, mut f: impl FnMut(usize)) {
+    match array.nulls().filter(|n| n.null_count() > 0) {
+        Some(nulls) => nulls.valid_indices().for_each(f),
+        None => (0..array.len()).for_each(&mut f),
+    }
+}
+
+/// Mixed into every hash, so no value hashes to 0.
+const SEED: u64 = 0x9e37_79b9_7f4a_7c15;
+
 /// A fast 64-bit hash of `bytes`, well mixed in every bit (HyperLogLog uses
 /// the top bits).
 fn hash_bytes(bytes: &[u8]) -> u64 {
-    let mut h = 0x9e37_79b9_7f4a_7c15 ^ bytes.len() as u64;
-    for chunk in bytes.chunks(8) {
-        let mut word = [0u8; 8];
-        word[..chunk.len()].copy_from_slice(chunk);
-        h = (h ^ u64::from_le_bytes(word)).wrapping_mul(0x9fb2_1c65_1e98_df25);
-        h ^= h >> 29;
+    let step = |h: u64, word: u64| {
+        let h = (h ^ word).wrapping_mul(0x9fb2_1c65_1e98_df25);
+        h ^ (h >> 29)
+    };
+    let mut h = SEED ^ bytes.len() as u64;
+    let mut words = bytes.chunks_exact(8);
+    for word in &mut words {
+        h = step(h, u64::from_le_bytes(word.try_into().expect("8 bytes")));
+    }
+    let rest = words.remainder();
+    if !rest.is_empty() {
+        h = step(h, tail_word(rest));
     }
     mix(h)
+}
+
+/// 1–7 bytes as a little-endian word, zero-extended, read in
+/// fixed-size pieces (a copy of any length would call `memcpy`).
+fn tail_word(mut rest: &[u8]) -> u64 {
+    let mut word = 0;
+    let mut shift = 0;
+    if rest.len() >= 4 {
+        word = u64::from(u32::from_le_bytes(rest[..4].try_into().expect("4 bytes")));
+        shift = 32;
+        rest = &rest[4..];
+    }
+    if rest.len() >= 2 {
+        word |= u64::from(u16::from_le_bytes(rest[..2].try_into().expect("2 bytes"))) << shift;
+        shift += 16;
+        rest = &rest[2..];
+    }
+    if let [last] = rest {
+        word |= u64::from(*last) << shift;
+    }
+    word
 }
 
 /// splitmix64's finalizer.
@@ -753,6 +819,37 @@ mod tests {
         assert!(full[3].max.is_none(), "booleans have no range");
         // Written without statistics.
         assert!(doc.quick_stats("score").is_none());
+    }
+
+    #[test]
+    fn distinct_counts_every_type_and_slice() {
+        use arrow::array::{BooleanArray, Int8Array, Int32Array, StringArray};
+        let count = |array: ArrayRef| {
+            let converter =
+                RowConverter::new(vec![SortField::new(array.data_type().clone())]).unwrap();
+            let mut distinct = Distinct::default();
+            insert_hashes(&array, &converter, &mut distinct).unwrap();
+            distinct.count()
+        };
+        let bools = BooleanArray::from(vec![Some(true), None, Some(true), Some(false)]);
+        assert_eq!(count(Arc::new(bools.clone())), 2);
+        assert_eq!(count(Arc::new(bools.slice(0, 3))), 1, "nulls aren't values");
+        assert_eq!(
+            count(Arc::new(BooleanArray::from(vec![None::<bool>; 3]))),
+            0
+        );
+        let small = Int8Array::from(vec![Some(1), Some(-1), None, Some(1), Some(0)]);
+        assert_eq!(count(Arc::new(small.clone())), 3);
+        assert_eq!(count(Arc::new(small.slice(2, 3))), 2);
+        let ints = Int32Array::from_iter_values((0..1000).map(|i| i % 7));
+        assert_eq!(count(Arc::new(ints.slice(3, 500))), 7);
+        // Every length from empty to past two words, sliced.
+        let words: Vec<String> = (0..20).map(|n| "x".repeat(n)).collect();
+        let text = StringArray::from_iter_values(words.iter().chain(&words));
+        assert_eq!(count(Arc::new(text.clone())), 20);
+        assert_eq!(count(Arc::new(text.slice(5, 10))), 10);
+        assert_eq!(tail_word(&[1, 2, 3]), 0x03_02_01);
+        assert_eq!(tail_word(&[1, 2, 3, 4, 5, 6, 7]), 0x07_06_05_04_03_02_01);
     }
 
     #[test]
