@@ -19,10 +19,10 @@
                 │  Metadata + WriterSettings         │
                 └──────┬─────────────────────────────┘
                 ┌──────▼─────────────────────────────┐
-   Storage      │  veta-core::io                     │
+   Storage      │  veta-core::files                  │
                 │  parquet read (in-memory / paged), │
                 │  parquet write, CSV/JSON import/   │
-                │  export                            │
+                │  export, recipes                   │
                 └────────────────────────────────────┘
 ```
 
@@ -56,23 +56,31 @@ veta-core/src/
                          codes.rs: ErrorCode and each code's English
   parallel.rs            independent work on all cores
   memory.rs              the memory budget (half of RAM by default)
-  model/                 Document, Workbook, metadata, undo history
+  profile.rs             timings of the parts of a pass (VETA_PROFILE=1)
+  model/                 Document (document/), Workbook, metadata, undo
+                         history
   controller/            the only way to change a Document
     command.rs           the Command enum
     mod.rs               execute / undo / redo; plan() hands each command
                          to its area: cells, nested, rows, columns,
                          metadata, steps
-  steps/                 Step, Pipeline (lazy evaluation), full passes
-                         (compute), checkpoints, cell edits, row ranges
-  transforms/            what steps do: cast, filter, sort, fill, text,
-                         split, nested (expand, explode, collect, combine)
+  steps/                 Step, Pipeline (lazy evaluation), level (each
+                         step's output schema and row count), full passes
+                         (compute), checkpoints (temporary files, private
+                         temp folder), cell edits, row ranges
+  transforms/            what steps do: cast/, filter/, sort/ (in memory,
+                         and buckets.rs for paged files), fill, text,
+                         split (and merge), nested (expand, explode,
+                         collect, combine, fields)
   formulas/              custom column expressions: parser, eval, functions
-  stats/                 column statistics
-  files/                 parquet (open, save), source (in memory / paged),
-                         recipe (JSON), convert/ (CSV, JSON, encodings,
+  stats/                 column statistics (summary.rs)
+  files/                 parquet.rs (open, save), source/ (in memory /
+                         paged), writer/ (parallel Parquet writer),
+                         replace.rs (write beside a file, rename over it),
+                         recipe/ (JSON), convert/ (CSV, JSON, encodings,
                          export)
-  values/                display (cell text, types, paths), node (one
-                         value and its children, at any depth), parse
+  values/                display/ (cell text, types, paths), node (one
+                         value and its children, at any depth), parse/
                          (text to values, nested edits), clipboard
 veta-core/tests/         integration tests: workflows, recipes, large
                          files, import/export, edge files
@@ -98,13 +106,14 @@ veta-gui/src/
     input.rs             the Grid widget and its event handling
     draw.rs              drawing
   panes/                 formula bar, status bar, right-click menu,
-                         side_pane/ (steps, stats, file tabs)
+                         side_pane/ (steps, stats, file)
   dialogs/               one file per dialog; mod.rs has the shared
                          widgets and the StepDialog trait
   settings/              Settings dialog, config.toml, themes
   platform/              native file dialogs, single instance, system
                          language, icon font
-  ribbon.rs              the ribbon and its Actions
+  ribbon/                the ribbon: mod.rs (Actions, tabs, what is
+                         enabled), layout.rs (each tab's groups), view.rs
   fonts.rs               installed fonts, interface font and size, text
                          widgets that use them
   i18n/                  translations: mod.rs (tag → language → text, tr),
@@ -167,8 +176,9 @@ We map it onto MVC as follows:
 - **View**:
   - GUI: iced `view` functions render the model. iced `Message`s that change
     data are translated to `Command`s and sent to the controller; messages
-    that only affect presentation (scroll position, selected tab, open
-    ribbon tab, theme) live in a GUI-only `UiState`.
+    that only affect presentation (scroll position, selection, open ribbon
+    tab, theme, zoom) change GUI state only: `App` (`app/state.rs`) and each
+    tab's `GridView`.
   - CLI: each subcommand builds one or more `Command`s, runs them through
     the controller and prints the result.
 
@@ -176,18 +186,24 @@ We map it onto MVC as follows:
 
 ```
 Document
-├── source: DataSource          // the original file (read-only)
-├── steps: Vec<Step>            // applied steps, in order
+├── path: Option<PathBuf>       // where it is saved; None for new/imported
+├── source_file                 // the file the data is read from, and how
+├── pipeline: Pipeline          // the source (a DataSource) and the steps
+├── info, footer                // the file's layout and Parquet footer
 ├── metadata: FileMetadata      // key/value metadata, created_by, ...
 ├── writer: WriterSettings      // row group size, compression, encodings...
-├── history: History            // undo/redo stacks of Commands
-└── path: Option<PathBuf>       // None for new/imported documents
+├── history: History            // undo/redo stacks of Changes
+└── revision                    // bumped when the data shown may change
 ```
 
 ### DataSource
-- `InMemory(Vec<RecordBatch>)` when the file fits the memory budget.
-- `Paged { reader, cache }` otherwise: reads row groups on demand into an LRU
-  cache of a quarter of the budget.
+- A trait (`files/source/`): schema, row count, `read(range)`, and
+  `read_columns(range, names)` for sources that store columns apart.
+- `MemorySource` when the file decodes to no more than the memory budget
+  (checked while reading: the footer's sizes aren't trusted, #157).
+- `PagedSource` otherwise: chunks of 64K rows within row groups, decoded on
+  demand into an LRU cache of a quarter of the budget, the columns of a
+  chunk decoded on several cores.
 - Both binaries use `mimalloc` as their allocator (decision 46): with the
   Windows system heap, the multi-GB allocations of sorts and saves were
   several times slower. Only visible on Windows.
@@ -200,7 +216,6 @@ Document
   compacted every 64 input batches (a slice of every input batch made a
   large sort far slower); otherwise they go to temporary part files
   whenever they hold a quarter of the budget.
-- Both expose the same trait: schema, row count, `read(range) -> RecordBatch`.
 - Full passes and saves (save, filter, stats, CSV/JSON export) read the
   output in pieces of 1M rows, several at once on all cores
   (`Pipeline::read_parallel`, results in order); the paged source keeps a
@@ -239,28 +254,37 @@ Every data change is a `Step`, Power Query style:
 - Cell edits: consecutive edits collapse into one `EditCells` step holding a
   sparse map `(row, column) → value`.
 - Row/column changes: `InsertRows`, `DeleteRows`, `AddColumn`,
-  `RemoveColumns`, `RenameColumn`, `ReorderColumns`.
-- Transformations: `Cast { column, to, options }`, `Filter`, `Sort`,
-  `ReplaceValues`, `SplitColumn`, computed columns, …
+  `KeepColumns`, `RemoveColumns`, `RenameColumn`, `MoveColumn`,
+  `RemoveEmptyColumn`.
+- Transformations: `Cast`, `Filter`, `Sort`, `Replace`, `FormatText`,
+  `Fill`, `Split`, `Merge`, `CustomColumn` (formulas).
+- Nested values: `ExpandStruct`, `ExplodeList`, `AddField`, `RemoveField`,
+  `CollectList`, `CombineStruct`.
 
-Each step transforms the output of the previous one. Steps are `serde`
-serializable, so a list of steps is a recipe file the CLI can replay.
+Each step transforms the output of the previous one. A list of steps saved
+as JSON (`files/recipe/`, a `type` and `settings` per step) is a recipe the
+GUI and the CLI can replay.
 
-Evaluation is lazy and windowed: to display rows `a..b` we evaluate the steps
-only for that window when every step is row-preserving (map-like). Steps that
-change row order or count (filter, sort, delete rows) build and cache a row
-index for their output. Sorting data larger than memory needs an external
-sort; that is tracked as its own task.
+Evaluation is lazy and windowed: to display rows `a..b` the steps are
+evaluated only for that window when each is row-preserving (map-like) or
+knows where its rows come from (insert / delete rows). Steps that need a
+full pass cache their result: a filter its kept row ranges, sort, fill,
+collect and explode a materialized source (in memory, or a temporary
+Parquet file for paged documents). Paged sorts are external (see
+DataSource).
 
 ### Undo/redo
-`History` holds the `Command`s applied, each with enough data to revert it
-(e.g. the previous value of an edited cell, the removed step). Undo pops and
-reverts; redo re-applies. Merging consecutive cell edits into one step is
-undone one edit at a time.
+The controller turns each `Command` into a `Change` that knows how to apply
+and revert itself (e.g. with the previous value of an edited cell, or the
+removed step). `History` keeps applied changes on the undo stack; undoing
+moves them to the redo stack. Merging consecutive cell edits into one step
+is undone one edit at a time.
 
 ### Saving
-- Data is produced by streaming the evaluated steps batch by batch into the
-  parquet `ArrowWriter`, so large files never need to fit in memory.
+- Data is produced by streaming the evaluated steps piece by piece into the
+  writer, so large files never need to fit in memory. Steps still waiting
+  for a full pass are computed first; a last filter or sort writes its
+  output as it produces it.
 - `WriterSettings` is read from the source file's metadata on open (row group
   size, per-column compression/encoding, dictionary, statistics, page size,
   format version) and reused on save. New documents get defaults.
@@ -268,9 +292,11 @@ undone one edit at a time.
   It opens the file once the first row group is gathered and turns the
   dictionary off for plain columns whose distinct values there outgrow the
   dictionary page (parquet would drop it for plain values anyway).
-- Save in place writes to a temp file in the same directory and atomically
-  renames it over the original once complete (the original is still being
-  read during the write).
+- Saving (and export) writes a new, owner-only temp file in the same
+  directory and renames it over the target once complete, with the
+  target's permissions (`files/replace.rs`, #162); the original is still
+  being read during the write. A target that is a link is replaced where
+  it points.
   Steps and undo history survive the save: the document keeps reading its
   source data from the old file through the open handle (or from memory),
   so undoing past the save works. The old file's disk space is freed when
@@ -283,13 +309,13 @@ undone one edit at a time.
 │ Ribbon: [Home] [Rows] [Columns] [Nested] [View]           │
 ├────────────────────────────────────────┬─────────────────┤
 │                                        │ Side pane:      │
-│   Data grid (virtualized)              │ Applied steps / │
+│   Data grid (virtualized)              │ Steps /         │
 │                                        │ Statistics /    │
-│                                        │ Metadata        │
+│                                        │ File            │
 ├────────────────────────────────────────┴─────────────────┤
 │ File tabs: [sales.parquet] [users.parquet] [+]            │
 ├──────────────────────────────────────────────────────────┤
-│ Status bar: rows, columns, memory mode, selection         │
+│ Status bar: rows, columns, memory mode, selection, zoom   │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -306,9 +332,9 @@ undone one edit at a time.
 - Fonts apply live: text widgets come from `fonts.rs`, which `App::view`
   sets each frame. Settings lists the installed fonts (read once from
   iced's font database); a saved font that isn't installed is drawn with
-  the platform's interface font but kept in the config. The table has its own text size (Settings; the
-  interface's by default) times the zoom (View → Zoom, Ctrl+wheel), which
-  scales row heights and column widths.
+  the platform's interface font but kept in the config. The table has its
+  own text size (Settings; the interface's by default) times the zoom
+  (View → Zoom, Ctrl+wheel), which scales row heights and column widths.
 
 ## Single instance
 
@@ -353,7 +379,7 @@ veta-cli apply <recipe.json> <file>        # run steps saved from the GUI
 ```
 
 Rows and positions are numbered from 1, as in the GUI. Commands that modify
-write in place unless `-o FILE` is given. 
+write in place unless `-o FILE` is given.
 Recipes (`veta_core::recipe`) are JSON: metadata (`format`, `version`, `name`,
 `created_with`, `source_file`) and a `steps` array; each step has `order`,
 `type` and `settings`. No descriptions: front ends name steps in their own
@@ -385,8 +411,9 @@ refer to rows by position (cell edits, row insert/delete).
 
 A step needing a full pass leaves the pipeline `Computing`. `compute_job()`
 detaches a `ComputeJob` (a pipeline clone) that runs on a worker thread,
-reading its input in 64k-row batches and reporting progress; its result is a
-cache (kept row ranges for filters; a materialized source for sort/fill) that
+reading its input in batches (the filter in 1M-row pieces on all cores) and
+reporting progress; its result is a cache (kept row ranges for filters; a
+materialized source for sort, fill, collect and explode) that
 `install()` stores if the steps are unchanged (checked by step ids, the job's
 `key`). The GUI runs one job at a time after every update, drops a job whose
 key went stale, and cancelling undoes the change that started it. Saving
