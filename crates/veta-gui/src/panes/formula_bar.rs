@@ -49,7 +49,7 @@ pub fn formula_bar<'a>(
                     let path = tab.grid.selected_field().map_or(&[][..], |(p, _)| p);
                     let mut name = veta_core::clipboard::field_label(f.name(), path);
                     if let Some(item) = tab.grid.selected_item() {
-                        let key = edit.is_some_and(|e| e.key) && !item.is_slot();
+                        let key = edit.is_some_and(Edit::is_key) && !item.is_slot();
                         name = format!("{name}{}", item.display);
                         if key {
                             name = format!("{name} {}", tr("ST_FORMULA_KEY"));

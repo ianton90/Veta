@@ -47,9 +47,10 @@ impl App {
                         .grid
                         .selected()
                         .map(|(r, c)| (r, doc.schema().fields().get(c).map(|f| f.name().clone())));
-                    selected == Some((e.row, Some(e.column.clone())))
+                    let (row, column) = e.cell();
+                    selected == Some((row, Some(column.to_owned())))
                 });
-                let covers_label = editor.is_some_and(|e| e.key);
+                let covers_label = editor.is_some_and(Edit::is_key);
                 // Refused input: the editor turns red and fades back.
                 let flash = self.flash.map_or(0.0, |(_, level)| level);
                 let editor = editor.map(|e| {

@@ -135,7 +135,7 @@ impl App {
             }
         };
         if cut {
-            match self.set_item_value(id, item, None) {
+            match self.set_value(id, &item.value(), None) {
                 Ok(()) => self.refresh(id),
                 Err(e) => self.errors.push(e),
             }
@@ -189,11 +189,10 @@ impl App {
                 .map(|(c, _)| doc.schema().field(*c).name().clone())
                 .collect();
             match selection {
-                Selection::Cell(row, _) => {
-                    if let (Some(field), Some(name)) =
-                        (self.selected_struct_field(id), names.first())
-                    {
-                        match self.set_field(id, *row, name, &field, None) {
+                Selection::Cell(..) => {
+                    let field = self.selected_value(id).filter(|v| !v.path.is_empty());
+                    if let Some(field) = field {
+                        match self.set_value(id, &field, None) {
                             Ok(()) => self.refresh(id),
                             Err(e) => self.errors.push(e),
                         }

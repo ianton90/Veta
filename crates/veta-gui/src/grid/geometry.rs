@@ -372,7 +372,7 @@ impl<Message> Grid<'_, Message> {
             .into_iter()
             .find(|&(c, _, _)| c == column)?;
         // A line of an open cell: from its arrow (or label) on.
-        let (line, indent) = match (self.view.item, self.view.selected_line()) {
+        let (line, indent) = match (self.view.item(), self.view.selected_line()) {
             (Some(item), Some(l)) => (line + 1 + item, line_offsets(regions.m, l).0),
             _ => (line, 0.0),
         };
@@ -390,7 +390,7 @@ impl<Message> Grid<'_, Message> {
     /// the label.
     pub(super) fn editor_rect(&self, regions: &Regions) -> Option<Rectangle> {
         let rect = self.selected_cell_rect(regions)?;
-        let Some(line) = self.view.item.and(self.view.selected_line()) else {
+        let Some(line) = self.view.item().and(self.view.selected_line()) else {
             return Some(rect);
         };
         // As the line is drawn (see `draw`).

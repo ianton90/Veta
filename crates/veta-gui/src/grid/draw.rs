@@ -124,7 +124,7 @@ impl<Message> Grid<'_, Message> {
     fn draw_body(&self, renderer: &mut Renderer, frame: &Frame) {
         let (view, t, body) = (self.view, &self.tokens, frame.regions.body);
         // Whole-row selection only; a single selected cell is outlined.
-        let selected_rows = if view.rows.is_some() {
+        let selected_rows = if view.rows_selected() {
             view.selected_rows().unwrap_or(0..0)
         } else {
             0..0
@@ -346,7 +346,7 @@ impl<Message> Grid<'_, Message> {
         ) else {
             return;
         };
-        let (line, indent) = match view.item {
+        let (line, indent) = match view.item() {
             Some(item) => (line + 1 + item, m.text_size + 2.0),
             None => (line, 0.0),
         };
@@ -376,7 +376,7 @@ impl<Message> Grid<'_, Message> {
     fn draw_header(&self, renderer: &mut Renderer, frame: &Frame) {
         let (view, t, regions, m) = (self.view, &self.tokens, &frame.regions, frame.m);
         fill(renderer, regions.header, t.grid_header);
-        let selected_cols = if view.cols.is_some() {
+        let selected_cols = if view.columns_selected() {
             view.selected_display_columns().unwrap_or(0..0)
         } else {
             0..0

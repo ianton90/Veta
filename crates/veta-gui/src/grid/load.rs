@@ -152,15 +152,21 @@ impl GridView {
                 .then(|| (r.min(self.num_rows - 1), c.min(self.columns.len() - 1)))
         });
         if self.selected != before {
-            self.item = None;
+            self.set_item(None);
         }
-        let n = self.columns.len();
-        self.cols = self
-            .cols
-            .and_then(|(a, b)| (n > 0).then(|| (a.min(n - 1), b.min(n - 1))));
-        self.rows = self.rows.and_then(|(a, b)| {
-            (self.num_rows > 0).then(|| (a.min(self.num_rows - 1), b.min(self.num_rows - 1)))
-        });
+        // Whole rows or columns past the end are cut back (dropped if none
+        // are left).
+        let clamp =
+            |(a, b): (usize, usize), n: usize| (n > 0).then(|| (a.min(n - 1), b.min(n - 1)));
+        self.span = match self.span {
+            Span::Columns(a, b) => {
+                clamp((a, b), self.columns.len()).map_or(Span::Cell, |(a, b)| Span::Columns(a, b))
+            }
+            Span::Rows(a, b) => {
+                clamp((a, b), self.num_rows).map_or(Span::Cell, |(a, b)| Span::Rows(a, b))
+            }
+            span => span,
+        };
         self.set_scroll(self.first_row, self.scroll_x);
         self.load(document, true);
         for i in fresh {

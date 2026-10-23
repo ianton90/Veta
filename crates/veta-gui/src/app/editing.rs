@@ -29,13 +29,13 @@ impl App {
                 // to a new one at the end (a map asks for its key first, then
                 // its value); an empty new item ends. Struct fields go down.
                 let edit = self.edit.clone();
-                let item = edit.as_ref().and_then(|e| e.item.clone());
+                let item = edit.as_ref().and_then(Edit::line).cloned();
                 let empty = edit.as_ref().is_some_and(|e| e.text.is_empty());
-                let key = edit.as_ref().is_some_and(|e| e.key);
+                let key = edit.as_ref().is_some_and(Edit::is_key);
                 if self.commit_edit()
                     && let Some(id) = self.active
                 {
-                    match item.map(|i| i.item) {
+                    match item {
                         Some(item) if item.is_slot() && empty => {
                             self.grid_do(id, |g, d| {
                                 g.select_path(&item.parent, d);
@@ -277,19 +277,40 @@ impl App {
         })
     }
 
-    /// Sets the value of line `item` (a slot of a list: a new item at the
-    /// end), from text; `None` sets null.
-    pub(crate) fn set_item_value(
+    /// The selected value: a line of an open cell, or the selected cell
+    /// (or field of an expanded struct column).
+    pub(crate) fn selected_value(&self, id: DocumentId) -> Option<ValueRef> {
+        if let Some(item) = self.selected_cell_item(id) {
+            return Some(item.value());
+        }
+        let (row, column) = self.selected_cell(id)?;
+        let (fields, _) = self.tab(id)?.grid.selected_field()?;
+        let path = fields.iter().cloned().map(PathPart::Field).collect();
+        Some(ValueRef { row, column, path })
+    }
+
+    /// Sets `value` from text (for a list's slot, adds the item at the
+    /// end); `None` sets null.
+    pub(crate) fn set_value(
         &mut self,
         id: DocumentId,
-        item: &CellItem,
+        value: &ValueRef,
         text: Option<&str>,
     ) -> Result<(), String> {
-        let command = Command::SetValue {
-            row: item.row,
-            column: item.column.clone(),
-            path: item.path(),
-            value: text.map(str::to_owned),
+        let (row, column, value_text) = (value.row, value.column.clone(), text.map(str::to_owned));
+        let command = if value.path.is_empty() {
+            Command::SetCell {
+                row,
+                column,
+                value: value_text,
+            }
+        } else {
+            Command::SetValue {
+                row,
+                column,
+                path: value.path.clone(),
+                value: value_text,
+            }
         };
         self.nested_command(id, command)
     }
@@ -335,12 +356,8 @@ impl App {
         };
         self.edit = Some(Edit {
             document: id,
-            row: item.row,
-            column: item.column.clone(),
-            field: None,
+            target: EditTarget::Key(item),
             text: key,
-            item: Some(item),
-            key: true,
             error: None,
         });
         Task::batch([
@@ -427,39 +444,6 @@ impl App {
         Task::none()
     }
 
-    /// The struct field shown in the selected cell, if it is one.
-    pub(crate) fn selected_struct_field(&self, id: DocumentId) -> Option<StructField> {
-        let tab = self.tab(id)?;
-        let (path, data_type) = tab.grid.selected_field()?;
-        (!path.is_empty()).then(|| StructField {
-            path: path.to_vec(),
-            data_type: data_type.clone(),
-        })
-    }
-
-    /// Sets one field of a struct cell (`None` or empty: null).
-    pub(crate) fn set_field(
-        &mut self,
-        id: DocumentId,
-        row: usize,
-        column: &str,
-        field: &StructField,
-        text: Option<&str>,
-    ) -> Result<(), String> {
-        let command = Command::SetValue {
-            row,
-            column: column.to_owned(),
-            path: field
-                .path
-                .iter()
-                .cloned()
-                .map(veta_core::display::PathPart::Field)
-                .collect(),
-            value: text.map(str::to_owned),
-        };
-        self.nested_command(id, command)
-    }
-
     /// Starts editing the selected cell or line in the formula bar.
     ///
     /// Structs, lists and maps aren't edited as text: Enter goes into them
@@ -467,9 +451,9 @@ impl App {
     /// adds an item at the end of a list or map (a map entry starts with
     /// its key).
     pub(crate) fn start_edit(&mut self, id: DocumentId, initial: Option<String>) -> Task<Message> {
-        let Some((row, column)) = self.selected_cell(id) else {
+        if self.selected_cell(id).is_none() {
             return Task::none();
-        };
+        }
         let Some(tab) = self.tab(id) else {
             return Task::none();
         };
@@ -492,14 +476,12 @@ impl App {
             }
             // A plain cell, or a field of an expanded struct column.
             let text = initial.unwrap_or_else(|| self.cell_text(id).unwrap_or_default());
-            let field = self.selected_struct_field(id);
+            let Some(value) = self.selected_value(id) else {
+                return Task::none();
+            };
             return self.open_editor(Edit {
                 document: id,
-                row,
-                column,
-                field,
-                item: None,
-                key: false,
+                target: EditTarget::Value(value, None),
                 text,
                 error: None,
             });
@@ -541,11 +523,7 @@ impl App {
         };
         self.open_editor(Edit {
             document: id,
-            row,
-            column,
-            field: None,
-            item: Some(item),
-            key: false,
+            target: EditTarget::Value(item.value(), Some(it)),
             text,
             error: None,
         })
@@ -597,7 +575,14 @@ impl App {
         let (row, column) = tab.grid.selected()?;
         match tab.grid.selected_edit_value() {
             Some(value) => Some(value.map(str::to_owned)),
-            None if self.selected_struct_field(id).is_some() => None,
+            // A field of an expanded struct column that isn't loaded.
+            None if tab
+                .grid
+                .selected_field()
+                .is_some_and(|(p, _)| !p.is_empty()) =>
+            {
+                None
+            }
             None => {
                 let batch = self.workbook.get(id)?.read(row..row + 1).ok()?;
                 let cells = veta_core::display::format_batch(&batch).ok()?;
@@ -613,32 +598,27 @@ impl App {
         let Some(mut edit) = self.edit.take() else {
             return false;
         };
-        let unchanged = match &edit.item {
-            Some(item) if edit.key => {
+        let unchanged = match &edit.target {
+            EditTarget::Key(item) => {
                 item.item.key().map(Option::unwrap_or_default) == Some(edit.text.as_str())
             }
-            _ => self.cell_text(edit.document).as_deref() == Some(edit.text.as_str()),
+            EditTarget::Value(..) => {
+                self.cell_text(edit.document).as_deref() == Some(edit.text.as_str())
+            }
         };
         if unchanged {
             return true;
         }
-        let result = if let Some(item) = edit.item.as_ref().filter(|_| edit.key) {
-            self.change_map_key(edit.document, item, &edit.text)
-        } else if let Some(item) = &edit.item {
-            let text = (!edit.text.is_empty()).then_some(edit.text.as_str());
-            self.set_item_value(edit.document, item, text)
-        } else if let Some(field) = &edit.field {
-            let text = (!edit.text.is_empty()).then_some(edit.text.as_str());
-            self.set_field(edit.document, edit.row, &edit.column, field, text)
-        } else {
-            let command = Command::SetCell {
-                row: edit.row,
-                column: edit.column.clone(),
-                value: Some(edit.text.clone()),
-            };
-            match self.workbook.get_mut(edit.document) {
-                Some(doc) => controller::execute(doc, command).map_err(|e| error_text(&e)),
-                None => return false,
+        if self.workbook.get(edit.document).is_none() {
+            return false;
+        }
+        let result = match &edit.target {
+            EditTarget::Key(item) => self.change_map_key(edit.document, item, &edit.text),
+            // Empty text is an empty string in a cell, null inside one.
+            EditTarget::Value(value, _) => {
+                let text =
+                    (value.path.is_empty() || !edit.text.is_empty()).then_some(edit.text.as_str());
+                self.set_value(edit.document, value, text)
             }
         };
         match result {

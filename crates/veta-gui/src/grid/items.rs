@@ -250,16 +250,17 @@ impl GridView {
         let kept = self.selected_line().cloned();
         self.build_trees();
         if let (Some(kept), Some((row, column))) = (kept, self.selected) {
-            self.item = self
-                .tree(row, column)
-                .and_then(|t| t.lines.iter().position(|l| same_line(l, &kept)));
+            self.set_item(
+                self.tree(row, column)
+                    .and_then(|t| t.lines.iter().position(|l| same_line(l, &kept))),
+            );
         }
     }
 
     /// The selected line of an open cell.
     pub(super) fn selected_line(&self) -> Option<&Line> {
         let (row, column) = self.selected?;
-        self.tree(row, column)?.lines.get(self.item?)
+        self.tree(row, column)?.lines.get(self.item()?)
     }
 
     /// The selected line: its path, place, kind and type. `None` unless a
@@ -350,7 +351,7 @@ impl GridView {
     /// The selected cell is a struct, list or map, or a line of one that
     /// is: it opens rather than being edited as text.
     pub fn selected_is_container(&self) -> bool {
-        match self.item {
+        match self.item() {
             Some(_) => self.selected_line().is_some_and(|l| match l.what {
                 What::Node { kind, .. } => kind.is_container(),
                 What::More(_) => true,
@@ -362,13 +363,13 @@ impl GridView {
 
     /// Whether a line of an open cell is selected (not the cell itself).
     pub fn selected_is_line(&self) -> bool {
-        self.item.is_some()
+        self.item().is_some()
     }
 
     /// Selects the line after the selected one: the first child of an open
     /// struct, list or map (or its slot).
     pub fn select_first_child(&mut self, document: &Document) {
-        if let Some(i) = self.item {
+        if let Some(i) = self.item() {
             self.select_item(Some(i + 1), document);
         }
     }
@@ -384,13 +385,12 @@ impl GridView {
             self.load(document, true);
         }
         let len = self.tree(row, column).map(|t| t.lines.len());
-        self.item = match (item, len) {
+        self.set_item(match (item, len) {
             (Some(i), Some(len)) if len > 0 => Some(i.min(len - 1)),
             _ => None,
-        };
+        });
         self.after_select();
-        self.rows = None;
-        self.cols = None;
+        self.clear_ranges();
         self.reveal(row, column);
     }
 
@@ -411,7 +411,7 @@ impl GridView {
                 .position(|l| l.path == path && matches!(l.what, What::Node { .. }))
         });
         if found.is_some() {
-            self.item = found;
+            self.set_item(found);
         }
         self.after_select();
         self.reveal(row, column);
@@ -451,24 +451,23 @@ impl GridView {
         self.open_path(path, document);
         self.slot = Some((row, column, path.to_vec(), at));
         self.build_trees();
-        self.item = self.tree(row, column).and_then(|t| {
+        self.set_item(self.tree(row, column).and_then(|t| {
             t.lines
                 .iter()
                 .position(|l| l.path == path && matches!(l.what, What::Slot(_)))
-        });
+        }));
         // A fixed-size list has no slot: its first item instead.
-        if self.item.is_none() {
+        if self.item().is_none() {
             self.slot = None;
-            self.item = self.tree(row, column).and_then(|t| {
+            self.set_item(self.tree(row, column).and_then(|t| {
                 t.lines.iter().position(|l| {
                     l.path.len() == path.len() + 1
                         && l.path.starts_with(path)
                         && matches!(l.what, What::Node { .. })
                 })
-            });
+            }));
         }
-        self.rows = None;
-        self.cols = None;
+        self.clear_ranges();
         self.reveal(row, column);
     }
 
@@ -478,7 +477,7 @@ impl GridView {
         let Some((row, column)) = self.selected else {
             return;
         };
-        if self.item.is_none() {
+        if self.item().is_none() {
             if self.has_items(row, column) {
                 self.toggle_row(row, document);
             }
@@ -507,7 +506,7 @@ impl GridView {
             self.open_rows.insert(row);
         }
         if self.selected.is_some_and(|(r, _)| r == row) {
-            self.item = None;
+            self.set_item(None);
         }
         self.load(document, true);
         self.reveal(row, self.selected.map_or(0, |(_, c)| c));
@@ -553,23 +552,23 @@ impl GridView {
         let lines = |row| self.tree(row, column).map_or(0, |t| t.lines.len());
         let count = lines(row);
         let next =
-            (self.item.map_or(0, |i| i + 1)..count).find(|&i| self.is_selectable(row, column, i));
-        match (nav, self.item) {
-            (Nav::Down, _) if next.is_some() => self.item = next,
+            (self.item().map_or(0, |i| i + 1)..count).find(|&i| self.is_selectable(row, column, i));
+        match (nav, self.item()) {
+            (Nav::Down, _) if next.is_some() => self.set_item(next),
             (Nav::Down, Some(_)) => {
-                self.item = None;
+                self.set_item(None);
                 self.after_select();
                 return false;
             }
             (Nav::Up, Some(i)) => {
-                self.item = (0..i).rev().find(|&i| self.is_selectable(row, column, i));
+                self.set_item((0..i).rev().find(|&i| self.is_selectable(row, column, i)));
             }
             (Nav::Up, None) if row > 0 && lines(row - 1) > 0 => {
                 let last = (0..lines(row - 1))
                     .rev()
                     .find(|&i| self.is_selectable(row - 1, column, i));
                 self.selected = Some((row - 1, column));
-                self.item = last;
+                self.set_item(last);
             }
             _ => return false,
         }

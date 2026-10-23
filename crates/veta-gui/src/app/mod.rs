@@ -482,31 +482,14 @@ impl App {
                         position,
                     });
                 }
-                GridEvent::ClearCell if let Some(item) = self.selected_cell_item(id) => {
-                    if !item.item.is_slot() {
-                        match self.set_item_value(id, &item, None) {
+                GridEvent::ClearCell => {
+                    let on_slot = self
+                        .selected_cell_item(id)
+                        .is_some_and(|item| item.item.is_slot());
+                    if let Some(value) = self.selected_value(id).filter(|_| !on_slot) {
+                        match self.set_value(id, &value, None) {
                             Ok(()) => self.refresh(id),
                             Err(e) => self.errors.push(e),
-                        }
-                    }
-                }
-                GridEvent::ClearCell => {
-                    if let Some((row, column)) = self.selected_cell(id) {
-                        match self.selected_struct_field(id) {
-                            Some(field) => match self.set_field(id, row, &column, &field, None) {
-                                Ok(()) => self.refresh(id),
-                                Err(e) => self.errors.push(e),
-                            },
-                            None => {
-                                self.execute(
-                                    id,
-                                    Command::SetCell {
-                                        row,
-                                        column,
-                                        value: None,
-                                    },
-                                );
-                            }
                         }
                     }
                 }

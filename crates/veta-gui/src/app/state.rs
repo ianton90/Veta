@@ -134,26 +134,53 @@ pub(crate) enum CloseAnswer {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Edit {
     pub(crate) document: DocumentId,
-    pub(crate) row: usize,
-    pub(crate) column: String,
-    /// The struct field edited, when the cell is a field of an expanded
-    /// struct column.
-    pub(crate) field: Option<StructField>,
-    /// The line edited, when a line of an open cell is.
-    pub(crate) item: Option<CellItem>,
-    /// The map entry's key is edited (`item` is the entry, or the slot for
-    /// a new one), not its value.
-    pub(crate) key: bool,
+    pub(crate) target: EditTarget,
     pub(crate) text: String,
     /// Why the last attempt to apply it failed.
     pub(crate) error: Option<String>,
 }
 
-/// A field inside a struct cell: the field names down to it and its type.
+impl Edit {
+    /// The line of an open cell edited, if one is.
+    pub(crate) fn line(&self) -> Option<&crate::grid::SelectedItem> {
+        match &self.target {
+            EditTarget::Value(_, line) => line.as_ref(),
+            EditTarget::Key(item) => Some(&item.item),
+        }
+    }
+
+    /// Row and column name of the cell edited (or holding what is).
+    pub(crate) fn cell(&self) -> (usize, &str) {
+        match &self.target {
+            EditTarget::Value(value, _) => (value.row, &value.column),
+            EditTarget::Key(item) => (item.row, &item.column),
+        }
+    }
+
+    /// Whether a map entry's key is edited.
+    pub(crate) fn is_key(&self) -> bool {
+        matches!(self.target, EditTarget::Key(_))
+    }
+}
+
+/// What an edit changes.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct StructField {
-    pub(crate) path: Vec<String>,
-    pub(crate) data_type: veta_core::arrow::datatypes::DataType,
+pub(crate) enum EditTarget {
+    /// A value, and the line of the open cell showing it, if one does (a
+    /// slot: the new list item).
+    Value(ValueRef, Option<crate::grid::SelectedItem>),
+    /// The key of a map entry, or of a new one on its slot.
+    Key(CellItem),
+}
+
+/// A value in a document: a cell, or a value inside it (a struct field,
+/// list item or map entry, at any depth).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ValueRef {
+    pub(crate) row: usize,
+    pub(crate) column: String,
+    /// From the column down to the value (empty: the cell).
+    pub(crate) path: Vec<PathPart>,
 }
 
 /// The selected line of an open cell (a struct field, list item or map
@@ -172,6 +199,15 @@ impl CellItem {
     /// From the column down to the value (the new item, for a slot).
     pub(crate) fn path(&self) -> Vec<PathPart> {
         [self.cell.clone(), self.item.path.clone()].concat()
+    }
+
+    /// The value on the line (the new item, for a slot).
+    pub(crate) fn value(&self) -> ValueRef {
+        ValueRef {
+            row: self.row,
+            column: self.column.clone(),
+            path: self.path(),
+        }
     }
 
     /// From the column down to the struct, list or map holding it.

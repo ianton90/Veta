@@ -225,14 +225,10 @@ pub struct GridView {
     visible_rows: usize,
     body_width: f32,
     scroll_x: f32,
+    /// The cursor cell: (row, screen column).
     selected: Option<(usize, usize)>,
-    /// Selected line of the selected (open) cell.
-    item: Option<usize>,
-    /// Whole-row selection as (anchor, end), inclusive, set by clicking row
-    /// numbers.
-    rows: Option<(usize, usize)>,
-    /// Whole-column selection as (anchor, end), inclusive.
-    cols: Option<(usize, usize)>,
+    /// What is selected around the cursor cell.
+    span: Span,
     /// First row of `cells`.
     window_start: usize,
     cells: Vec<Vec<Option<String>>>,
@@ -265,6 +261,20 @@ pub struct GridView {
     error: Option<String>,
     /// A temporary filter over the document's output (not a step).
     filter: Option<FilterView>,
+}
+
+/// What is selected around the cursor cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Span {
+    /// The cursor cell.
+    Cell,
+    /// Line `n` of the open cursor cell.
+    Line(usize),
+    /// Whole rows (anchor, end), inclusive, set by clicking row numbers;
+    /// the cursor is on the end row.
+    Rows(usize, usize),
+    /// Whole screen columns (anchor, end), inclusive.
+    Columns(usize, usize),
 }
 
 /// A document column and the field names down to a field of it (empty
@@ -306,9 +316,7 @@ impl GridView {
             body_width: 800.0,
             scroll_x: 0.0,
             selected: None,
-            item: None,
-            rows: None,
-            cols: None,
+            span: Span::Cell,
             window_start: 0,
             cells: Vec::new(),
             batch: None,
@@ -348,7 +356,7 @@ impl GridView {
     /// show their size.
     pub fn selected_edit_value(&self) -> Option<Option<&str>> {
         let (row, column) = self.selected?;
-        if self.item.is_some() {
+        if self.item().is_some() {
             let line = self.selected_line()?;
             return Some(match line.what {
                 items::What::Slot(_) => Some(""),
@@ -407,35 +415,69 @@ impl GridView {
         }
     }
 
+    /// The selected line of the open cursor cell, if one is.
+    fn item(&self) -> Option<usize> {
+        match self.span {
+            Span::Line(i) => Some(i),
+            _ => None,
+        }
+    }
+
+    /// Selects line `item` of the cursor cell; `None` goes back to the cell
+    /// (whole rows or columns stay selected).
+    fn set_item(&mut self, item: Option<usize>) {
+        match (item, self.span) {
+            (Some(i), _) => self.span = Span::Line(i),
+            (None, Span::Line(_)) => self.span = Span::Cell,
+            (None, _) => {}
+        }
+    }
+
+    /// Drops a whole-row or whole-column selection, keeping the cursor.
+    fn clear_ranges(&mut self) {
+        if matches!(self.span, Span::Rows(..) | Span::Columns(..)) {
+            self.span = Span::Cell;
+        }
+    }
+
+    /// Whether whole rows are selected.
+    fn rows_selected(&self) -> bool {
+        matches!(self.span, Span::Rows(..))
+    }
+
+    /// Whether whole columns are selected.
+    fn columns_selected(&self) -> bool {
+        matches!(self.span, Span::Columns(..))
+    }
+
     /// Selected screen columns, inclusive span.
     fn selected_display_columns(&self) -> Option<Range<usize>> {
-        match (self.cols, self.selected) {
-            (Some((a, b)), _) => Some(a.min(b)..a.max(b) + 1),
-            (None, Some((_, c))) => Some(c..c + 1),
-            (None, None) => None,
+        match (self.span, self.selected) {
+            (Span::Columns(a, b), _) => Some(a.min(b)..a.max(b) + 1),
+            (_, Some((_, c))) => Some(c..c + 1),
+            (_, None) => None,
         }
     }
 
     /// Selected rows: the row selection, or the selected cell's row.
     pub fn selected_rows(&self) -> Option<Range<usize>> {
-        match (self.rows, self.selected) {
-            (Some((a, b)), _) => Some(a.min(b)..a.max(b) + 1),
-            (None, Some((r, _))) => Some(r..r + 1),
-            (None, None) => None,
+        match (self.span, self.selected) {
+            (Span::Rows(a, b), _) => Some(a.min(b)..a.max(b) + 1),
+            (_, Some((r, _))) => Some(r..r + 1),
+            (_, None) => None,
         }
     }
 
     /// What is selected: whole rows, whole columns, or one cell.
     pub fn selection(&self) -> Selection {
-        let span = |(a, b): (usize, usize)| a.min(b)..a.max(b) + 1;
-        match (self.rows, self.cols, self.selected) {
-            (Some(rows), _, _) => Selection::Rows(span(rows)),
-            (None, Some(cols), _) => Selection::Columns(self.source_range(cols)),
-            (None, None, Some((r, c))) => match self.columns.get(c) {
+        match (self.span, self.selected) {
+            (Span::Rows(a, b), _) => Selection::Rows(a.min(b)..a.max(b) + 1),
+            (Span::Columns(a, b), _) => Selection::Columns(self.source_range((a, b))),
+            (_, Some((r, c))) => match self.columns.get(c) {
                 Some(column) => Selection::Cell(r, column.source),
                 None => Selection::Rows(r..r + 1),
             },
-            (None, None, None) => Selection::None,
+            (_, None) => Selection::None,
         }
     }
 
@@ -453,9 +495,7 @@ impl GridView {
         if range.is_empty() || range.end > self.columns.len() {
             return;
         }
-        self.item = None;
-        self.rows = None;
-        self.cols = Some((range.start, range.end - 1));
+        self.span = Span::Columns(range.start, range.end - 1);
         let row = self.selected.map_or(self.first_row, |(r, _)| r);
         if self.num_rows > 0 {
             self.selected = Some((row.min(self.num_rows - 1), range.start));
@@ -469,9 +509,7 @@ impl GridView {
             return;
         }
         let column = self.selected.map_or(0, |(_, c)| c);
-        self.item = None;
-        self.rows = Some((range.start, range.end - 1));
-        self.cols = None;
+        self.span = Span::Rows(range.start, range.end - 1);
         self.selected = Some((range.start, column));
         self.reveal(
             range.start,
@@ -512,40 +550,36 @@ impl GridView {
             GridEvent::ToggleNode => self.toggle_selected(document),
             GridEvent::Select { row, column } => {
                 if row < self.num_rows && column < self.columns.len() {
-                    self.item = None;
+                    self.span = Span::Cell;
                     self.selected = Some((row, column));
-                    self.rows = None;
-                    self.cols = None;
                     self.reveal(row, column);
                 }
             }
             GridEvent::SelectRows { row, extend } => {
-                self.item = None;
+                self.set_item(None);
                 if row < self.num_rows && !self.columns.is_empty() {
-                    let anchor = match (extend, self.rows, self.selected) {
-                        (true, Some((anchor, _)), _) => anchor,
-                        (true, None, Some((r, _))) => r,
+                    let anchor = match (extend, self.span, self.selected) {
+                        (true, Span::Rows(anchor, _), _) => anchor,
+                        (true, _, Some((r, _))) => r,
                         _ => row,
                     };
                     let column = self.selected.map_or(0, |(_, c)| c);
-                    self.cols = None;
-                    self.rows = Some((anchor, row));
+                    self.span = Span::Rows(anchor, row);
                     self.selected = Some((row, column));
                     self.reveal(row, column);
                 }
             }
             GridEvent::SelectColumns { column, extend } => {
-                self.item = None;
+                self.set_item(None);
                 if column < self.columns.len() {
-                    let anchor = match (extend, self.cols, self.selected) {
-                        (true, Some((anchor, _)), _) => anchor,
-                        (true, None, Some((_, c))) => c,
+                    let anchor = match (extend, self.span, self.selected) {
+                        (true, Span::Columns(anchor, _), _) => anchor,
+                        (true, _, Some((_, c))) => c,
                         _ => column,
                     };
                     let row = self.selected.map_or(self.first_row, |(r, _)| r);
                     let row = row.min(self.num_rows.saturating_sub(1));
-                    self.rows = None;
-                    self.cols = Some((anchor, column));
+                    self.span = Span::Columns(anchor, column);
                     if self.num_rows > 0 {
                         self.selected = Some((row, column));
                     }
@@ -553,10 +587,9 @@ impl GridView {
                 }
             }
             GridEvent::Navigate(nav) => {
-                self.rows = None;
-                self.cols = None;
+                self.clear_ranges();
                 if !self.navigate_items(nav) {
-                    self.item = None;
+                    self.set_item(None);
                     self.navigate(nav);
                 }
             }
@@ -607,8 +640,7 @@ impl GridView {
         let Some(column) = self.columns.iter().position(|c| c.key.starts_with(key)) else {
             return;
         };
-        self.cols = None;
-        self.rows = None;
+        self.clear_ranges();
         if let Some((row, _)) = self.selected {
             self.selected = Some((row, column));
         }

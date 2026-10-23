@@ -224,8 +224,8 @@ fn list_items_edit_in_place() {
     let editing = |app: &App| {
         app.edit
             .as_ref()
-            .and_then(|e| e.item.as_ref())
-            .map(|i| i.item.index)
+            .and_then(Edit::line)
+            .map(|line| line.index)
     };
 
     // An empty list: Enter edits the "empty" slot; each value goes on to
@@ -327,7 +327,7 @@ fn map_entries_edit_in_place() {
     let editing = |app: &App| {
         app.edit
             .as_ref()
-            .map(|e| (e.item.as_ref().unwrap().item.index, e.key))
+            .map(|e| (e.line().unwrap().index, e.is_key()))
     };
     let menu = |app: &mut App, item| {
         app.menu = Some(ContextMenu {

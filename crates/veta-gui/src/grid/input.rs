@@ -556,7 +556,7 @@ impl<Message> Grid<'_, Message> {
     ) -> Option<MenuTarget> {
         let view = self.view;
         let in_rows = |row: usize| {
-            view.rows.is_some() && view.selected_rows().is_some_and(|r| r.contains(&row))
+            view.rows_selected() && view.selected_rows().is_some_and(|r| r.contains(&row))
         };
         if let Some((row, column, item)) = self.item_at(regions, position) {
             self.emit(shell, GridEvent::SelectItem { row, column, item });
