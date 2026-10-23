@@ -189,3 +189,59 @@ fn nested_columns_filter_as_json() {
     };
     assert!(less.validate(&batch.schema()).is_err());
 }
+
+#[test]
+fn ignoring_case_matches_text_literally() {
+    let schema = Arc::new(Schema::new(vec![Field::new("t", DataType::Utf8, true)]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![Arc::new(StringArray::from(vec![
+            Some("50% OFF"),
+            Some("500 off"),
+            Some("A_b"),
+            Some("axb"),
+            Some("ÑANDÚ"),
+            Some("back\\slash"),
+            None,
+        ]))],
+    )
+    .unwrap();
+    let test = |op, value: &str| -> Vec<bool> {
+        let filter = Filter {
+            conditions: vec![Condition {
+                column: "t".into(),
+                op,
+                value: value.into(),
+                case_sensitive: false,
+            }],
+            match_all: true,
+            exclude: false,
+        };
+        let mask = filter.evaluate(&batch).unwrap();
+        (0..mask.len())
+            .map(|i| mask.is_valid(i) && mask.value(i))
+            .collect()
+    };
+    // % and _ are text here, not wildcards.
+    assert_eq!(
+        test(FilterOp::Contains, "0% off"),
+        [true, false, false, false, false, false, false]
+    );
+    assert_eq!(
+        test(FilterOp::Equals, "a_B"),
+        [false, false, true, false, false, false, false]
+    );
+    assert_eq!(
+        test(FilterOp::StartsWith, "ñan"),
+        [false, false, false, false, true, false, false]
+    );
+    assert_eq!(
+        test(FilterOp::EndsWith, "\\SLASH"),
+        [false, false, false, false, false, true, false]
+    );
+    // Not equal / not containing: nulls are never kept.
+    assert_eq!(
+        test(FilterOp::NotContains, "OFF"),
+        [false, false, true, true, true, true, false]
+    );
+}

@@ -61,7 +61,19 @@ impl Replace {
         if self.substring(data_type) {
             let find = self.find.as_deref().unwrap_or_default();
             let with = self.with.as_deref().unwrap_or_default();
-            return map_text(column, |s| s.replace(find, with));
+            return map_text(column, |s, out| {
+                if find.is_empty() {
+                    out.push_str(s);
+                    return;
+                }
+                let mut last = 0;
+                for (i, _) in s.match_indices(find) {
+                    out.push_str(&s[last..i]);
+                    out.push_str(with);
+                    last = i + find.len();
+                }
+                out.push_str(&s[last..]);
+            });
         }
         let mask = match &self.find {
             None => is_null(column)?,
@@ -106,16 +118,19 @@ impl TextOp {
 
     pub(crate) fn apply(self, column: &ArrayRef) -> Result<ArrayRef> {
         match self {
-            Self::Trim => map_text(column, |s| s.trim().to_owned()),
-            Self::Lower => map_text(column, str::to_lowercase),
-            Self::Upper => map_text(column, str::to_uppercase),
+            Self::Trim => map_text(column, |s, out| out.push_str(s.trim())),
+            Self::Lower => map_text(column, |s, out| {
+                out.extend(s.chars().flat_map(char::to_lowercase))
+            }),
+            Self::Upper => map_text(column, |s, out| {
+                out.extend(s.chars().flat_map(char::to_uppercase))
+            }),
             Self::Title => map_text(column, title_case),
         }
     }
 }
 
-fn title_case(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+fn title_case(s: &str, out: &mut String) {
     let mut start = true;
     for c in s.chars() {
         if c.is_alphanumeric() {
@@ -130,7 +145,6 @@ fn title_case(s: &str) -> String {
             start = true;
         }
     }
-    out
 }
 
 /// Nulls in a comparison mask count as false.
@@ -142,14 +156,28 @@ fn not_null(mask: BooleanArray) -> BooleanArray {
     }
 }
 
-/// Applies `f` to each text value, keeping the column's type.
-fn map_text(column: &ArrayRef, f: impl Fn(&str) -> String) -> Result<ArrayRef> {
+/// Applies `f` to each text value (writing the result into an empty
+/// buffer, reused from value to value), keeping the column's type.
+fn map_text(column: &ArrayRef, f: impl Fn(&str, &mut String)) -> Result<ArrayRef> {
     let strings = cast(column, &DataType::Utf8)?;
     let strings = strings
         .as_any()
         .downcast_ref::<StringArray>()
         .ok_or_else(|| invalid!(ExpectedText))?;
-    let mapped: ArrayRef = Arc::new(strings.iter().map(|s| s.map(&f)).collect::<StringArray>());
+    let mut builder =
+        arrow::array::StringBuilder::with_capacity(strings.len(), strings.value_data().len());
+    let mut buffer = String::new();
+    for value in strings.iter() {
+        match value {
+            Some(s) => {
+                buffer.clear();
+                f(s, &mut buffer);
+                builder.append_value(&buffer);
+            }
+            None => builder.append_null(),
+        }
+    }
+    let mapped: ArrayRef = Arc::new(builder.finish());
     Ok(cast(&mapped, column.data_type())?)
 }
 

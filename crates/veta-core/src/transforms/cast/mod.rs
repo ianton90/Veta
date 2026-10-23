@@ -144,9 +144,17 @@ impl Cast {
             }
             OnError::Null => {}
             OnError::ErrorColumn => {
-                let mut errors: Vec<Option<String>> = vec![None; input.len()];
+                // The failing values as text, the column converted once.
+                let text = match failed.is_empty() {
+                    true => None,
+                    false => Some(arrow::compute::cast(input, &DataType::Utf8)?),
+                };
+                let text = text
+                    .as_ref()
+                    .and_then(|t| t.as_any().downcast_ref::<StringArray>());
+                let mut errors: Vec<Option<&str>> = vec![None; input.len()];
                 for &row in &failed {
-                    errors[row] = Some(text_at(input, row));
+                    errors[row] = text.map(|t| t.value(row));
                 }
                 columns.insert(index + 1, Arc::new(StringArray::from(errors)));
             }
@@ -233,20 +241,30 @@ impl Cast {
         ) {
             return parse_dates(strings, format, &self.to);
         }
-        let cleaned: StringArray = strings
-            .iter()
-            .map(|s| {
-                s.map(|s| {
-                    let s = s.trim();
-                    if numeric {
-                        self.clean_number(s)
-                    } else {
-                        s.to_owned()
-                    }
-                })
-            })
-            .collect();
-        Ok(cast_with_options(&cleaned, &self.to, &safe)?)
+        // Values are trimmed, and numbers read with the options' separators;
+        // text that needs neither is converted as it is.
+        let separators =
+            numeric && (self.options.decimal != '.' || self.options.thousands.is_some());
+        let padded =
+            |s: &str| s.starts_with(char::is_whitespace) || s.ends_with(char::is_whitespace);
+        if !separators && !strings.iter().flatten().any(padded) {
+            return Ok(cast_with_options(strings, &self.to, &safe)?);
+        }
+        let mut builder =
+            arrow::array::StringBuilder::with_capacity(strings.len(), strings.value_data().len());
+        let mut buffer = String::new();
+        for value in strings.iter() {
+            match value {
+                Some(s) if separators => {
+                    buffer.clear();
+                    self.clean_number(s.trim(), &mut buffer);
+                    builder.append_value(&buffer);
+                }
+                Some(s) => builder.append_value(s.trim()),
+                None => builder.append_null(),
+            }
+        }
+        Ok(cast_with_options(&builder.finish(), &self.to, &safe)?)
     }
 
     /// `-1234567.5` → `-1.234.567,5` with a comma decimal and dot thousands.
@@ -277,8 +295,7 @@ impl Cast {
         out
     }
 
-    fn clean_number(&self, s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
+    fn clean_number(&self, s: &str, out: &mut String) {
         for c in s.chars() {
             if Some(c) == self.options.thousands
                 || (self.options.thousands == Some(' ') && c == '\u{a0}')
@@ -287,7 +304,6 @@ impl Cast {
             }
             out.push(if c == self.options.decimal { '.' } else { c });
         }
-        out
     }
 }
 

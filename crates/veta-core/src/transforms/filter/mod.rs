@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, BooleanArray, Scalar, StringArray};
 use arrow::compute::kernels::cmp;
-use arrow::compute::kernels::comparison::{contains, ends_with, starts_with};
+use arrow::compute::kernels::comparison::{contains, ends_with, ilike, starts_with};
 use arrow::compute::{and_kleene, cast, not, or_kleene, prep_null_mask_filter};
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
@@ -174,6 +174,33 @@ impl Condition {
             } else {
                 cast(column, &DataType::Utf8)?
             };
+            // Ignoring case, the text tests and (in)equality match with
+            // Arrow's `ilike` on the strings as they are; only ordering
+            // comparisons lowercase every value.
+            let text_match = matches!(
+                self.op,
+                FilterOp::Equals
+                    | FilterOp::NotEquals
+                    | FilterOp::Contains
+                    | FilterOp::NotContains
+                    | FilterOp::StartsWith
+                    | FilterOp::EndsWith
+            );
+            if !self.case_sensitive && text_match {
+                let escaped = escape_like(&self.value);
+                let pattern = match self.op {
+                    FilterOp::Contains | FilterOp::NotContains => format!("%{escaped}%"),
+                    FilterOp::StartsWith => format!("{escaped}%"),
+                    FilterOp::EndsWith => format!("%{escaped}"),
+                    _ => escaped,
+                };
+                let pattern = Scalar::new(StringArray::from(vec![pattern]));
+                let matched = ilike(&strings, &pattern)?;
+                return Ok(match self.op {
+                    FilterOp::NotContains | FilterOp::NotEquals => not(&matched)?,
+                    _ => matched,
+                });
+            }
             let mut value = self.value.clone();
             if !self.case_sensitive {
                 strings = lowercase(&strings);
@@ -204,6 +231,18 @@ fn compare(op: FilterOp, left: &ArrayRef, right: &dyn arrow::array::Datum) -> Re
         FilterOp::GreaterOrEqual => cmp::gt_eq(left, right)?,
         _ => return Err(invalid!(NotAComparison)),
     })
+}
+
+/// `text` as a `like` pattern matching just itself.
+fn escape_like(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Lowercases a Utf8 array.
