@@ -54,6 +54,23 @@ pub struct ColumnStats {
     pub std_dev: Option<ArrayRef>,
     /// Lengths of text values, in characters.
     pub text_lengths: Option<TextLengths>,
+    /// Quartiles of numbers, dates, times and durations.
+    pub quartiles: Option<Quartiles>,
+}
+
+/// The first quartile, median and third quartile, as one-value arrays like
+/// the mean.
+#[derive(Debug, Clone, Serialize)]
+pub struct Quartiles {
+    #[serde(serialize_with = "one_value_as_json")]
+    pub low: ArrayRef,
+    #[serde(serialize_with = "one_value_as_json")]
+    pub median: ArrayRef,
+    #[serde(serialize_with = "one_value_as_json")]
+    pub high: ArrayRef,
+    /// Estimated from a sample of [`SAMPLE_SIZE`](super::SAMPLE_SIZE)
+    /// values (there were more).
+    pub estimated: bool,
 }
 
 /// Lengths of a text column's values, in characters.
@@ -126,7 +143,7 @@ impl StatsJob {
             self.pipeline.evaluated(),
             0..rows,
             Some(self.columns.clone()),
-            move |batches, _| {
+            move |batches, first| {
                 let mut counted = Vec::with_capacity(fields.len());
                 for ((name, data_type), flag) in fields.iter().zip(flags.iter()) {
                     let mut acc = Accumulator::new(name.clone(), data_type.clone());
@@ -143,7 +160,7 @@ impl StatsJob {
                         let column = batch
                             .column_by_name(&acc.column)
                             .ok_or_else(|| invalid!(StatsFailed))?;
-                        acc.add(column)?;
+                        acc.add(column, (first + rows) as u64)?;
                     }
                     rows += batch.num_rows();
                 }
@@ -246,6 +263,23 @@ fn value_as_json<S: serde::Serializer>(
     }
 }
 
+impl PartialEq for Quartiles {
+    fn eq(&self, other: &Self) -> bool {
+        let same = |a: &ArrayRef, b: &ArrayRef| a.to_data() == b.to_data();
+        same(&self.low, &other.low)
+            && same(&self.median, &other.median)
+            && same(&self.high, &other.high)
+            && self.estimated == other.estimated
+    }
+}
+
+fn one_value_as_json<S: serde::Serializer>(
+    value: &ArrayRef,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    value_as_json(&Some(value.clone()), serializer)
+}
+
 /// Statistics as pretty JSON (for `veta-cli stats --json`).
 pub fn to_json(stats: &[ColumnStats]) -> Result<String> {
     serde_json::to_string_pretty(stats).map_err(|e| invalid!(Json, error = e))
@@ -308,6 +342,11 @@ mod tests {
         assert!((float(&id.mean) - 99_999.5).abs() < 1e-6);
         // Standard deviation of 0..n is about n / sqrt(12).
         assert!((float(&id.std_dev) - 57_735.17).abs() < 1.0);
+        // 200,000 values: quartiles from a sample, close to the true ones.
+        let q = id.quartiles.as_ref().unwrap();
+        assert!(q.estimated);
+        let median = float(&Some(q.median.clone()));
+        assert!((median - 100_000.0).abs() < 2_000.0, "{median}");
         let name = &stats[1];
         assert_eq!(name.nulls, 50_000);
         assert_eq!(name.distinct, Some(3));
@@ -315,7 +354,7 @@ mod tests {
             name.min.is_none() && name.max.is_none(),
             "text has no range"
         );
-        assert!(name.mean.is_none() && name.std_dev.is_none());
+        assert!(name.mean.is_none() && name.std_dev.is_none() && name.quartiles.is_none());
         let lengths = name.text_lengths.as_ref().unwrap();
         assert_eq!((lengths.min, lengths.max, lengths.mean), (1, 1, 1.0));
         assert_eq!(stats[2].nulls, 200_000);
@@ -371,6 +410,12 @@ mod tests {
         // Two days, in seconds.
         assert_eq!(text(&stats[0].std_dev), "PT172800S");
         assert_eq!(text(&stats[1].mean), "1970-01-01T00:01:30");
+        let q = stats[0].quartiles.as_ref().unwrap();
+        let one = |v: &ArrayRef| text(&Some(v.clone()));
+        assert_eq!(
+            (one(&q.low), one(&q.median), q.estimated),
+            ("1970-01-02".into(), "1970-01-03".into(), false)
+        );
         let lengths = stats[2].text_lengths.as_ref().unwrap();
         assert_eq!(
             (lengths.min, lengths.max, lengths.mean),

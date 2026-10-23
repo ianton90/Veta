@@ -145,14 +145,27 @@ pub(crate) fn stats(
     json: bool,
     out: &mut impl Write,
 ) -> Result<(), Error> {
-    use veta_fmt::{format_distinct, format_float, format_stat_value};
+    use veta_fmt::{
+        format_distinct, format_float, format_median, format_quartiles, format_stat_value,
+    };
     let stats = doc.stats_job(columns)?.run(&mut |_| true)?;
     if json {
         writeln!(out, "{}", veta_core::stats::to_json(&stats)?)?;
         return Ok(());
     }
     let header: Vec<String> = [
-        "column", "type", "count", "nulls", "distinct", "min", "max", "mean", "std dev", "length",
+        "column",
+        "type",
+        "count",
+        "nulls",
+        "distinct",
+        "min",
+        "max",
+        "mean",
+        "std dev",
+        "median",
+        "quartiles",
+        "length",
     ]
     .map(String::from)
     .to_vec();
@@ -169,6 +182,8 @@ pub(crate) fn stats(
                 s.max.as_ref().map(format_stat_value),
                 s.mean.as_ref().map(format_stat_value),
                 s.std_dev.as_ref().map(format_stat_value),
+                format_median(s),
+                format_quartiles(s),
                 s.text_lengths
                     .as_ref()
                     .map(|l| format!("{}–{} (mean {})", l.min, l.max, format_float(l.mean))),
@@ -176,7 +191,7 @@ pub(crate) fn stats(
         })
         .collect();
     let right = [
-        false, false, true, true, true, false, false, true, true, false,
+        false, false, true, true, true, false, false, true, true, true, true, false,
     ];
     table::write(out, &header, None, &rows, &right)?;
     Ok(())

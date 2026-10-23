@@ -105,6 +105,31 @@ pub fn format_duration(seconds: f64) -> String {
     }
 }
 
+/// The median for display (`~` when estimated from a sample).
+pub fn format_median(stats: &ColumnStats) -> Option<String> {
+    let q = stats.quartiles.as_ref()?;
+    Some(format!(
+        "{}{}",
+        estimate_mark(q.estimated),
+        format_stat_value(&q.median)
+    ))
+}
+
+/// The first and third quartiles for display, `q1 – q3`.
+pub fn format_quartiles(stats: &ColumnStats) -> Option<String> {
+    let q = stats.quartiles.as_ref()?;
+    Some(format!(
+        "{}{} – {}",
+        estimate_mark(q.estimated),
+        format_stat_value(&q.low),
+        format_stat_value(&q.high)
+    ))
+}
+
+fn estimate_mark(estimated: bool) -> &'static str {
+    if estimated { "~" } else { "" }
+}
+
 /// The distinct count for display (`~` when estimated).
 pub fn format_distinct(stats: &ColumnStats) -> Option<String> {
     let n = stats.distinct?;

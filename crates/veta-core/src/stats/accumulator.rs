@@ -10,7 +10,8 @@ use arrow::datatypes::{DataType, TimeUnit};
 use arrow::row::{RowConverter, SortField};
 
 use super::distinct::{Distinct, insert_hashes};
-use super::{ColumnStats, TextLengths};
+use super::sample::{Sample, quantile};
+use super::{ColumnStats, Quartiles, TextLengths};
 use crate::display::type_name;
 use crate::error::{Error, Result, invalid};
 
@@ -36,6 +37,8 @@ pub(super) struct Accumulator {
     m2: f64,
     /// Text lengths in characters, when the column is text.
     lengths: Option<Lengths>,
+    /// Sampled values, for quantiles (numbers and times).
+    sample: Option<Sample>,
 }
 
 /// Whose mean and standard deviation a column gets.
@@ -104,7 +107,9 @@ impl Accumulator {
             max: 0,
             sum: 0,
         });
+        let sample = (moments != Moments::None).then(Sample::default);
         Self {
+            sample,
             column,
             distinct: converter.as_ref().map(|_| Distinct::default()),
             converter,
@@ -150,6 +155,9 @@ impl Accumulator {
         if let (Some(mine), Some(theirs)) = (&mut self.lengths, other.lengths) {
             mine.merge(theirs);
         }
+        if let (Some(mine), Some(theirs)) = (&mut self.sample, other.sample) {
+            mine.merge(theirs);
+        }
     }
 
     /// Adds `n` values with mean `mean` and squared deviations `m2` to the
@@ -164,7 +172,8 @@ impl Accumulator {
         self.n = total;
     }
 
-    pub(super) fn add(&mut self, array: &ArrayRef) -> Result<()> {
+    /// Adds `array`, the column's values from row `first_row` on.
+    pub(super) fn add(&mut self, array: &ArrayRef, first_row: u64) -> Result<()> {
         self.count += array.len() as u64;
         self.nulls += array.logical_null_count() as u64;
         if let (Some(converter), Some(distinct)) = (&self.converter, &mut self.distinct) {
@@ -180,21 +189,29 @@ impl Accumulator {
         }
         if self.moments == Moments::Temporal {
             let values = cast(&underlying(array)?, &DataType::Float64)?;
-            self.add_numbers(&values)?;
+            self.add_numbers(&values, first_row)?;
         }
         if self.moments == Moments::Numbers {
             let values = cast(array, &DataType::Float64)?;
-            self.add_numbers(&values)?;
+            self.add_numbers(&values, first_row)?;
         }
         Ok(())
     }
 
-    /// Adds `values` (Float64) to the running mean and spread.
-    fn add_numbers(&mut self, values: &ArrayRef) -> Result<()> {
+    /// Adds `values` (Float64, from row `first_row` on) to the running
+    /// mean and spread, and the sample.
+    fn add_numbers(&mut self, values: &ArrayRef, first_row: u64) -> Result<()> {
         let values = values
             .as_any()
             .downcast_ref::<Float64Array>()
             .ok_or_else(|| invalid!(ExpectedNumbers))?;
+        if let Some(sample) = &mut self.sample {
+            for (i, x) in values.iter().enumerate() {
+                if let Some(x) = x.filter(|x| x.is_finite()) {
+                    sample.add(first_row + i as u64, x);
+                }
+            }
+        }
         // The batch's mean and squared deviations in two passes, then
         // combined with the running ones.
         let finite = || values.iter().flatten().filter(|x| x.is_finite());
@@ -285,6 +302,19 @@ impl Accumulator {
                 std_dev.and_then(|s| duration_value(s, &self.data_type).ok()),
             ),
         };
+        let (sorted, sampled) = self.sample.map(Sample::finish).unwrap_or_default();
+        let value = |x: f64| match self.moments {
+            Moments::Temporal => temporal_value(x, &self.data_type).ok(),
+            _ => Some(float_value(x)),
+        };
+        let quartiles = (|| {
+            Some(Quartiles {
+                low: value(quantile(&sorted, 0.25)?)?,
+                median: value(quantile(&sorted, 0.5)?)?,
+                high: value(quantile(&sorted, 0.75)?)?,
+                estimated: sampled,
+            })
+        })();
         let text_lengths = self.lengths.filter(|l| l.n > 0).map(|l| TextLengths {
             min: l.min,
             max: l.max,
@@ -301,6 +331,7 @@ impl Accumulator {
             mean,
             std_dev,
             text_lengths,
+            quartiles,
             column: self.column,
         }
     }

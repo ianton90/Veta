@@ -17,7 +17,9 @@ pub struct StatsView {
 
 /// Statistics of the selected columns.
 pub(super) fn stats_pane<'a>(view: StatsView, ui: Ui) -> Element<'a, Message> {
-    use veta_fmt::{format_distinct, format_float, format_stat_value};
+    use veta_fmt::{
+        format_distinct, format_float, format_median, format_quartiles, format_stat_value,
+    };
     let t = ui.tokens;
     let mut content = column![].spacing(10).padding([0, 12]);
     if let Some(reason) = view.waiting {
@@ -110,6 +112,12 @@ pub(super) fn stats_pane<'a>(view: StatsView, ui: Ui) -> Element<'a, Message> {
             .push(line("ST_STATS_MAX", max))
             .push(line("ST_STATS_MEAN", mean))
             .push(line("ST_STATS_STD_DEV", sd));
+        if let Some(s) = stats.as_ref().filter(|s| s.quartiles.is_some()) {
+            let later = |v: Option<String>| if partial { Some(pending.clone()) } else { v };
+            card = card
+                .push(line("ST_STATS_MEDIAN", later(format_median(s))))
+                .push(line("ST_STATS_QUARTILES", later(format_quartiles(s))));
+        }
         if let Some(l) = stats.as_ref().and_then(|s| s.text_lengths.as_ref()) {
             let value = tr_with(
                 "ST_STATS_LENGTH_VALUE",

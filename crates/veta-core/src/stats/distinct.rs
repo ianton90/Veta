@@ -129,7 +129,7 @@ fn tail_word(mut rest: &[u8]) -> u64 {
 }
 
 /// splitmix64's finalizer.
-fn mix(mut z: u64) -> u64 {
+pub(super) fn mix(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     z ^ (z >> 31)
