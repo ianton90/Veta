@@ -310,6 +310,26 @@ impl Sort {
 }
 
 impl Transform for Sort {
+    /// A paged file is sorted by key range while saving, skipping the
+    /// sorted copy.
+    fn streams(&self, job: &ComputeJob) -> bool {
+        job.mode() == SourceMode::Paged
+    }
+
+    fn stream<'j>(
+        &self,
+        job: &'j ComputeJob,
+        input_rows: usize,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordBatch>> + Send + 'j>> {
+        let schema = job.input_schema()?;
+        let read = |range| job.read(range);
+        let names = self.key_names();
+        let read_keys = |range| job.read_columns(range, &names);
+        Ok(Box::new(sort_stream(
+            self, &schema, input_rows, &read, &read_keys, PASS_ROWS,
+        )?))
+    }
+
     fn passes(&self, column: &str) -> Option<(String, u64)> {
         Some((column.to_owned(), 0))
     }

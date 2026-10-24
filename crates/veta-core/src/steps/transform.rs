@@ -103,6 +103,25 @@ pub(crate) trait Transform {
         })
     }
 
+    /// Whether the step, when it is the last, can produce its output once,
+    /// in order, while it is saved instead of in a full pass first
+    /// ([`Transform::stream`]).
+    fn streams(&self, job: &ComputeJob) -> bool {
+        let _ = job;
+        false
+    }
+
+    /// The step's output in order, without keeping it (only when it
+    /// [`streams`](Transform::streams)).
+    fn stream<'j>(
+        &self,
+        job: &'j ComputeJob,
+        input_rows: usize,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordBatch>> + Send + 'j>> {
+        let _ = (job, input_rows);
+        Err(invalid!(NotStreamable))
+    }
+
     /// Runs the step's full pass over its `input_rows` input rows.
     /// `progress` gets the fraction done (0–1) and returns `false` to
     /// cancel.

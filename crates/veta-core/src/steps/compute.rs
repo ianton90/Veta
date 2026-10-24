@@ -8,11 +8,10 @@ use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
 
+use super::Pipeline;
 use super::checkpoint::{Checkpoint, TempFile, write_parquet};
-use super::{Pipeline, Step};
 use crate::error::Result;
 use crate::source::{DataSource, MemorySource, SourceMode};
-use crate::transforms::sort::sort_stream;
 
 /// Rows read per batch during a full pass.
 pub(crate) const PASS_ROWS: usize = 64 * 1024;
@@ -118,16 +117,12 @@ impl ComputeJob {
     }
 
     /// Whether the step can instead produce its output once, in order,
-    /// while it is saved ([`ComputeJob::stream`]): a last step that filters,
-    /// or sorts a paged file. Saving it then skips the separate pass over
-    /// the file, or the sorted copy.
+    /// while it is saved ([`ComputeJob::stream`]): the last step, when its
+    /// transform can (a filter, or a sort of a paged file). Saving it then
+    /// skips the separate pass over the file, or the sorted copy.
     pub fn streams(&self) -> bool {
         let last = self.step + 1 == self.pipeline.steps().len();
-        last && match &self.pipeline.steps()[self.step] {
-            Step::Filter(_) => true,
-            Step::Sort(_) => self.pipeline.source().mode() == SourceMode::Paged,
-            _ => false,
-        }
+        last && self.pipeline.steps()[self.step].with_transform(|t| t.streams(self))
     }
 
     /// The step's output, in order, without keeping it. Only for steps
@@ -139,43 +134,10 @@ impl ComputeJob {
             .pipeline
             .num_rows_at(self.step)
             .ok_or_else(|| invalid!(InputNotEvaluated))?;
-        match &self.pipeline.steps()[self.step] {
-            Step::Filter(filter) => {
-                // Pieces are read and filtered on several threads.
-                let filter = filter.clone();
-                let pieces = self.pipeline.read_parallel(
-                    self.step,
-                    0..input_rows,
-                    None,
-                    move |batches, _| {
-                        batches
-                            .iter()
-                            .map(|batch| {
-                                let mask = filter.evaluate(batch)?;
-                                Ok(arrow::compute::filter_record_batch(batch, &mask)?)
-                            })
-                            .collect::<Result<Vec<_>>>()
-                    },
-                );
-                Ok(Box::new(pieces.flat_map(|piece| match piece {
-                    Ok(batches) => batches.into_iter().map(Ok).collect(),
-                    Err(e) => vec![Err(e)],
-                })))
-            }
-            Step::Sort(sort) if self.streams() => {
-                let schema = self
-                    .pipeline
-                    .schema_at(self.step)
-                    .ok_or_else(|| invalid!(InputNotEvaluated))?;
-                let read = |range| self.pipeline.read_at(self.step, range);
-                let names = sort.key_names();
-                let read_keys = |range| self.pipeline.read_columns_at(self.step, range, &names);
-                Ok(Box::new(sort_stream(
-                    sort, &schema, input_rows, &read, &read_keys, PASS_ROWS,
-                )?))
-            }
-            _ => Err(invalid!(NotStreamable)),
+        if !self.streams() {
+            return Err(invalid!(NotStreamable));
         }
+        self.pipeline.steps()[self.step].with_transform(|t| t.stream(self, input_rows))
     }
 
     /// Runs the pass. `progress` gets the fraction done (0–1) and returns

@@ -262,6 +262,32 @@ fn lowercase(array: &ArrayRef) -> ArrayRef {
 }
 
 impl Transform for Filter {
+    fn streams(&self, _: &ComputeJob) -> bool {
+        true
+    }
+
+    fn stream<'j>(
+        &self,
+        job: &'j ComputeJob,
+        input_rows: usize,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordBatch>> + Send + 'j>> {
+        // Pieces are read and filtered on several threads.
+        let filter = self.clone();
+        let pieces = job.read_parallel(input_rows, None, move |batches, _| {
+            batches
+                .iter()
+                .map(|batch| {
+                    let mask = filter.evaluate(batch)?;
+                    Ok(arrow::compute::filter_record_batch(batch, &mask)?)
+                })
+                .collect::<Result<Vec<_>>>()
+        });
+        Ok(Box::new(pieces.flat_map(|piece| match piece {
+            Ok(batches) => batches.into_iter().map(Ok).collect(),
+            Err(e) => vec![Err(e)],
+        })))
+    }
+
     fn level(&self, input: &Level) -> Result<Level> {
         self.validate(&input.schema)?;
         Ok(input.clone())
