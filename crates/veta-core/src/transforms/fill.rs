@@ -36,6 +36,10 @@ impl Fill {
 }
 
 impl Transform for Fill {
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        (!self.columns.iter().any(|c| c == column)).then(|| (column.to_owned(), 0))
+    }
+
     fn level(&self, input: &Level) -> Result<Level> {
         self.validate(&input.schema)?;
         Ok(input.clone())

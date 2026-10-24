@@ -543,4 +543,53 @@ mod tests {
         // Written without statistics.
         assert!(doc.quick_stats("score").is_none());
     }
+
+    #[test]
+    fn quick_stats_through_steps_that_keep_values() {
+        use crate::steps::{Condition, Filter, FilterOp, Sort, SortKey, Step};
+        use crate::{Command, Document, OpenOptions, controller::execute};
+        let dir = veta_testkit::TempDir::new();
+        let path = dir.join("m.parquet");
+        veta_testkit::fixtures::mixed_settings(&path);
+        let mut doc = Document::open(&path, OpenOptions::default()).unwrap();
+        let before = doc.quick_stats("id").unwrap();
+        let add = |doc: &mut Document, step| execute(doc, Command::AddStep(step)).unwrap();
+        add(
+            &mut doc,
+            Step::RenameColumn {
+                from: "id".into(),
+                to: "key".into(),
+            },
+        );
+        add(&mut doc, Step::InsertRows { at: 0, count: 5 });
+        let sort = Sort {
+            keys: vec![SortKey {
+                column: "name".into(),
+                descending: false,
+                nulls_first: false,
+            }],
+        };
+        add(&mut doc, Step::Sort(sort));
+        doc.compute_all().unwrap();
+        let quick = doc.quick_stats("key").unwrap();
+        assert_eq!(quick.column, "key");
+        assert_eq!(
+            (quick.count, quick.nulls),
+            (before.count + 5, before.nulls + 5)
+        );
+        assert_eq!(quick.max, before.max);
+        // A filter may drop values: no footer stats.
+        let filter = Filter {
+            conditions: vec![Condition {
+                column: "flag".into(),
+                op: FilterOp::IsNotNull,
+                value: String::new(),
+                case_sensitive: false,
+            }],
+            match_all: true,
+            exclude: false,
+        };
+        add(&mut doc, Step::Filter(filter));
+        assert!(doc.quick_stats("key").is_none());
+    }
 }

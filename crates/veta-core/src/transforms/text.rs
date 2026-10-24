@@ -202,6 +202,10 @@ pub(crate) fn map_columns(
 }
 
 impl Transform for Replace {
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        (column != self.column).then(|| (column.to_owned(), 0))
+    }
+
     fn level(&self, input: &Level) -> Result<Level> {
         self.validate(&input.schema)?;
         Ok(input.clone())
@@ -224,6 +228,10 @@ pub(crate) struct FormatText<'a> {
 }
 
 impl Transform for FormatText<'_> {
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        (!self.columns.iter().any(|c| c == column)).then(|| (column.to_owned(), 0))
+    }
+
     fn level(&self, input: &Level) -> Result<Level> {
         self.op.validate(&input.schema, self.columns)?;
         Ok(input.clone())

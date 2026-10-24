@@ -625,6 +625,10 @@ fn parse_dates(strings: &StringArray, format: &str, to: &DataType) -> Result<Arr
 }
 
 impl Transform for Cast {
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        (column != self.column && column != self.error_column()).then(|| (column.to_owned(), 0))
+    }
+
     fn level(&self, input: &Level) -> Result<Level> {
         Ok(input.with_fields(self.output_fields(&input.schema)?, input.num_rows))
     }

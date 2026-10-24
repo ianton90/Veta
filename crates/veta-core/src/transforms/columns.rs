@@ -20,6 +20,10 @@ pub(crate) struct AddColumn<'a> {
 }
 
 impl Transform for AddColumn<'_> {
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        (column != self.name).then(|| (column.to_owned(), 0))
+    }
+
     fn level(&self, input: &Level) -> Result<Level> {
         check_new_name(&input.schema, self.name)?;
         let mut fields = input.fields();
@@ -67,6 +71,10 @@ pub(crate) struct RemoveColumns<'a> {
 }
 
 impl Transform for RemoveColumns<'_> {
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        Some((column.to_owned(), 0))
+    }
+
     fn level(&self, input: &Level) -> Result<Level> {
         if self.names.is_empty() {
             return Err(invalid!(NoColumnsToRemove));
@@ -101,6 +109,10 @@ pub(crate) struct KeepColumns<'a> {
 }
 
 impl Transform for KeepColumns<'_> {
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        Some((column.to_owned(), 0))
+    }
+
     fn level(&self, input: &Level) -> Result<Level> {
         if self.names.is_empty() {
             return Err(invalid!(KeepNoColumns));
@@ -133,6 +145,11 @@ pub(crate) struct RenameColumn<'a> {
 }
 
 impl Transform for RenameColumn<'_> {
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        let from = if column == self.to { self.from } else { column };
+        Some((from.to_owned(), 0))
+    }
+
     fn level(&self, input: &Level) -> Result<Level> {
         let index = input.index(self.from)?;
         if self.from != self.to {
@@ -164,6 +181,10 @@ pub(crate) struct MoveColumn<'a> {
 }
 
 impl Transform for MoveColumn<'_> {
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        Some((column.to_owned(), 0))
+    }
+
     fn level(&self, input: &Level) -> Result<Level> {
         let index = input.index(self.name)?;
         let mut fields = input.fields();
@@ -191,6 +212,10 @@ pub(crate) struct RemoveEmptyColumn<'a> {
 }
 
 impl Transform for RemoveEmptyColumn<'_> {
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        (column != self.name).then(|| (column.to_owned(), 0))
+    }
+
     fn level(&self, input: &Level) -> Result<Level> {
         input.index(self.name)?;
         if input.schema.fields().len() < 2 {

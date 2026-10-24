@@ -368,6 +368,10 @@ impl CustomColumn {
 }
 
 impl crate::steps::Transform for CustomColumn {
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        (column != self.name).then(|| (column.to_owned(), 0))
+    }
+
     fn level(&self, input: &crate::steps::Level) -> Result<crate::steps::Level> {
         Ok(input.with_fields(self.output_fields(&input.schema)?, input.num_rows))
     }

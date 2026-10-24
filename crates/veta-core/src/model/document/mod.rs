@@ -243,13 +243,24 @@ impl Document {
         crate::stats::StatsJob::new(self.pipeline.clone(), columns)
     }
 
-    /// Nulls, min and max of `column` from the file's footer, when no steps
-    /// change the data.
+    /// Nulls, min and max of `column` from the file's footer, when the
+    /// steps keep its values (renames, moves, sorts, other columns
+    /// changed; inserted rows count as nulls).
     pub fn quick_stats(&self, column: &str) -> Option<crate::stats::ColumnStats> {
-        if !self.steps().is_empty() {
-            return None;
+        // Back through the steps to the file's column, as long as each step
+        // keeps its values.
+        let (mut name, mut added) = (column.to_owned(), 0);
+        for step in self.steps().iter().rev() {
+            let (from, nulls) = step.with_transform(|t| t.passes(&name))?;
+            name = from;
+            added += nulls;
         }
-        crate::stats::quick_stats(self.footer.as_ref()?, &self.pipeline.schema(), column)
+        let source = self.pipeline.schema_at(0)?;
+        let mut stats = crate::stats::quick_stats(self.footer.as_ref()?, &source, &name)?;
+        stats.column = column.to_owned();
+        stats.count += added;
+        stats.nulls += added;
+        Some(stats)
     }
 
     /// Changes whenever the document's data may have changed (edits, undo,

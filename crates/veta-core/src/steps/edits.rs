@@ -107,6 +107,10 @@ impl CellEdits {
 }
 
 impl Transform for CellEdits {
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        (!self.columns.contains_key(column)).then(|| (column.to_owned(), 0))
+    }
+
     fn positional(&self) -> bool {
         true
     }

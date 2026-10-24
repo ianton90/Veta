@@ -277,7 +277,9 @@ Each step transforms the output of the previous one. Each kind of step
 answers for itself through the `Transform` trait (`steps/transform.rs`):
 the shape after it (checking it), how to read a window of its output (by
 default, computing it on the same window of its input), whether it needs
-a full pass and that pass, and whether it refers to rows by position. The
+a full pass and that pass, whether it refers to rows by position, and
+whether a column's values pass through it unchanged (so the file's footer
+statistics still hold). The
 pipeline only delegates, through `Step::with_transform`, the one match
 over every kind of step. A new kind of step needs its `Step` variant and
 transform, its recipe form (`files/recipe/`), its names (GUI

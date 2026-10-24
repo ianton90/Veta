@@ -64,6 +64,15 @@ pub(crate) trait Transform {
         false
     }
 
+    /// When output column `column` holds its input's values as they are
+    /// (only renamed, moved, reordered or with null rows added): the input
+    /// column's name and how many null rows the step adds. `None` when the
+    /// step may change them, or doesn't say.
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        let _ = column;
+        None
+    }
+
     /// Rows `range` of the step's output: every column (`names` `None`) or
     /// only the named ones, in the output's order. By default the window is
     /// [`applied`](Transform::apply); with names, columns the step doesn't

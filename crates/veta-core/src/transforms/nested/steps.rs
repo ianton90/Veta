@@ -42,6 +42,10 @@ pub(crate) struct AddField<'a> {
 }
 
 impl Transform for AddField<'_> {
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        (column != self.column).then(|| (column.to_owned(), 0))
+    }
+
     fn level(&self, input: &Level) -> Result<Level> {
         let fields = change_field_fields(
             &input.schema,
@@ -70,6 +74,10 @@ pub(crate) struct RemoveField<'a> {
 }
 
 impl Transform for RemoveField<'_> {
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        (column != self.column).then(|| (column.to_owned(), 0))
+    }
+
     fn level(&self, input: &Level) -> Result<Level> {
         let fields = change_field_fields(&input.schema, self.column, self.path, self.name, None)?;
         Ok(input.with_fields(fields, input.num_rows))

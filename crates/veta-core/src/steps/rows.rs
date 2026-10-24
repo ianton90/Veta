@@ -17,6 +17,10 @@ pub(super) struct InsertRows {
 }
 
 impl Transform for InsertRows {
+    fn passes(&self, column: &str) -> Option<(String, u64)> {
+        Some((column.to_owned(), self.count as u64))
+    }
+
     fn positional(&self) -> bool {
         true
     }
