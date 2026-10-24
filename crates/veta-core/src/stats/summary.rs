@@ -12,10 +12,9 @@ use arrow::datatypes::{DataType, SchemaRef};
 use arrow::util::display::array_value_to_string;
 use serde::Serialize;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use super::accumulator::Accumulator;
-use super::distinct::Distinct;
 use crate::error::{Error, Result, invalid};
 use crate::steps::Pipeline;
 
@@ -56,6 +55,37 @@ pub struct ColumnStats {
     pub text_lengths: Option<TextLengths>,
     /// Quartiles of numbers, dates, times and durations.
     pub quartiles: Option<Quartiles>,
+    /// The most frequent values, most frequent first (none when no value
+    /// is there twice).
+    pub top_values: Vec<TopValue>,
+    /// Whether the top values' counts are estimates (too many distinct
+    /// values to count each).
+    pub top_estimated: bool,
+}
+
+/// How many most frequent values statistics list.
+pub const TOP_VALUES: usize = 10;
+
+/// A frequent value and how many times it is there.
+#[derive(Debug, Clone, Serialize)]
+pub struct TopValue {
+    /// One-value array of the column's type; text in JSON.
+    #[serde(serialize_with = "one_value_as_text")]
+    pub value: ArrayRef,
+    pub count: u64,
+}
+
+impl PartialEq for TopValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.value.to_data() == other.value.to_data() && self.count == other.count
+    }
+}
+
+fn one_value_as_text<S: serde::Serializer>(
+    value: &ArrayRef,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    value_as_text(&Some(value.clone()), serializer)
 }
 
 /// The first quartile, median and third quartile, as one-value arrays like
@@ -128,16 +158,17 @@ impl StatsJob {
             .collect();
         let rows = self.pipeline.num_rows();
         // Pieces are read and counted on several threads, and the counts
-        // added up in order. Once a column's distinct values are estimated,
-        // later pieces estimate theirs from the start.
+        // added up in order. Once a column has too many distinct values to
+        // count each (or to count at all), later pieces start that way.
+        // Flags: 1 stopped counting, 2 estimating.
         let fields: Vec<(String, DataType)> = self
             .columns
             .iter()
             .zip(&indices)
             .map(|(c, &i)| (c.clone(), schema.field(i).data_type().clone()))
             .collect();
-        let estimating: Arc<Vec<AtomicBool>> =
-            Arc::new(fields.iter().map(|_| AtomicBool::new(false)).collect());
+        let estimating: Arc<Vec<AtomicU8>> =
+            Arc::new(fields.iter().map(|_| AtomicU8::new(0)).collect());
         let flags = estimating.clone();
         let pieces = self.pipeline.read_parallel(
             self.pipeline.evaluated(),
@@ -147,10 +178,12 @@ impl StatsJob {
                 let mut counted = Vec::with_capacity(fields.len());
                 for ((name, data_type), flag) in fields.iter().zip(flags.iter()) {
                     let mut acc = Accumulator::new(name.clone(), data_type.clone());
-                    if flag.load(Ordering::Relaxed)
-                        && let Some(distinct) = &mut acc.distinct
-                    {
-                        distinct.start_estimating();
+                    if let Some(distinct) = &mut acc.distinct {
+                        match flag.load(Ordering::Relaxed) {
+                            2 => distinct.start_estimating(),
+                            1 => distinct.stop_counting(),
+                            _ => {}
+                        }
                     }
                     counted.push(acc);
                 }
@@ -177,8 +210,13 @@ impl StatsJob {
                 {
                     scope.spawn(move || {
                         acc.merge(piece);
-                        if acc.distinct.as_ref().is_some_and(Distinct::estimated) {
-                            flag.store(true, Ordering::Relaxed);
+                        if let Some(distinct) = &acc.distinct {
+                            let state = match () {
+                                _ if distinct.estimated() => 2,
+                                _ if distinct.sampled_counts() => 1,
+                                _ => 0,
+                            };
+                            flag.store(state, Ordering::Relaxed);
                         }
                     });
                 }
@@ -188,7 +226,25 @@ impl StatsJob {
                 return Err(Error::Cancelled);
             }
         }
-        Ok(accumulators.into_iter().map(Accumulator::finish).collect())
+        // The most frequent values, read back from their first rows.
+        let level = self.pipeline.evaluated();
+        let mut stats = Vec::with_capacity(accumulators.len());
+        for acc in accumulators {
+            let column = [acc.column.clone()];
+            let (mut column_stats, top) = acc.finish(TOP_VALUES);
+            for (row, count) in top {
+                let row = row as usize;
+                let batch = self
+                    .pipeline
+                    .read_columns_at(level, row..row + 1, &column)?;
+                if batch.num_rows() == 1 {
+                    let value = batch.column(0).clone();
+                    column_stats.top_values.push(TopValue { value, count });
+                }
+            }
+            stats.push(column_stats);
+        }
+        Ok(stats)
     }
 }
 
@@ -231,7 +287,7 @@ pub fn quick_stats(
             acc.update_extremes(&extremes).ok()?;
         }
     }
-    let mut stats = acc.finish();
+    let (mut stats, _) = acc.finish(0);
     stats.count = groups.iter().map(|g| g.num_rows() as u64).sum();
     stats.nulls = nulls.iter().flatten().sum();
     stats.distinct = None;
@@ -357,6 +413,10 @@ mod tests {
         assert!(name.mean.is_none() && name.std_dev.is_none() && name.quartiles.is_none());
         let lengths = name.text_lengths.as_ref().unwrap();
         assert_eq!((lengths.min, lengths.max, lengths.mean), (1, 1, 1.0));
+        assert!(id.top_values.is_empty(), "every id is there once");
+        let counts: Vec<u64> = name.top_values.iter().map(|t| t.count).collect();
+        assert_eq!(counts.iter().sum::<u64>(), 150_000);
+        assert_eq!(text(&Some(name.top_values[0].value.clone())), "b");
         assert_eq!(stats[2].nulls, 200_000);
         assert!(stats[2].min.is_none());
     }

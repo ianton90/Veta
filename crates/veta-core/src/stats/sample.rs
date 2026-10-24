@@ -1,37 +1,46 @@
 //! A uniform sample of a column's values, for quantiles (and the shapes
-//! drawn from them): each row gets a key by hashing its row number, and the
+//! drawn from them): each row gets a key from its row number (Fibonacci
+//! hashing: one multiply, and the picked rows spread evenly), and the
 //! values of the [`SAMPLE_SIZE`] rows with the smallest keys are kept. The
 //! same rows are picked however the pass is split into pieces, so pieces
 //! merge exactly and results don't change from run to run. Up to
 //! `SAMPLE_SIZE` values the sample is every value, and quantiles are exact.
 
-use super::distinct::mix;
-
 /// Values kept per column.
 pub const SAMPLE_SIZE: usize = 16_384;
 
-/// Mixed into row numbers, so the sample doesn't follow the distinct
-/// hashes.
-const ROW_SEED: u64 = 0x5851_f42d_4c95_7f2d;
+/// 2^64 / φ: multiplying row numbers by it spreads them over the keys.
+const GOLDEN: u64 = 0x9e37_79b9_7f4a_7c15;
 
-/// The sampled values of one column (underlying numbers, for times).
-#[derive(Debug, Clone, Default)]
-pub(super) struct Sample {
+/// The sampled values of one column (underlying numbers, for times; or
+/// anything else kept per row).
+#[derive(Debug, Clone)]
+pub(super) struct Sample<T = f64> {
     /// (key, value); up to twice the sample size between prunes.
-    kept: Vec<(u64, f64)>,
-    /// Keys at or above this are left out: the largest key kept at the
-    /// last prune (once the sample was full).
-    limit: Option<u64>,
+    kept: Vec<(u64, T)>,
+    /// Keys above this are left out: the largest key kept at the last
+    /// prune (`u64::MAX` until the sample was full).
+    limit: u64,
     /// Values offered, sampled or not.
     seen: u64,
 }
 
-impl Sample {
+impl<T> Default for Sample<T> {
+    fn default() -> Self {
+        Self {
+            kept: Vec::new(),
+            limit: u64::MAX,
+            seen: 0,
+        }
+    }
+}
+
+impl<T> Sample<T> {
     /// Offers the value of row `row`.
-    pub(super) fn add(&mut self, row: u64, value: f64) {
+    pub(super) fn add(&mut self, row: u64, value: T) {
         self.seen += 1;
-        let key = mix(row ^ ROW_SEED);
-        if self.limit.is_some_and(|limit| key >= limit) {
+        let key = row.wrapping_mul(GOLDEN);
+        if key >= self.limit {
             return;
         }
         self.kept.push((key, value));
@@ -48,31 +57,40 @@ impl Sample {
         self.kept
             .select_nth_unstable_by_key(SAMPLE_SIZE - 1, |(key, _)| *key);
         self.kept.truncate(SAMPLE_SIZE);
-        self.limit = self.kept.iter().map(|(key, _)| *key).max();
+        self.limit = self
+            .kept
+            .iter()
+            .map(|(key, _)| *key)
+            .max()
+            .unwrap_or(u64::MAX);
     }
 
     /// Adds the rows `other` sampled (other rows of the same column).
-    pub(super) fn merge(&mut self, other: Sample) {
+    pub(super) fn merge(&mut self, other: Sample<T>) {
         self.seen += other.seen;
-        let limit = match (self.limit, other.limit) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        let limit = self.limit.min(other.limit);
         self.kept.extend(other.kept);
-        if let Some(limit) = limit {
+        if limit < u64::MAX {
             self.kept.retain(|(key, _)| *key <= limit);
         }
         self.limit = limit;
         self.prune();
     }
 
+    /// The sampled values, and how many values were offered.
+    pub(super) fn values(mut self) -> (Vec<T>, u64) {
+        self.prune();
+        (self.kept.into_iter().map(|(_, v)| v).collect(), self.seen)
+    }
+}
+
+impl Sample<f64> {
     /// The sampled values, sorted, and whether they are only a sample of
     /// the values (not all of them).
-    pub(super) fn finish(mut self) -> (Vec<f64>, bool) {
-        self.prune();
-        let mut values: Vec<f64> = self.kept.into_iter().map(|(_, v)| v).collect();
+    pub(super) fn finish(self) -> (Vec<f64>, bool) {
+        let (mut values, seen) = self.values();
         values.sort_by(f64::total_cmp);
-        let sampled = self.seen > values.len() as u64;
+        let sampled = seen > values.len() as u64;
         (values, sampled)
     }
 }

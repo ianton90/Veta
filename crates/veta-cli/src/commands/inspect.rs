@@ -166,6 +166,7 @@ pub(crate) fn stats(
         "median",
         "quartiles",
         "length",
+        "top value",
     ]
     .map(String::from)
     .to_vec();
@@ -187,11 +188,14 @@ pub(crate) fn stats(
                 s.text_lengths
                     .as_ref()
                     .map(|l| format!("{}–{} (mean {})", l.min, l.max, format_float(l.mean))),
+                s.top_values
+                    .first()
+                    .map(|top| veta_fmt::format_top_value(top, s.top_estimated, 30)),
             ]
         })
         .collect();
     let right = [
-        false, false, true, true, true, false, false, true, true, true, true, false,
+        false, false, true, true, true, false, false, true, true, true, true, false, false,
     ];
     table::write(out, &header, None, &rows, &right)?;
     Ok(())

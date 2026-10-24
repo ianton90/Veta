@@ -664,6 +664,7 @@
   "ST_STATS_NULLS": "Nulos",
   "ST_STATS_SELECT": "Selecciona una o más columnas para ver sus estadísticas.",
   "ST_STATS_STD_DEV": "Desv. típica",
+  "ST_STATS_TOP": "Más frecuentes",
   "ST_STATS_MEDIAN": "Mediana",
   "ST_STATS_QUARTILES": "Cuartiles",
   "ST_STATS_LENGTH": "Longitud",

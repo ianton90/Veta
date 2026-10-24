@@ -130,6 +130,18 @@ fn estimate_mark(estimated: bool) -> &'static str {
     if estimated { "~" } else { "" }
 }
 
+/// A frequent value and its count for display: `value (count)`, the
+/// value shortened to `max` characters and the count marked `~` when
+/// estimated.
+pub fn format_top_value(value: &veta_core::stats::TopValue, estimated: bool, max: usize) -> String {
+    format!(
+        "{} ({}{})",
+        abbreviate(&format_stat_value(&value.value), max),
+        estimate_mark(estimated),
+        value.count
+    )
+}
+
 /// The distinct count for display (`~` when estimated).
 pub fn format_distinct(stats: &ColumnStats) -> Option<String> {
     let n = stats.distinct?;

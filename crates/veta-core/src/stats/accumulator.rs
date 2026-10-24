@@ -177,7 +177,7 @@ impl Accumulator {
         self.count += array.len() as u64;
         self.nulls += array.logical_null_count() as u64;
         if let (Some(converter), Some(distinct)) = (&self.converter, &mut self.distinct) {
-            insert_hashes(array, converter, distinct)?;
+            insert_hashes(array, first_row, converter, distinct)?;
         }
         if self.orderable && self.update_extremes(array).is_err() {
             self.orderable = false;
@@ -287,10 +287,17 @@ impl Accumulator {
         Ok(())
     }
 
-    pub(super) fn finish(self) -> ColumnStats {
+    /// The statistics, and the `top` most frequent values as (first row,
+    /// count), for the caller to read (none when no value is there twice).
+    pub(super) fn finish(mut self, top: usize) -> (ColumnStats, Vec<(u64, u64)>) {
         let (distinct, distinct_estimated) = match &self.distinct {
-            Some(d) => (Some(d.count()), d.estimated()),
+            Some(d) => (Some(d.count_distinct()), d.estimated()),
             None => (None, false),
+        };
+        let sampled_counts = self.distinct.as_ref().is_some_and(Distinct::sampled_counts);
+        let most_frequent = match self.distinct.take().map(|d| d.most_frequent(top)) {
+            Some(rows) if rows.first().is_some_and(|(_, count)| *count > 1) => rows,
+            _ => Vec::new(),
         };
         let std_dev = (self.n > 1).then(|| (self.m2 / (self.n - 1) as f64).sqrt());
         let (mean, std_dev) = match self.moments {
@@ -320,7 +327,7 @@ impl Accumulator {
             max: l.max,
             mean: l.sum as f64 / l.n as f64,
         });
-        ColumnStats {
+        let stats = ColumnStats {
             type_name: type_name(&self.data_type),
             count: self.count,
             nulls: self.nulls,
@@ -332,8 +339,11 @@ impl Accumulator {
             std_dev,
             text_lengths,
             quartiles,
+            top_values: Vec::new(),
+            top_estimated: sampled_counts && !most_frequent.is_empty(),
             column: self.column,
-        }
+        };
+        (stats, most_frequent)
     }
 }
 

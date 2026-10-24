@@ -1,7 +1,9 @@
 //! Counting distinct values: by 64-bit hash, exactly while there are few,
-//! then estimated with HyperLogLog.
+//! then estimated with HyperLogLog. Exact counts also say how often each
+//! value is seen and its first row, for the most frequent values; once
+//! estimated, a sketch keeps the frequent ones approximately.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 
 use arrow::array::{Array, ArrayRef};
@@ -9,16 +11,19 @@ use arrow::datatypes::DataType;
 use arrow::row::RowConverter;
 
 use super::EXACT_DISTINCT_LIMIT;
+use super::sample::Sample;
 use crate::error::Result;
 
-/// Adds the hashes of `array`'s valid values to `distinct`. Numbers are
-/// hashed from their value, text from its bytes, other types through the
-/// row format.
+/// Adds the hashes of `array`'s valid values (rows from `first_row` on) to
+/// `distinct`. Numbers are hashed from their value, text from its bytes,
+/// other types through the row format.
 pub(super) fn insert_hashes(
     array: &ArrayRef,
+    first_row: u64,
     converter: &RowConverter,
     distinct: &mut Distinct,
 ) -> Result<()> {
+    let row = |i: usize| first_row + i as u64;
     use arrow::array::AsArray;
     match array.data_type() {
         // Text straight from its offsets and bytes.
@@ -27,7 +32,7 @@ pub(super) fn insert_hashes(
             let (offsets, bytes) = (values.value_offsets(), values.value_data());
             each_valid(array, |i| {
                 let (start, end) = (offsets[i] as usize, offsets[i + 1] as usize);
-                distinct.insert(hash_bytes(&bytes[start..end]));
+                distinct.insert(hash_bytes(&bytes[start..end]), row(i));
             });
         }
         DataType::LargeUtf8 => {
@@ -35,7 +40,7 @@ pub(super) fn insert_hashes(
             let (offsets, bytes) = (values.value_offsets(), values.value_data());
             each_valid(array, |i| {
                 let (start, end) = (offsets[i] as usize, offsets[i + 1] as usize);
-                distinct.insert(hash_bytes(&bytes[start..end]));
+                distinct.insert(hash_bytes(&bytes[start..end]), row(i));
             });
         }
         t if t.is_primitive() && t.primitive_width().is_some_and(|w| w <= 16) => {
@@ -47,31 +52,38 @@ pub(super) fn insert_hashes(
             let word = |b: &[u8]| u64::from_le_bytes(b.try_into().expect("8 bytes"));
             match width {
                 8 => each_valid(array, |i| {
-                    distinct.insert(mix(word(&bytes[i * 8..i * 8 + 8]) ^ SEED));
+                    distinct.insert(mix(word(&bytes[i * 8..i * 8 + 8]) ^ SEED), row(i));
                 }),
                 16 => each_valid(array, |i| {
                     let (low, high) = (&bytes[i * 16..i * 16 + 8], &bytes[i * 16 + 8..i * 16 + 16]);
-                    distinct.insert(mix(word(low) ^ mix(word(high) ^ SEED)));
+                    distinct.insert(mix(word(low) ^ mix(word(high) ^ SEED)), row(i));
                 }),
                 _ => each_valid(array, |i| {
-                    distinct.insert(mix(tail_word(&bytes[i * width..(i + 1) * width]) ^ SEED));
+                    distinct.insert(
+                        mix(tail_word(&bytes[i * width..(i + 1) * width]) ^ SEED),
+                        row(i),
+                    );
                 }),
             }
         }
-        // At most two values: whether each is there.
+        // At most two values: how many of each, and where each first is.
         DataType::Boolean => {
             let values = array.as_boolean();
             let trues = values.true_count();
-            let valid = values.len() - values.null_count();
-            for (value, present) in [(true, trues > 0), (false, trues < valid)] {
-                if present {
-                    distinct.insert(mix(u64::from(value) ^ SEED));
+            let falses = values.len() - values.null_count() - trues;
+            for (value, n) in [(true, trues), (false, falses)] {
+                let first =
+                    (0..values.len()).find(|&i| values.is_valid(i) && values.value(i) == value);
+                if let (true, Some(i)) = (n > 0, first) {
+                    distinct.insert_n(mix(u64::from(value) ^ SEED), n as u64, row(i));
                 }
             }
         }
         _ => {
             let rows = converter.convert_columns(std::slice::from_ref(array))?;
-            each_valid(array, |i| distinct.insert(hash_bytes(rows.row(i).data())));
+            each_valid(array, |i| {
+                distinct.insert(hash_bytes(rows.row(i).data()), row(i))
+            });
         }
     }
     Ok(())
@@ -129,7 +141,7 @@ fn tail_word(mut rest: &[u8]) -> u64 {
 }
 
 /// splitmix64's finalizer.
-pub(super) fn mix(mut z: u64) -> u64 {
+fn mix(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     z ^ (z >> 31)
@@ -153,24 +165,94 @@ impl Hasher for Identity {
     }
 }
 
-/// Distinct hashes: a set while small, HyperLogLog after.
+/// Distinct values whose counts are kept exactly (with a row each), for
+/// the most frequent values; past this, only that each value was seen.
+pub const COUNTED_LIMIT: usize = 65_536;
+
+/// How often a value was seen, and the first row it was seen in (32 bits
+/// each keep the map small; a row past `u32::MAX` is [`NO_ROW`], and the
+/// value's row is then looked for in the row sample).
+#[derive(Debug, Clone, Copy)]
+struct Seen {
+    count: u32,
+    row: u32,
+}
+
+const NO_ROW: u32 = u32::MAX;
+
+type Hashes<V> = HashMap<u64, V, BuildHasherDefault<Identity>>;
+
+/// The `n` most seen of (hash, row, count), most seen first (ties: the
+/// earlier row first).
+fn most_seen(mut all: Vec<(u64, u64, u64)>, n: usize) -> Vec<(u64, u64, u64)> {
+    let order = |a: &(u64, u64, u64), b: &(u64, u64, u64)| b.2.cmp(&a.2).then(a.1.cmp(&b.1));
+    if all.len() > n && n > 0 {
+        all.select_nth_unstable_by(n - 1, order);
+        all.truncate(n);
+    }
+    all.sort_by(order);
+    all
+}
+
+/// Distinct hashes: counted while few, a set after that, HyperLogLog when
+/// too many. A sample of rows (their value's hash) gives the frequent
+/// values once they are no longer counted.
 #[derive(Default)]
 pub(super) struct Distinct {
+    /// Each value's count and first row, up to [`COUNTED_LIMIT`] values.
+    counted: Hashes<Seen>,
+    /// Past that, the values seen.
     exact: HashSet<u64, BuildHasherDefault<Identity>>,
+    /// Whether `exact` replaced `counted`.
+    uncounted: bool,
     estimate: Option<HyperLogLog>,
+    /// (hash, row) of a uniform sample of rows.
+    rows: Sample<(u64, u64)>,
 }
 
 impl Distinct {
-    pub(super) fn insert(&mut self, hash: u64) {
-        match &mut self.estimate {
-            Some(hll) => hll.insert(hash),
-            None => {
-                self.exact.insert(hash);
-                if self.exact.len() > EXACT_DISTINCT_LIMIT {
-                    self.start_estimating();
-                }
+    /// Adds the value with this hash in row `row`.
+    pub(super) fn insert(&mut self, hash: u64, row: u64) {
+        self.rows.add(row, (hash, row));
+        self.count(hash, 1, row);
+    }
+
+    /// Adds `n` values with this hash, the first at `row` (left out of
+    /// the row sample: only for values that stay counted, like booleans).
+    pub(super) fn insert_n(&mut self, hash: u64, n: u64, row: u64) {
+        self.count(hash, n, row);
+    }
+
+    fn count(&mut self, hash: u64, n: u64, row: u64) {
+        if let Some(hll) = &mut self.estimate {
+            hll.insert(hash);
+        } else if self.uncounted {
+            self.exact.insert(hash);
+            if self.exact.len() > EXACT_DISTINCT_LIMIT {
+                self.start_estimating();
+            }
+        } else {
+            let row = u32::try_from(row).unwrap_or(NO_ROW);
+            let seen = self.counted.entry(hash).or_insert(Seen { count: 0, row });
+            seen.count = seen
+                .count
+                .saturating_add(u32::try_from(n).unwrap_or(u32::MAX));
+            seen.row = seen.row.min(row);
+            if self.counted.len() > COUNTED_LIMIT {
+                self.stop_counting();
             }
         }
+    }
+
+    /// Keeps only which values were seen.
+    pub(super) fn stop_counting(&mut self) {
+        if self.uncounted {
+            return;
+        }
+        self.uncounted = true;
+        self.exact
+            .extend(self.counted.drain().map(|(hash, _)| hash));
+        self.counted.shrink_to_fit();
     }
 
     /// Switches to the estimate, with the values seen so far.
@@ -178,9 +260,10 @@ impl Distinct {
         if self.estimate.is_some() {
             return;
         }
+        self.stop_counting();
         let mut hll = HyperLogLog::new();
-        for h in self.exact.drain() {
-            hll.insert(h);
+        for hash in self.exact.drain() {
+            hll.insert(hash);
         }
         self.exact.shrink_to_fit();
         self.estimate = Some(hll);
@@ -188,32 +271,82 @@ impl Distinct {
 
     /// Adds the values counted by `other`.
     pub(super) fn merge(&mut self, other: Distinct) {
-        match other.estimate {
-            Some(theirs) => {
-                self.start_estimating();
-                if let Some(mine) = &mut self.estimate {
-                    for (a, b) in mine.registers.iter_mut().zip(theirs.registers) {
-                        *a = (*a).max(b);
-                    }
+        self.rows.merge(other.rows);
+        if let Some(theirs) = other.estimate {
+            self.start_estimating();
+            if let Some(mine) = &mut self.estimate {
+                for (a, b) in mine.registers.iter_mut().zip(theirs.registers) {
+                    *a = (*a).max(b);
                 }
             }
-            None => {
-                for hash in other.exact {
-                    self.insert(hash);
-                }
-            }
+            return;
+        }
+        if other.uncounted {
+            self.stop_counting();
+        }
+        for hash in other.exact {
+            self.count(hash, 1, 0);
+        }
+        for (hash, seen) in other.counted {
+            self.count(hash, u64::from(seen.count), u64::from(seen.row));
         }
     }
 
-    pub(super) fn count(&self) -> u64 {
+    pub(super) fn count_distinct(&self) -> u64 {
         match &self.estimate {
             Some(hll) => hll.estimate(),
-            None => self.exact.len() as u64,
+            None if self.uncounted => self.exact.len() as u64,
+            None => self.counted.len() as u64,
         }
     }
 
     pub(super) fn estimated(&self) -> bool {
         self.estimate.is_some()
+    }
+
+    /// Whether the most frequent values come from the row sample (too
+    /// many distinct values to count each), their counts estimates.
+    pub(super) fn sampled_counts(&self) -> bool {
+        self.uncounted
+    }
+
+    /// The `n` most frequent values as (a row holding it, count), most
+    /// frequent first. Past [`COUNTED_LIMIT`] values, from the row sample:
+    /// the values there more than once, their counts scaled up.
+    pub(super) fn most_frequent(self, n: usize) -> Vec<(u64, u64)> {
+        let (sampled, seen) = self.rows.values();
+        // The sampled rows by hash: how many, and the earliest.
+        let mut sample_rows: Hashes<(u64, u64)> = HashMap::default();
+        for (hash, row) in &sampled {
+            let entry = sample_rows.entry(*hash).or_insert((0, *row));
+            entry.0 += 1;
+            entry.1 = entry.1.min(*row);
+        }
+        let top = if self.uncounted {
+            let scale = seen as f64 / sampled.len().max(1) as f64;
+            let repeated = sample_rows
+                .iter()
+                .filter(|(_, (count, _))| *count > 1)
+                .map(|(hash, (count, row))| (*hash, *row, (*count as f64 * scale).round() as u64))
+                .collect();
+            most_seen(repeated, n)
+        } else {
+            let all = self
+                .counted
+                .into_iter()
+                .map(|(hash, s)| (hash, u64::from(s.row), u64::from(s.count)))
+                .collect();
+            most_seen(all, n)
+        };
+        top.into_iter()
+            .filter_map(|(hash, row, count)| {
+                let row = match row == u64::from(NO_ROW) {
+                    true => sample_rows.get(&hash)?.1,
+                    false => row,
+                };
+                Some((row, count))
+            })
+            .collect()
     }
 }
 
@@ -268,8 +401,8 @@ mod tests {
             let converter =
                 RowConverter::new(vec![SortField::new(array.data_type().clone())]).unwrap();
             let mut distinct = Distinct::default();
-            insert_hashes(&array, &converter, &mut distinct).unwrap();
-            distinct.count()
+            insert_hashes(&array, 0, &converter, &mut distinct).unwrap();
+            distinct.count_distinct()
         };
         let bools = BooleanArray::from(vec![Some(true), None, Some(true), Some(false)]);
         assert_eq!(count(Arc::new(bools.clone())), 2);
@@ -293,14 +426,42 @@ mod tests {
     }
 
     #[test]
+    fn most_frequent_exact_then_sketched() {
+        let mut d = Distinct::default();
+        for row in 0..1000u64 {
+            d.insert(mix(row % 10), row);
+        }
+        // Ten values, a hundred each: the earliest first on ties.
+        assert_eq!(d.most_frequent(3), [(0, 100), (1, 100), (2, 100)]);
+
+        // Past the exact limit: a value in every tenth row stays on top,
+        // its count close (a little low).
+        let mut d = Distinct::default();
+        let n = EXACT_DISTINCT_LIMIT as u64 * 2;
+        let heavy = mix(u64::MAX);
+        for row in 0..n {
+            match row % 10 {
+                3 => d.insert(heavy, row),
+                _ => d.insert(mix(row), row),
+            }
+        }
+        assert!(d.estimated());
+        let top = d.most_frequent(1);
+        let (row, count) = top[0];
+        assert_eq!(row % 10, 3, "a row holding that value");
+        let off = (count as f64 - n as f64 / 10.0).abs() / (n as f64 / 10.0);
+        assert!(off < 0.1, "{count}");
+    }
+
+    #[test]
     fn hyperloglog_is_close() {
         let mut d = Distinct::default();
         let n = EXACT_DISTINCT_LIMIT as u64 * 2;
         for i in 0..n {
-            d.insert(mix(i));
+            d.insert(mix(i), i);
         }
         assert!(d.estimated());
-        let error = (d.count() as f64 - n as f64).abs() / n as f64;
+        let error = (d.count_distinct() as f64 - n as f64).abs() / n as f64;
         assert!(error < 0.03, "error {error}");
     }
 }

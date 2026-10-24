@@ -118,6 +118,25 @@ pub(super) fn stats_pane<'a>(view: StatsView, ui: Ui) -> Element<'a, Message> {
                 .push(line("ST_STATS_MEDIAN", later(format_median(s))))
                 .push(line("ST_STATS_QUARTILES", later(format_quartiles(s))));
         }
+        if let Some(s) = stats
+            .as_ref()
+            .filter(|s| !partial && !s.top_values.is_empty())
+        {
+            card = card.push(
+                text(tr("ST_STATS_TOP"))
+                    .size(ui.small())
+                    .color(t.muted_text),
+            );
+            for top in s.top_values.iter().take(5) {
+                let mark = if s.top_estimated { "~" } else { "" };
+                card = card.push(row![
+                    text(veta_fmt::abbreviate(&format_stat_value(&top.value), 40))
+                        .size(ui.small())
+                        .width(Length::Fill),
+                    text(format!("{mark}{}", top.count)).size(ui.small()),
+                ]);
+            }
+        }
         if let Some(l) = stats.as_ref().and_then(|s| s.text_lengths.as_ref()) {
             let value = tr_with(
                 "ST_STATS_LENGTH_VALUE",
