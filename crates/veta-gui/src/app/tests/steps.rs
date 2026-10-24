@@ -294,7 +294,7 @@ fn statistics_pane_follows_selection_and_edits() {
     let _ = app.update(Message::Action(Action::StatisticsPane));
     assert_eq!(app.side_tab, SideTab::Stats);
     // Quick stats from the footer while the pass runs.
-    let view = app.stats_view(id);
+    let view = app.stats_view(id, false);
     assert_eq!(view.columns.len(), 1);
     let (name, quick, partial) = &view.columns[0];
     assert_eq!(name, "id");
@@ -308,7 +308,7 @@ fn statistics_pane_follows_selection_and_edits() {
     assert_eq!(max.as_deref(), Some("999"));
     assert_eq!(app.stats.running.as_ref().unwrap().columns, ["id"]);
     finish_stats(&mut app);
-    let view = app.stats_view(id);
+    let view = app.stats_view(id, false);
     let (_, full, partial) = &view.columns[0];
     assert!(!partial);
     assert_eq!(full.as_ref().unwrap().distinct, Some(1000));
@@ -332,6 +332,24 @@ fn statistics_pane_follows_selection_and_edits() {
     finish_stats(&mut app);
     assert!(app.stats.running.is_none());
 
+    // The summary computes the rest; the pane keeps to the selection.
+    let _ = app.update(Message::OpenSummary);
+    assert!(matches!(app.dialog, Some(Dialog::Summary { .. })));
+    assert_eq!(
+        app.stats.running.as_ref().unwrap().columns,
+        ["score", "flag"]
+    );
+    finish_stats(&mut app);
+    assert_eq!(app.stats_view(id, true).columns.len(), 4);
+    assert!(
+        app.stats_view(id, true)
+            .columns
+            .iter()
+            .all(|(_, _, partial)| !partial)
+    );
+    assert_eq!(app.stats_view(id, false).columns.len(), 2);
+    let _ = app.update(Message::CloseDialog);
+
     // After an edit the statistics are recomputed (once the step is).
     let _ = app.update(Message::Grid(id, GridEvent::Select { row: 0, column: 2 }));
     let _ = app.update(Message::Grid(id, GridEvent::DeleteRows));
@@ -343,7 +361,7 @@ fn statistics_pane_follows_selection_and_edits() {
         },
     ));
     finish_stats(&mut app);
-    let view = app.stats_view(id);
+    let view = app.stats_view(id, false);
     assert_eq!(view.columns[0].1.as_ref().unwrap().count, 999);
     assert!(
         app.stats

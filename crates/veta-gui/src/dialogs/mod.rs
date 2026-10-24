@@ -49,6 +49,7 @@ mod replace;
 mod rows;
 mod sort;
 mod split;
+mod summary;
 mod writer;
 
 pub use cast::*;
@@ -68,6 +69,7 @@ pub use replace::*;
 pub use rows::*;
 pub use sort::*;
 pub use split::*;
+pub use summary::*;
 pub use writer::*;
 
 /// A dialog that adds a step, or edits an existing one. The app keeps it as

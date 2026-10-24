@@ -6,6 +6,12 @@ impl App {
     /// Statistics messages.
     pub(crate) fn stats_message(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::OpenSummary => {
+                if let Some(id) = self.active {
+                    self.commit_edit();
+                    self.dialog = Some(Dialog::Summary { document: id });
+                }
+            }
             Message::StatsProgress(id, revision, progress) => {
                 if let Some(run) = &mut self.stats.running
                     && run.document == id
@@ -46,15 +52,27 @@ impl App {
         Task::none()
     }
 
-    /// Columns the statistics pane shows: the selected ones.
+    /// Columns statistics are shown for: all of them in the summary, else
+    /// the selected ones.
     fn stats_columns(&self, id: DocumentId) -> Vec<String> {
-        self.selected_column_names(id)
+        match self.dialog {
+            Some(Dialog::Summary { document }) if document == id => self
+                .workbook
+                .get(id)
+                .map(|d| {
+                    let schema = d.schema();
+                    schema.fields().iter().map(|f| f.name().clone()).collect()
+                })
+                .unwrap_or_default(),
+            _ => self.selected_column_names(id),
+        }
     }
 
     /// Starts computing statistics the pane needs and doesn't have, and
     /// stops a pass that is no longer needed.
     pub(crate) fn schedule_stats(&mut self) -> Task<Message> {
-        let visible = self.show_side_pane && self.side_tab == SideTab::Stats;
+        let summary = matches!(self.dialog, Some(Dialog::Summary { .. }));
+        let visible = summary || (self.show_side_pane && self.side_tab == SideTab::Stats);
         let wanted = self
             .active
             .filter(|_| visible)
@@ -118,14 +136,18 @@ impl App {
         Task::run(receiver, |message| message)
     }
 
-    /// What the statistics pane shows for document `id`.
-    pub(crate) fn stats_view(&self, id: DocumentId) -> panes::StatsView {
+    /// What the statistics pane shows for document `id`: the selected
+    /// columns, or every column (`all`, for the summary).
+    pub(crate) fn stats_view(&self, id: DocumentId, all: bool) -> panes::StatsView {
         let Some(doc) = self.workbook.get(id) else {
             return panes::StatsView::default();
         };
         let revision = doc.revision();
-        let columns = self
-            .stats_columns(id)
+        let names = match all {
+            true => self.stats_columns(id),
+            false => self.selected_column_names(id),
+        };
+        let columns = names
             .into_iter()
             .map(|c| {
                 let full = self.stats.cache.get(&(id, revision, c.clone())).cloned();

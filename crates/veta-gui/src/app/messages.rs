@@ -86,6 +86,8 @@ pub(crate) enum Message {
     /// add after them (`Some(false)`) or cancel.
     RecipeChoice(Option<bool>),
     /// Save the active document's steps as a recipe.
+    /// Opens the summary of all columns of the active document.
+    OpenSummary,
     StatsProgress(DocumentId, u64, f32),
     /// Clipboard text read for pasting.
     Pasted(Option<String>),
@@ -180,7 +182,7 @@ impl Message {
             M::ClearFilter => Area::Filter,
             M::Menu(..) | M::CloseMenu => Area::Menus,
             M::Rows(..) => Area::Rows,
-            M::StatsProgress(..) | M::StatsDone(..) => Area::Stats,
+            M::OpenSummary | M::StatsProgress(..) | M::StatsDone(..) => Area::Stats,
             M::Step(..)
             | M::ComputeProgress(..)
             | M::ComputeDone(..)

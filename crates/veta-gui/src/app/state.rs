@@ -253,6 +253,10 @@ pub(crate) enum Dialog {
     },
     Settings(Box<Draft>),
     About,
+    /// Statistics of every column of a document.
+    Summary {
+        document: DocumentId,
+    },
     Rows {
         document: DocumentId,
         dialog: RowsDialog,

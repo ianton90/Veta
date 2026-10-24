@@ -25,6 +25,12 @@ pub(super) fn stats_pane<'a>(view: StatsView, ui: Ui) -> Element<'a, Message> {
     if let Some(reason) = view.waiting {
         content = content.push(text(reason).size(ui.small()).color(t.muted_text));
     }
+    content = content.push(
+        button(text(tr("ST_STATS_SUMMARY_OPEN")).size(ui.small()))
+            .style(button::secondary)
+            .padding([3, 8])
+            .on_press(Message::OpenSummary),
+    );
     if view.columns.is_empty() {
         content = content.push(
             text(tr("ST_STATS_SELECT"))

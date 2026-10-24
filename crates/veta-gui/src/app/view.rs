@@ -107,7 +107,7 @@ impl App {
                     row![
                         grid,
                         divider(ui.tokens, true),
-                        panes::side_pane(tab, doc, self.side_tab, self.stats_view(id), ui)
+                        panes::side_pane(tab, doc, self.side_tab, self.stats_view(id, false), ui)
                     ]
                     .into()
                 } else {
@@ -267,6 +267,10 @@ impl App {
                     .map(Message::Settings)
             }
             Dialog::About => settings::about(Message::CloseDialog, ui.tokens),
+            Dialog::Summary { document } => {
+                let view = self.stats_view(*document, true);
+                dialogs::summary(view.columns, view.progress, Message::CloseDialog, ui.tokens)
+            }
             Dialog::Step { dialog, .. } => dialog.view(ui.tokens).map(Message::Step),
             Dialog::Import(dialog) => dialog.view(ui.tokens).map(Message::Import),
             Dialog::Export { dialog, .. } => dialog.view(ui.tokens).map(Message::Export),
