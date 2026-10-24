@@ -141,7 +141,8 @@ pub enum Command {
     },
     /// Show writer settings, or change them with the options below.
     WriterSettings(meta::WriterArgs),
-    /// Column statistics: count, nulls, distinct, min, max, mean, std dev.
+    /// Column statistics: count, nulls, distinct, min, max, mean, std dev,
+    /// median and quartiles, text lengths and the most frequent values.
     Stats {
         file: PathBuf,
         /// Only these columns (repeatable; default: all).
