@@ -137,6 +137,25 @@ pub(super) fn stats_pane<'a>(view: StatsView, ui: Ui) -> Element<'a, Message> {
                 ]);
             }
         }
+        if let Some((s, d)) = stats
+            .as_ref()
+            .and_then(|s| Some((s, s.distribution.as_ref()?)))
+            .filter(|_| !partial)
+        {
+            let label = |v: &Option<veta_core::arrow::array::ArrayRef>| {
+                text(v.as_ref().map(format_stat_value).unwrap_or_default())
+                    .size(ui.small())
+                    .color(t.muted_text)
+            };
+            card = card.push(
+                column![
+                    super::plot::distribution_plot(d, t),
+                    row![label(&s.min).width(Length::Fill), label(&s.max),],
+                ]
+                .spacing(2)
+                .padding([6, 0]),
+            );
+        }
         if let Some(l) = stats.as_ref().and_then(|s| s.text_lengths.as_ref()) {
             let value = tr_with(
                 "ST_STATS_LENGTH_VALUE",

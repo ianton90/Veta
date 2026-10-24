@@ -10,6 +10,7 @@ use arrow::datatypes::{DataType, TimeUnit};
 use arrow::row::{RowConverter, SortField};
 
 use super::distinct::{Distinct, insert_hashes};
+use super::distribution::distribution;
 use super::sample::{Sample, quantile};
 use super::{ColumnStats, Quartiles, TextLengths};
 use crate::display::type_name;
@@ -309,7 +310,19 @@ impl Accumulator {
                 std_dev.and_then(|s| duration_value(s, &self.data_type).ok()),
             ),
         };
-        let (sorted, sampled) = self.sample.map(Sample::finish).unwrap_or_default();
+        let (sorted, seen) = self.sample.map(Sample::finish).unwrap_or_default();
+        let sampled = seen > sorted.len() as u64;
+        let number = |v: &Option<ArrayRef>| -> Option<f64> {
+            let v = v.as_ref()?;
+            let v = match self.moments {
+                Moments::Temporal => underlying(v).ok()?,
+                _ => v.clone(),
+            };
+            let v = cast(&v, &DataType::Float64).ok()?;
+            Some(v.as_primitive::<arrow::datatypes::Float64Type>().value(0))
+        };
+        let range = number(&self.min).zip(number(&self.max));
+        let distribution = distribution(&sorted, seen, sampled, range);
         let value = |x: f64| match self.moments {
             Moments::Temporal => temporal_value(x, &self.data_type).ok(),
             _ => Some(float_value(x)),
@@ -339,6 +352,7 @@ impl Accumulator {
             std_dev,
             text_lengths,
             quartiles,
+            distribution,
             top_values: Vec::new(),
             top_estimated: sampled_counts && !most_frequent.is_empty(),
             column: self.column,

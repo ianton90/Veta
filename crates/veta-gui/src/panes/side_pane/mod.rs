@@ -4,6 +4,7 @@ use super::*;
 use iced::widget::column;
 
 mod file;
+mod plot;
 mod stats;
 mod steps;
 

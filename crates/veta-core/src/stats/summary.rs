@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use super::accumulator::Accumulator;
+pub use super::distribution::Distribution;
 use crate::error::{Error, Result, invalid};
 use crate::steps::Pipeline;
 
@@ -55,6 +56,9 @@ pub struct ColumnStats {
     pub text_lengths: Option<TextLengths>,
     /// Quartiles of numbers, dates, times and durations.
     pub quartiles: Option<Quartiles>,
+    /// How those values are spread (histogram and density), in their
+    /// underlying numbers.
+    pub distribution: Option<Distribution>,
     /// The most frequent values, most frequent first (none when no value
     /// is there twice).
     pub top_values: Vec<TopValue>,

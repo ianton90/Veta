@@ -85,13 +85,11 @@ impl<T> Sample<T> {
 }
 
 impl Sample<f64> {
-    /// The sampled values, sorted, and whether they are only a sample of
-    /// the values (not all of them).
-    pub(super) fn finish(self) -> (Vec<f64>, bool) {
+    /// The sampled values, sorted, and how many values were offered.
+    pub(super) fn finish(self) -> (Vec<f64>, u64) {
         let (mut values, seen) = self.values();
         values.sort_by(f64::total_cmp);
-        let sampled = seen > values.len() as u64;
-        (values, sampled)
+        (values, seen)
     }
 }
 
@@ -115,8 +113,8 @@ mod tests {
         for i in 0..1000u64 {
             whole.add(i, i as f64);
         }
-        let (values, sampled) = whole.finish();
-        assert!(!sampled);
+        let (values, seen) = whole.finish();
+        assert_eq!(seen, values.len() as u64);
         assert_eq!(quantile(&values, 0.5), Some(499.5));
         assert_eq!(quantile(&values, 0.0), Some(0.0));
         assert_eq!(quantile(&[], 0.5), None);
@@ -134,9 +132,9 @@ mod tests {
         for piece in pieces {
             merged.merge(piece);
         }
-        let (a, sampled) = one.finish();
+        let (a, seen) = one.finish();
         let (b, _) = merged.finish();
-        assert!(sampled);
+        assert_eq!(seen, n);
         assert_eq!(a.len(), SAMPLE_SIZE);
         assert_eq!(a, b);
         let median = quantile(&a, 0.5).unwrap();
