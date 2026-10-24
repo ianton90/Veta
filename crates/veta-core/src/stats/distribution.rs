@@ -45,7 +45,7 @@ pub(super) fn distribution(
     let (first, last) = (*sorted.first()?, *sorted.last()?);
     let (low, high) = range.unwrap_or((first, last));
     let width = high - low;
-    if !(width > 0.0) || !width.is_finite() {
+    if width.is_nan() || width <= 0.0 || !width.is_finite() {
         return None;
     }
     let bin =
