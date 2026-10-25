@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use arrow::array::{Array, AsArray};
 use arrow::datatypes::{DataType, Float64Type};
@@ -35,6 +36,38 @@ type Counts = HashMap<u64, (u64, u64), BuildHasherDefault<Identity>>;
 enum Seen {
     Hashes(HashSet<u64, BuildHasherDefault<Identity>>),
     Counts(Counts),
+}
+
+/// Parts the hashes of the pieces are split into, by their top bits: a
+/// value can be in several pieces, and appending the pieces' hashes to
+/// parts, then sorting each part on its own on all cores, counts them
+/// faster than putting them into one set.
+const PARTS: usize = 64;
+
+/// Adds `hashes` to their parts.
+fn into_parts(parts: &mut [Vec<u64>], hashes: impl IntoIterator<Item = u64>) {
+    for hash in hashes {
+        parts[(hash >> (64 - PARTS.trailing_zeros())) as usize].push(hash);
+    }
+}
+
+/// Distinct hashes in `parts`, each part sorted on its own, on all cores.
+fn count_parts(mut parts: Vec<Vec<u64>>) -> u64 {
+    let chunk = PARTS.div_ceil(crate::parallel::threads().max(1));
+    let total = AtomicU64::new(0);
+    std::thread::scope(|scope| {
+        for group in parts.chunks_mut(chunk) {
+            let total = &total;
+            scope.spawn(move || {
+                for part in group {
+                    part.sort_unstable();
+                    part.dedup();
+                    total.fetch_add(part.len() as u64, Ordering::Relaxed);
+                }
+            });
+        }
+    });
+    total.into_inner()
 }
 
 /// Reads column `column` of `pipeline`'s output (`rows` rows, after
@@ -95,14 +128,14 @@ pub(super) fn full_column(
             Ok((seen, values, row as usize - first))
         },
     );
-    let mut hashes: HashSet<u64, BuildHasherDefault<Identity>> = HashSet::default();
+    let mut parts = vec![Vec::new(); PARTS];
     let mut counts = Counts::default();
     let mut values = Vec::new();
     let mut done = 0;
     for piece in pieces {
         let (seen, piece_values, n) = piece?;
         match seen {
-            Seen::Hashes(set) => hashes.extend(set),
+            Seen::Hashes(set) => into_parts(&mut parts, set),
             Seen::Counts(piece_counts) => {
                 for (hash, (n, at)) in piece_counts {
                     let entry = counts.entry(hash).or_insert((0, at));
@@ -120,7 +153,7 @@ pub(super) fn full_column(
     let distinct = match (hashing, top > 0) {
         (false, _) => 0,
         (true, true) => counts.len() as u64,
-        (true, false) => hashes.len() as u64,
+        (true, false) => count_parts(parts),
     };
     let mut most_frequent: Vec<(u64, u64)> =
         counts.into_values().map(|(n, row)| (row, n)).collect();
