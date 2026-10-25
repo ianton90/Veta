@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use super::accumulator::Accumulator;
 pub use super::distribution::Distribution;
+use super::full::full_column;
 use crate::error::{Error, Result, invalid};
 use crate::steps::Pipeline;
 
@@ -121,6 +122,37 @@ pub struct TextLengths {
 pub struct StatsJob {
     pipeline: Pipeline,
     columns: Vec<String>,
+    options: StatsOptions,
+}
+
+/// What a statistics pass computes beyond the basic statistics (count,
+/// nulls, distinct, min, max, mean, standard deviation, quartiles), and
+/// whether it computes everything in full.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StatsOptions {
+    /// Distinct counts, quartiles and top-value counts from every value
+    /// (one more pass per column, and memory for its values), instead of
+    /// estimates past [`EXACT_DISTINCT_LIMIT`] distinct values,
+    /// [`SAMPLE_SIZE`](super::SAMPLE_SIZE) values and
+    /// [`COUNTED_LIMIT`](super::COUNTED_LIMIT) counted values.
+    pub exact: bool,
+    /// The most frequent values.
+    pub top_values: bool,
+    /// Text lengths.
+    pub text_lengths: bool,
+    /// The values' distribution (histogram and density), for drawing.
+    pub distribution: bool,
+}
+
+impl StatsOptions {
+    /// Everything, estimated where that is faster: what the desktop app
+    /// shows.
+    pub const ALL: StatsOptions = StatsOptions {
+        exact: false,
+        top_values: true,
+        text_lengths: true,
+        distribution: true,
+    };
 }
 
 impl StatsJob {
@@ -138,7 +170,18 @@ impl StatsJob {
         } else {
             columns
         };
-        Ok(Self { pipeline, columns })
+        Ok(Self {
+            pipeline,
+            columns,
+            options: StatsOptions::default(),
+        })
+    }
+
+    /// Computes what `options` asks for (the basic statistics, estimated
+    /// where faster, by default).
+    pub fn with_options(mut self, options: StatsOptions) -> Self {
+        self.options = options;
+        self
     }
 
     pub fn columns(&self) -> &[String] {
@@ -158,9 +201,18 @@ impl StatsJob {
             .columns
             .iter()
             .zip(&indices)
-            .map(|(c, &i)| Accumulator::new(c.clone(), schema.field(i).data_type().clone()))
+            .map(|(c, &i)| {
+                Accumulator::new(c.clone(), schema.field(i).data_type().clone(), self.options)
+            })
             .collect();
         let rows = self.pipeline.num_rows();
+        let options = self.options;
+        // In exact mode a full pass per column follows the shared one; the
+        // progress counts them all alike.
+        let passes = match options.exact {
+            true => 1 + accumulators.len(),
+            false => 1,
+        } as f32;
         // Pieces are read and counted on several threads, and the counts
         // added up in order. Once a column has too many distinct values to
         // count each (or to count at all), later pieces start that way.
@@ -181,7 +233,7 @@ impl StatsJob {
             move |batches, first| {
                 let mut counted = Vec::with_capacity(fields.len());
                 for ((name, data_type), flag) in fields.iter().zip(flags.iter()) {
-                    let mut acc = Accumulator::new(name.clone(), data_type.clone());
+                    let mut acc = Accumulator::new(name.clone(), data_type.clone(), options);
                     if let Some(distinct) = &mut acc.distinct {
                         match flag.load(Ordering::Relaxed) {
                             2 => distinct.start_estimating(),
@@ -226,16 +278,33 @@ impl StatsJob {
                 }
             });
             done += n;
-            if !progress(done as f32 / rows.max(1) as f32) {
+            if !progress(done as f32 / rows.max(1) as f32 / passes) {
                 return Err(Error::Cancelled);
             }
         }
-        // The most frequent values, read back from their first rows.
         let level = self.pipeline.evaluated();
         let mut stats = Vec::with_capacity(accumulators.len());
-        for acc in accumulators {
+        for (k, acc) in accumulators.into_iter().enumerate() {
             let column = [acc.column.clone()];
-            let (mut column_stats, top) = acc.finish(TOP_VALUES);
+            let full = match options.exact && (acc.hashable() || acc.numeric()) {
+                true => {
+                    let top = if options.top_values { TOP_VALUES } else { 0 };
+                    let mut column_progress = |f: f32| progress((1.0 + k as f32 + f) / passes);
+                    Some(full_column(
+                        &self.pipeline,
+                        level,
+                        0..rows,
+                        &acc.column,
+                        acc.hashable().then(|| acc.data_type().clone()),
+                        top,
+                        acc.numeric(),
+                        &mut column_progress,
+                    )?)
+                }
+                false => None,
+            };
+            // The most frequent values, read back from a row holding each.
+            let (mut column_stats, top) = acc.finish(full);
             for (row, count) in top {
                 let row = row as usize;
                 let batch = self
@@ -273,7 +342,11 @@ pub fn quick_stats(
     if nulls.null_count() > 0 {
         return None;
     }
-    let mut acc = Accumulator::new(column.to_owned(), field.data_type().clone());
+    let mut acc = Accumulator::new(
+        column.to_owned(),
+        field.data_type().clone(),
+        StatsOptions::default(),
+    );
     for extremes in [
         converter.row_group_mins(groups.iter()).ok()?,
         converter.row_group_maxes(groups.iter()).ok()?,
@@ -291,7 +364,7 @@ pub fn quick_stats(
             acc.update_extremes(&extremes).ok()?;
         }
     }
-    let (mut stats, _) = acc.finish(0);
+    let (mut stats, _) = acc.finish(None);
     stats.count = groups.iter().map(|g| g.num_rows() as u64).sum();
     stats.nulls = nulls.iter().flatten().sum();
     stats.distinct = None;
@@ -381,7 +454,9 @@ mod tests {
 
     #[test]
     fn column_stats() {
-        let job = StatsJob::new(pipeline(200_000), vec![]).unwrap();
+        let job = StatsJob::new(pipeline(200_000), vec![])
+            .unwrap()
+            .with_options(StatsOptions::ALL);
         assert_eq!(job.columns(), ["id", "name", "list"]);
         let mut seen = 0;
         let stats = job
@@ -423,6 +498,34 @@ mod tests {
         assert_eq!(text(&Some(name.top_values[0].value.clone())), "b");
         assert_eq!(stats[2].nulls, 200_000);
         assert!(stats[2].min.is_none());
+
+        // Without extras they aren't computed; exact mode counts every
+        // value and gives the true quartiles.
+        let options = StatsOptions {
+            exact: true,
+            ..StatsOptions::default()
+        };
+        let exact = StatsJob::new(pipeline(200_000), vec![])
+            .unwrap()
+            .with_options(options)
+            .run(&mut |_| true)
+            .unwrap();
+        let (id, name) = (&exact[0], &exact[1]);
+        assert_eq!((id.distinct, id.distinct_estimated), (Some(200_000), false));
+        let q = id.quartiles.as_ref().unwrap();
+        assert!(!q.estimated);
+        let quartile = |v: &ArrayRef| float(&Some(v.clone()));
+        assert_eq!(
+            (quartile(&q.low), quartile(&q.median), quartile(&q.high)),
+            (49_999.75, 99_999.5, 149_999.25)
+        );
+        assert_eq!(name.distinct, Some(3));
+        assert!(name.text_lengths.is_none() && name.top_values.is_empty());
+        assert!(id.distribution.is_none());
+        assert_eq!(
+            (id.mean.clone(), id.min.clone()),
+            (stats[0].mean.clone(), stats[0].min.clone())
+        );
     }
 
     fn float(value: &Option<ArrayRef>) -> f64 {
@@ -463,6 +566,7 @@ mod tests {
         let source: Arc<dyn DataSource> = Arc::new(MemorySource::new(schema, vec![batch]).unwrap());
         let stats = StatsJob::new(Pipeline::new(source), vec![])
             .unwrap()
+            .with_options(StatsOptions::ALL)
             .run(&mut |_| true)
             .unwrap();
         let text = |v: &Option<ArrayRef>| array_value_to_string(v.as_ref().unwrap(), 0).unwrap();

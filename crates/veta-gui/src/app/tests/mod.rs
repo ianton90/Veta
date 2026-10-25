@@ -67,7 +67,8 @@ fn finish_stats(app: &mut App) {
         .get(id)
         .unwrap()
         .stats_job(run.columns.clone())
-        .unwrap();
+        .unwrap()
+        .with_options(veta_core::stats::StatsOptions::ALL);
     let result = job.run(&mut |_| true);
     let _ = app.update(Message::StatsDone(id, revision, result));
 }

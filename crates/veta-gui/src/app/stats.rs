@@ -108,6 +108,7 @@ impl App {
             .workbook
             .get(id)
             .and_then(|d| d.stats_job(columns.clone()).ok())
+            .map(|job| job.with_options(veta_core::stats::StatsOptions::ALL))
         else {
             return Task::none();
         };

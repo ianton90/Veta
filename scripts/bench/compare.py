@@ -122,7 +122,8 @@ def veta_command(veta: str, op: str, src: Path, out: Path, work: Path) -> list[s
         case "head":
             return [veta, "head", str(src), "-n", "10"]
         case "stats":
-            return [veta, "stats", str(src), "--json"]
+            # The same statistics as the other tools, computed in full.
+            return [veta, "stats", str(src), "--json", "--exact"]
         case "filter":
             steps = [
                 {
@@ -157,6 +158,71 @@ def veta_command(veta: str, op: str, src: Path, out: Path, work: Path) -> list[s
     raise ValueError(op)
 
 
+def stats_columns(src: str) -> tuple[list[str], list[str], list[str]]:
+    """The columns each statistic applies to, the same for every tool and as
+    veta computes them: count, nulls and distinct count for every column;
+    min, max, mean, standard deviation and quartiles for numbers and for
+    dates and times (mean, spread and quartiles on their underlying
+    numbers). Booleans and text get no range or mean."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    schema = pq.read_schema(src)
+    columns = [f.name for f in schema]
+    numeric = [
+        f.name
+        for f in schema
+        if pa.types.is_integer(f.type) or pa.types.is_floating(f.type) or pa.types.is_decimal(f.type)
+    ]
+    temporal = [f.name for f in schema if pa.types.is_temporal(f.type)]
+    return columns, numeric, temporal
+
+
+def polars_stats(src: str) -> None:
+    """count, nulls, distinct count, min, max, mean, std dev and quartiles
+    (linear interpolation, as veta), in one query."""
+    import polars as pl
+
+    columns, numeric, temporal = stats_columns(src)
+    df = pl.read_parquet(src)
+    exprs = [pl.len().alias("rows")]
+    for c in columns:
+        col = pl.col(c)
+        exprs += [col.null_count().alias(f"{c}:nulls"), col.drop_nulls().n_unique().alias(f"{c}:distinct")]
+    for c in numeric + temporal:
+        col = pl.col(c)
+        exprs += [col.min().alias(f"{c}:min"), col.max().alias(f"{c}:max")]
+        values = col.cast(pl.Int64) if c in temporal else col
+        exprs += [values.mean().alias(f"{c}:mean"), values.std().alias(f"{c}:std")]
+        exprs += [
+            values.quantile(q, interpolation="linear").alias(f"{c}:q{int(q * 100)}")
+            for q in (0.25, 0.5, 0.75)
+        ]
+    print(df.select(exprs).row(0, named=True))
+
+
+def pandas_stats(src: str) -> None:
+    """The same statistics with pandas (quantile interpolates linearly by
+    default; nunique leaves out nulls, as veta)."""
+    import pandas as pd
+
+    columns, numeric, temporal = stats_columns(src)
+    df = pd.read_parquet(src)
+    result = {"rows": len(df)}
+    for c in columns:
+        s = df[c]
+        result[f"{c}:nulls"] = int(s.isna().sum())
+        result[f"{c}:distinct"] = int(s.nunique())
+    for c in numeric + temporal:
+        s = df[c]
+        result[f"{c}:min"], result[f"{c}:max"] = s.min(), s.max()
+        values = s.dropna().astype("int64") if c in temporal else s
+        result[f"{c}:mean"], result[f"{c}:std"] = values.mean(), values.std()
+        for q, v in values.quantile([0.25, 0.5, 0.75]).items():
+            result[f"{c}:q{int(q * 100)}"] = v
+    print(result)
+
+
 def python_op(tool: str, op: str, src: str, out: str) -> None:
     """Runs `op` with pandas or polars, written the way each is normally
     used for the job (polars lazily, streaming where it can)."""
@@ -168,7 +234,7 @@ def python_op(tool: str, op: str, src: str, out: str) -> None:
             case "head":
                 print(pl.scan_parquet(src).head(10).collect())
             case "stats":
-                print(pl.read_parquet(src).describe())
+                polars_stats(src)
             case "filter":
                 pl.scan_parquet(src).filter(pl.col(column) > value).sink_parquet(out)
             case "sort":
@@ -191,7 +257,7 @@ def python_op(tool: str, op: str, src: str, out: str) -> None:
             case "head":
                 print(pd.read_parquet(src).head(10))
             case "stats":
-                print(pd.read_parquet(src).describe(include="all"))
+                pandas_stats(src)
             case "filter":
                 df = pd.read_parquet(src)
                 df[df[column] > value].to_parquet(out)

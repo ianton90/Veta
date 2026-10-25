@@ -142,7 +142,8 @@ pub enum Command {
     /// Show writer settings, or change them with the options below.
     WriterSettings(meta::WriterArgs),
     /// Column statistics: count, nulls, distinct, min, max, mean, std dev,
-    /// median and quartiles, text lengths and the most frequent values.
+    /// median and quartiles (and, on request, text lengths and the most
+    /// frequent values).
     Stats {
         file: PathBuf,
         /// Only these columns (repeatable; default: all).
@@ -151,6 +152,17 @@ pub enum Command {
         /// Print JSON instead of a table.
         #[arg(long)]
         json: bool,
+        /// Compute distinct counts, quartiles and top-value counts from
+        /// every value instead of estimating them on large columns (slower,
+        /// and needs memory for one column's values).
+        #[arg(long)]
+        exact: bool,
+        /// Also the most frequent values.
+        #[arg(long)]
+        top: bool,
+        /// Also text lengths.
+        #[arg(long)]
+        lengths: bool,
     },
     /// Convert between Parquet, CSV and JSON (formats from the file
     /// extensions unless --format is given).
@@ -248,7 +260,18 @@ fn execute(command: Command, out: &mut impl Write) -> Result<(), Error> {
             file,
             columns,
             json,
-        } => inspect::stats(&open(&file)?, columns, json, out),
+            exact,
+            top,
+            lengths,
+        } => {
+            let options = veta_core::stats::StatsOptions {
+                exact,
+                top_values: top,
+                text_lengths: lengths,
+                distribution: false,
+            };
+            inspect::stats(&open(&file)?, columns, options, json, out)
+        }
         command @ (Command::SetCell { .. }
         | Command::InsertRows { .. }
         | Command::DeleteRows { .. }

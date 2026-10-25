@@ -142,18 +142,22 @@ pub(crate) fn head(doc: &Document, rows: usize, out: &mut impl Write) -> Result<
 pub(crate) fn stats(
     doc: &Document,
     columns: Vec<String>,
+    options: veta_core::stats::StatsOptions,
     json: bool,
     out: &mut impl Write,
 ) -> Result<(), Error> {
     use veta_fmt::{
         format_distinct, format_float, format_median, format_quartiles, format_stat_value,
     };
-    let stats = doc.stats_job(columns)?.run(&mut |_| true)?;
+    let stats = doc
+        .stats_job(columns)?
+        .with_options(options)
+        .run(&mut |_| true)?;
     if json {
         writeln!(out, "{}", veta_core::stats::to_json(&stats)?)?;
         return Ok(());
     }
-    let header: Vec<String> = [
+    let mut header = vec![
         "column",
         "type",
         "count",
@@ -165,15 +169,23 @@ pub(crate) fn stats(
         "std dev",
         "median",
         "quartiles",
-        "length",
-        "top value",
-    ]
-    .map(String::from)
-    .to_vec();
+    ];
+    let mut right = vec![
+        false, false, true, true, true, false, false, true, true, true, true,
+    ];
+    if options.text_lengths {
+        header.push("length");
+        right.push(false);
+    }
+    if options.top_values {
+        header.push("top value");
+        right.push(false);
+    }
+    let header: Vec<String> = header.into_iter().map(String::from).collect();
     let rows: Vec<Vec<Option<String>>> = stats
         .iter()
         .map(|s| {
-            vec![
+            let mut row = vec![
                 Some(s.column.clone()),
                 Some(s.type_name.clone()),
                 Some(s.count.to_string()),
@@ -185,18 +197,24 @@ pub(crate) fn stats(
                 s.std_dev.as_ref().map(format_stat_value),
                 format_median(s),
                 format_quartiles(s),
-                s.text_lengths
-                    .as_ref()
-                    .map(|l| format!("{}–{} (mean {})", l.min, l.max, format_float(l.mean))),
-                s.top_values
-                    .first()
-                    .map(|top| veta_fmt::format_top_value(top, s.top_estimated, 30)),
-            ]
+            ];
+            if options.text_lengths {
+                row.push(
+                    s.text_lengths
+                        .as_ref()
+                        .map(|l| format!("{}–{} (mean {})", l.min, l.max, format_float(l.mean))),
+                );
+            }
+            if options.top_values {
+                row.push(
+                    s.top_values
+                        .first()
+                        .map(|top| veta_fmt::format_top_value(top, s.top_estimated, 30)),
+                );
+            }
+            row
         })
         .collect();
-    let right = [
-        false, false, true, true, true, false, false, true, true, true, true, false, false,
-    ];
     table::write(out, &header, None, &rows, &right)?;
     Ok(())
 }

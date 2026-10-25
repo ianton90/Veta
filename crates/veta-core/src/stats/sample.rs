@@ -93,6 +93,22 @@ impl Sample<f64> {
     }
 }
 
+/// Like [`quantile`], for values in any order (reordered, not sorted: two
+/// selections instead of a sort).
+pub(super) fn quantile_unsorted(values: &mut [f64], p: f64) -> Option<f64> {
+    let last = values.len().checked_sub(1)?;
+    let at = p.clamp(0.0, 1.0) * last as f64;
+    let (low, high) = (at.floor() as usize, at.ceil() as usize);
+    let (_, &mut below, rest) = values.select_nth_unstable_by(low, f64::total_cmp);
+    let above = match high > low {
+        // The next value up: the smallest of those after it.
+        true => rest.iter().copied().fold(f64::INFINITY, f64::min),
+        false => below,
+    };
+    let weight = at - low as f64;
+    Some(below * (1.0 - weight) + above * weight)
+}
+
 /// The `p` quantile (0–1) of `sorted` values, interpolating between the
 /// two nearest.
 pub(super) fn quantile(sorted: &[f64], p: f64) -> Option<f64> {

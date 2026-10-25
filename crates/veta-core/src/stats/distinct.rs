@@ -15,13 +15,28 @@ use super::sample::Sample;
 use crate::error::Result;
 
 /// Adds the hashes of `array`'s valid values (rows from `first_row` on) to
-/// `distinct`. Numbers are hashed from their value, text from its bytes,
-/// other types through the row format.
+/// `distinct`.
 pub(super) fn insert_hashes(
     array: &ArrayRef,
     first_row: u64,
     converter: &RowConverter,
     distinct: &mut Distinct,
+) -> Result<()> {
+    for_each_hash(array, first_row, converter, |hash, n, row| match n {
+        1 => distinct.insert(hash, row),
+        n => distinct.insert_n(hash, n, row),
+    })
+}
+
+/// Calls `f` with the hash of each valid value of `array` (rows from
+/// `first_row` on), how many values it stands for (1, or a boolean's
+/// count) and its row. Numbers are hashed from their value, text from its
+/// bytes, other types through the row format.
+pub(super) fn for_each_hash(
+    array: &ArrayRef,
+    first_row: u64,
+    converter: &RowConverter,
+    mut f: impl FnMut(u64, u64, u64),
 ) -> Result<()> {
     let row = |i: usize| first_row + i as u64;
     use arrow::array::AsArray;
@@ -32,7 +47,7 @@ pub(super) fn insert_hashes(
             let (offsets, bytes) = (values.value_offsets(), values.value_data());
             each_valid(array, |i| {
                 let (start, end) = (offsets[i] as usize, offsets[i + 1] as usize);
-                distinct.insert(hash_bytes(&bytes[start..end]), row(i));
+                f(hash_bytes(&bytes[start..end]), 1, row(i));
             });
         }
         DataType::LargeUtf8 => {
@@ -40,7 +55,7 @@ pub(super) fn insert_hashes(
             let (offsets, bytes) = (values.value_offsets(), values.value_data());
             each_valid(array, |i| {
                 let (start, end) = (offsets[i] as usize, offsets[i + 1] as usize);
-                distinct.insert(hash_bytes(&bytes[start..end]), row(i));
+                f(hash_bytes(&bytes[start..end]), 1, row(i));
             });
         }
         t if t.is_primitive() && t.primitive_width().is_some_and(|w| w <= 16) => {
@@ -52,15 +67,16 @@ pub(super) fn insert_hashes(
             let word = |b: &[u8]| u64::from_le_bytes(b.try_into().expect("8 bytes"));
             match width {
                 8 => each_valid(array, |i| {
-                    distinct.insert(mix(word(&bytes[i * 8..i * 8 + 8]) ^ SEED), row(i));
+                    f(mix(word(&bytes[i * 8..i * 8 + 8]) ^ SEED), 1, row(i));
                 }),
                 16 => each_valid(array, |i| {
                     let (low, high) = (&bytes[i * 16..i * 16 + 8], &bytes[i * 16 + 8..i * 16 + 16]);
-                    distinct.insert(mix(word(low) ^ mix(word(high) ^ SEED)), row(i));
+                    f(mix(word(low) ^ mix(word(high) ^ SEED)), 1, row(i));
                 }),
                 _ => each_valid(array, |i| {
-                    distinct.insert(
+                    f(
                         mix(tail_word(&bytes[i * width..(i + 1) * width]) ^ SEED),
+                        1,
                         row(i),
                     );
                 }),
@@ -75,15 +91,13 @@ pub(super) fn insert_hashes(
                 let first =
                     (0..values.len()).find(|&i| values.is_valid(i) && values.value(i) == value);
                 if let (true, Some(i)) = (n > 0, first) {
-                    distinct.insert_n(mix(u64::from(value) ^ SEED), n as u64, row(i));
+                    f(mix(u64::from(value) ^ SEED), n as u64, row(i));
                 }
             }
         }
         _ => {
             let rows = converter.convert_columns(std::slice::from_ref(array))?;
-            each_valid(array, |i| {
-                distinct.insert(hash_bytes(rows.row(i).data()), row(i))
-            });
+            each_valid(array, |i| f(hash_bytes(rows.row(i).data()), 1, row(i)));
         }
     }
     Ok(())
@@ -149,7 +163,7 @@ fn mix(mut z: u64) -> u64 {
 
 /// A hasher for values that are hashes already.
 #[derive(Default)]
-struct Identity(u64);
+pub(super) struct Identity(u64);
 
 impl Hasher for Identity {
     fn finish(&self) -> u64 {
@@ -208,12 +222,26 @@ pub(super) struct Distinct {
     estimate: Option<HyperLogLog>,
     /// (hash, row) of a uniform sample of rows.
     rows: Sample<(u64, u64)>,
+    /// Whether the most frequent values are wanted: without them, values
+    /// aren't counted (only seen) and rows aren't sampled.
+    frequent: bool,
 }
 
 impl Distinct {
+    /// Counts distinct values; with `frequent`, also the most frequent.
+    pub(super) fn new(frequent: bool) -> Self {
+        Self {
+            uncounted: !frequent,
+            frequent,
+            ..Self::default()
+        }
+    }
+
     /// Adds the value with this hash in row `row`.
     pub(super) fn insert(&mut self, hash: u64, row: u64) {
-        self.rows.add(row, (hash, row));
+        if self.frequent {
+            self.rows.add(row, (hash, row));
+        }
         self.count(hash, 1, row);
     }
 
@@ -427,7 +455,7 @@ mod tests {
 
     #[test]
     fn most_frequent_exact_then_sketched() {
-        let mut d = Distinct::default();
+        let mut d = Distinct::new(true);
         for row in 0..1000u64 {
             d.insert(mix(row % 10), row);
         }
@@ -436,7 +464,7 @@ mod tests {
 
         // Past the exact limit: a value in every tenth row stays on top,
         // its count close (a little low).
-        let mut d = Distinct::default();
+        let mut d = Distinct::new(true);
         let n = EXACT_DISTINCT_LIMIT as u64 * 2;
         let heavy = mix(u64::MAX);
         for row in 0..n {

@@ -11,8 +11,9 @@ use arrow::row::{RowConverter, SortField};
 
 use super::distinct::{Distinct, insert_hashes};
 use super::distribution::distribution;
-use super::sample::{Sample, quantile};
-use super::{ColumnStats, Quartiles, TextLengths};
+use super::full::Full;
+use super::sample::{Sample, quantile, quantile_unsorted};
+use super::{ColumnStats, Quartiles, StatsOptions, TOP_VALUES, TextLengths};
 use crate::display::type_name;
 use crate::error::{Error, Result, invalid};
 
@@ -40,6 +41,7 @@ pub(super) struct Accumulator {
     lengths: Option<Lengths>,
     /// Sampled values, for quantiles (numbers and times).
     sample: Option<Sample>,
+    options: StatsOptions,
 }
 
 /// Whose mean and standard deviation a column gets.
@@ -89,30 +91,33 @@ impl Lengths {
 }
 
 impl Accumulator {
-    pub(super) fn new(column: String, data_type: DataType) -> Self {
+    /// Statistics of a column of `data_type`. In exact mode distinct values
+    /// and quartiles are left to a full pass over the column
+    /// ([`super::full::full_column`]).
+    pub(super) fn new(column: String, data_type: DataType, options: StatsOptions) -> Self {
         let converter = RowConverter::new(vec![SortField::new(data_type.clone())]).ok();
-        let moments = if is_numeric(&data_type) {
-            Moments::Numbers
-        } else if data_type.is_temporal() {
-            Moments::Temporal
-        } else {
-            Moments::None
-        };
-        let lengths = matches!(
+        let moments = moments_of(&data_type);
+        let text = matches!(
             data_type,
             DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-        )
-        .then_some(Lengths {
+        );
+        let lengths = (text && options.text_lengths).then_some(Lengths {
             n: 0,
             min: 0,
             max: 0,
             sum: 0,
         });
-        let sample = (moments != Moments::None).then(Sample::default);
+        let estimating = !options.exact;
+        let sample = (estimating && moments != Moments::None).then(Sample::default);
+        let distinct = converter
+            .as_ref()
+            .filter(|_| estimating)
+            .map(|_| Distinct::new(options.top_values));
         Self {
             sample,
+            options,
             column,
-            distinct: converter.as_ref().map(|_| Distinct::default()),
+            distinct,
             converter,
             orderable: has_range(&data_type),
             min: None,
@@ -188,15 +193,25 @@ impl Accumulator {
         if let Some(lengths) = &mut self.lengths {
             add_lengths(array, lengths)?;
         }
-        if self.moments == Moments::Temporal {
-            let values = cast(&underlying(array)?, &DataType::Float64)?;
-            self.add_numbers(&values, first_row)?;
-        }
-        if self.moments == Moments::Numbers {
-            let values = cast(array, &DataType::Float64)?;
+        if let Some(values) = as_numbers(array)? {
             self.add_numbers(&values, first_row)?;
         }
         Ok(())
+    }
+
+    /// Whether a full pass can count this column's distinct values (its
+    /// values can be hashed).
+    pub(super) fn hashable(&self) -> bool {
+        self.converter.is_some()
+    }
+
+    /// Whether the column has numbers (or times) for quartiles.
+    pub(super) fn numeric(&self) -> bool {
+        self.moments != Moments::None
+    }
+
+    pub(super) fn data_type(&self) -> &DataType {
+        &self.data_type
     }
 
     /// Adds `values` (Float64, from row `first_row` on) to the running
@@ -288,16 +303,29 @@ impl Accumulator {
         Ok(())
     }
 
-    /// The statistics, and the `top` most frequent values as (first row,
-    /// count), for the caller to read (none when no value is there twice).
-    pub(super) fn finish(mut self, top: usize) -> (ColumnStats, Vec<(u64, u64)>) {
-        let (distinct, distinct_estimated) = match &self.distinct {
-            Some(d) => (Some(d.count_distinct()), d.estimated()),
-            None => (None, false),
+    /// The statistics, and the most frequent values (when asked for) as
+    /// (a row holding it, count), for the caller to read (none when no
+    /// value is there twice). In exact mode `full` is the column's full
+    /// pass.
+    pub(super) fn finish(mut self, full: Option<Full>) -> (ColumnStats, Vec<(u64, u64)>) {
+        let top = if self.options.top_values {
+            TOP_VALUES
+        } else {
+            0
+        };
+        let (distinct, distinct_estimated) = match (&full, &self.distinct) {
+            (Some(full), _) if self.hashable() => (Some(full.distinct), false),
+            (_, Some(d)) => (Some(d.count_distinct()), d.estimated()),
+            _ => (None, false),
         };
         let sampled_counts = self.distinct.as_ref().is_some_and(Distinct::sampled_counts);
-        let most_frequent = match self.distinct.take().map(|d| d.most_frequent(top)) {
-            Some(rows) if rows.first().is_some_and(|(_, count)| *count > 1) => rows,
+        let frequent = match (&full, self.distinct.take()) {
+            (Some(full), _) => full.most_frequent.clone(),
+            (None, Some(d)) if top > 0 => d.most_frequent(top),
+            _ => Vec::new(),
+        };
+        let most_frequent = match frequent {
+            rows if rows.first().is_some_and(|(_, count)| *count > 1) => rows,
             _ => Vec::new(),
         };
         let std_dev = (self.n > 1).then(|| (self.m2 / (self.n - 1) as f64).sqrt());
@@ -310,8 +338,26 @@ impl Accumulator {
                 std_dev.and_then(|s| duration_value(s, &self.data_type).ok()),
             ),
         };
-        let (sorted, seen) = self.sample.map(Sample::finish).unwrap_or_default();
-        let sampled = seen > sorted.len() as u64;
+        // Quartiles (and the distribution) from every value in exact mode,
+        // else from the sample.
+        let (mut values, seen, sorted) = match full {
+            Some(full) => {
+                let seen = full.values.len() as u64;
+                (full.values, seen, false)
+            }
+            None => {
+                let (values, seen) = self.sample.take().map(Sample::finish).unwrap_or_default();
+                (values, seen, true)
+            }
+        };
+        let sampled = seen > values.len() as u64;
+        let want_distribution = self.options.distribution && self.moments != Moments::None;
+        let sorted = sorted || {
+            if want_distribution {
+                values.sort_unstable_by(f64::total_cmp);
+            }
+            want_distribution
+        };
         let number = |v: &Option<ArrayRef>| -> Option<f64> {
             let v = v.as_ref()?;
             let v = match self.moments {
@@ -322,16 +368,23 @@ impl Accumulator {
             Some(v.as_primitive::<arrow::datatypes::Float64Type>().value(0))
         };
         let range = number(&self.min).zip(number(&self.max));
-        let distribution = distribution(&sorted, seen, sampled, range);
+        let distribution = want_distribution
+            .then(|| distribution(&values, seen, sampled, range))
+            .flatten();
         let value = |x: f64| match self.moments {
             Moments::Temporal => temporal_value(x, &self.data_type).ok(),
             _ => Some(float_value(x)),
         };
+        let mut at = |p: f64| match sorted {
+            true => quantile(&values, p),
+            false => quantile_unsorted(&mut values, p),
+        };
+        let (low, median, high) = (at(0.25), at(0.5), at(0.75));
         let quartiles = (|| {
             Some(Quartiles {
-                low: value(quantile(&sorted, 0.25)?)?,
-                median: value(quantile(&sorted, 0.5)?)?,
-                high: value(quantile(&sorted, 0.75)?)?,
+                low: value(low?)?,
+                median: value(median?)?,
+                high: value(high?)?,
                 estimated: sampled,
             })
         })();
@@ -426,6 +479,27 @@ fn is_numeric(t: &DataType) -> bool {
                 | DataType::Decimal128(..)
                 | DataType::Decimal256(..)
         )
+}
+
+fn moments_of(data_type: &DataType) -> Moments {
+    if is_numeric(data_type) {
+        Moments::Numbers
+    } else if data_type.is_temporal() {
+        Moments::Temporal
+    } else {
+        Moments::None
+    }
+}
+
+/// `array`'s values as floats, for mean, spread and quartiles: numbers as
+/// they are, dates and times as their underlying numbers. `None` for other
+/// types.
+pub(super) fn as_numbers(array: &ArrayRef) -> Result<Option<ArrayRef>> {
+    Ok(match moments_of(array.data_type()) {
+        Moments::Numbers => Some(cast(array, &DataType::Float64)?),
+        Moments::Temporal => Some(cast(&underlying(array)?, &DataType::Float64)?),
+        Moments::None => None,
+    })
 }
 
 /// A temporal array's underlying numbers (days, seconds, … since its
