@@ -1,5 +1,5 @@
 //! Row methods: sort, reverse, sample, insert, drop nulls, unique, buffer,
-//! implode, and working in place.
+//! implode.
 
 use super::DataFrame;
 use crate::error::Result;
@@ -102,15 +102,5 @@ impl DataFrame {
             keys: names(keys.into())?,
             columns: names(columns.into())?,
         })
-    }
-
-    /// With `on` (and eager), row steps keep their whole output instead of
-    /// the rows they pick (a selection, an order): reading is faster and
-    /// the steps before can be freed from memory, at the cost of a copy.
-    pub fn with_rows_in_place(&self, on: bool) -> Self {
-        Self {
-            in_place: on,
-            ..self.clone()
-        }
     }
 }

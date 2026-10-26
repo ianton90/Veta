@@ -546,11 +546,6 @@ Stored outputs stay in memory within the memory budget (half of RAM by
 default). Past it, the least recently used spill to Arrow IPC temp files,
 the current step's and those just before it last.
 
-In eager mode, `with_rows_in_place(true)` makes row steps keep their whole
-output instead of the rows they pick: reads are faster and the data before
-can be spilled or freed, at the cost of a copy. Undo goes back to the node
-before, whose data stays (in memory, on disk, or rebuilt).
-
 A sort of data held in memory keeps the order of its rows (4 bytes a row)
 and picks them as read; any other input is sorted into a copy (in memory
 within half the budget, otherwise in pieces on disk), since picking

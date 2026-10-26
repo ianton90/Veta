@@ -64,9 +64,6 @@ pub(crate) enum Effect {
 pub(crate) struct Context {
     /// Leave data to be read when needed.
     pub(crate) lazy: bool,
-    /// Row steps store their whole output instead of the rows they keep
-    /// (eager only).
-    pub(crate) in_place: bool,
     pub(crate) progress: Option<Progress>,
 }
 

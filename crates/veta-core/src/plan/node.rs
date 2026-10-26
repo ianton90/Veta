@@ -459,7 +459,7 @@ impl Node {
     }
 
     /// `effect` (with output `schema`) over `input`, read whole and kept as
-    /// a table: for row steps working in place and buffers.
+    /// a table: for buffers.
     pub(crate) fn kept(
         input: &Arc<Node>,
         schema: SchemaRef,

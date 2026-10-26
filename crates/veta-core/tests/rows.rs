@@ -1,4 +1,4 @@
-//! Row steps through the `DataFrame` API: eager, lazy and in place.
+//! Row steps through the `DataFrame` API, eager and lazy.
 
 #![allow(clippy::unwrap_used)] // Tests.
 
@@ -31,10 +31,10 @@ fn frame(n: i64) -> DataFrame {
     DataFrame::from_batches(schema, vec![batch]).unwrap()
 }
 
-/// The same frame eager, lazy and in place.
-fn modes(n: i64) -> [DataFrame; 3] {
+/// The same frame eager and lazy.
+fn modes(n: i64) -> [DataFrame; 2] {
     let df = frame(n);
-    [df.clone(), df.lazy(), df.with_rows_in_place(true)]
+    [df.clone(), df.lazy()]
 }
 
 fn ints(frame: &DataFrame, column: &str) -> Vec<Option<i64>> {

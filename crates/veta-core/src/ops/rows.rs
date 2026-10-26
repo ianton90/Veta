@@ -1,6 +1,6 @@
 //! Row steps: keep or drop rows, sort, reverse, sample, insert, drop
 //! nulls, unique, buffer, implode. Each keeps the rows it picks (a
-//! selection or an order), or, working in place, its whole output.
+//! selection or an order), or its whole output when it can't.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,28 +19,6 @@ use crate::steps::MAX_INSERT_ROWS;
 use crate::steps::PASS_ROWS;
 use crate::transforms::nested::{collect_fields, collect_groups, group_starts};
 use crate::transforms::sort::{Sort, SortKey, Sorter, sort_external, sort_in_memory};
-
-/// The output of a row step: `effect`, or, working in place, the whole
-/// output kept as a table.
-fn kept(input: &Arc<Node>, schema: SchemaRef, effect: Effect, context: &Context) -> Result<Effect> {
-    match context.in_place {
-        true => Node::kept(input, schema, effect, context),
-        false => Ok(effect),
-    }
-}
-
-/// Planned as `effect` now, or, working in place, as computed (kept) when
-/// the step runs.
-fn planned(schema: SchemaRef, effect: Effect, context: &Context) -> Planned {
-    Planned {
-        schema,
-        effect: match context.in_place {
-            true => Effect::Later,
-            false => effect,
-        },
-        file: None,
-    }
-}
 
 /// Every row of `columns` of `input`, as batches.
 fn read_columns(
@@ -72,16 +50,12 @@ impl KeepRows {
 }
 
 impl Step for KeepRows {
-    fn plan(&self, input: &Arc<Node>, context: &Context) -> Result<Planned> {
-        Ok(planned(
-            input.schema().clone(),
-            self.effect(input)?,
-            context,
-        ))
-    }
-
-    fn compute(&self, input: &Arc<Node>, context: &Context) -> Result<Effect> {
-        kept(input, input.schema().clone(), self.effect(input)?, context)
+    fn plan(&self, input: &Arc<Node>, _context: &Context) -> Result<Planned> {
+        Ok(Planned {
+            schema: input.schema().clone(),
+            effect: self.effect(input)?,
+            file: None,
+        })
     }
 }
 
@@ -112,7 +86,7 @@ impl Step for SortRows {
             .map(|k| schema.index_of(&k.column))
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let in_memory = input.source().is_some_and(|s| s.take(&[], &[]).is_some());
-        if in_memory && !context.in_place {
+        if in_memory {
             let sorter = Sorter::new(&self.0, &schema)?;
             let batches = read_columns(input, keys, context)?;
             let order = UInt32Array::from(sorter.order(&batches)?);
@@ -164,16 +138,12 @@ impl Reverse {
 }
 
 impl Step for Reverse {
-    fn plan(&self, input: &Arc<Node>, context: &Context) -> Result<Planned> {
-        Ok(planned(
-            input.schema().clone(),
-            Self::effect(input)?,
-            context,
-        ))
-    }
-
-    fn compute(&self, input: &Arc<Node>, context: &Context) -> Result<Effect> {
-        kept(input, input.schema().clone(), Self::effect(input)?, context)
+    fn plan(&self, input: &Arc<Node>, _context: &Context) -> Result<Planned> {
+        Ok(Planned {
+            schema: input.schema().clone(),
+            effect: Self::effect(input)?,
+            file: None,
+        })
     }
 }
 
@@ -213,16 +183,12 @@ fn mix(row: u64, seed: u64) -> u64 {
 }
 
 impl Step for Sample {
-    fn plan(&self, input: &Arc<Node>, context: &Context) -> Result<Planned> {
-        Ok(planned(
-            input.schema().clone(),
-            self.effect(input)?,
-            context,
-        ))
-    }
-
-    fn compute(&self, input: &Arc<Node>, context: &Context) -> Result<Effect> {
-        kept(input, input.schema().clone(), self.effect(input)?, context)
+    fn plan(&self, input: &Arc<Node>, _context: &Context) -> Result<Planned> {
+        Ok(Planned {
+            schema: input.schema().clone(),
+            effect: self.effect(input)?,
+            file: None,
+        })
     }
 }
 
@@ -260,20 +226,15 @@ impl InsertRows {
 }
 
 impl Step for InsertRows {
-    fn plan(&self, input: &Arc<Node>, context: &Context) -> Result<Planned> {
-        let effect = Effect::Insert {
-            at: self.at,
-            count: self.count,
-        };
-        Ok(planned(self.schema(input)?, effect, context))
-    }
-
-    fn compute(&self, input: &Arc<Node>, context: &Context) -> Result<Effect> {
-        let effect = Effect::Insert {
-            at: self.at,
-            count: self.count,
-        };
-        kept(input, self.schema(input)?, effect, context)
+    fn plan(&self, input: &Arc<Node>, _context: &Context) -> Result<Planned> {
+        Ok(Planned {
+            schema: self.schema(input)?,
+            effect: Effect::Insert {
+                at: self.at,
+                count: self.count,
+            },
+            file: None,
+        })
     }
 }
 
@@ -312,12 +273,7 @@ impl Step for DropNulls {
         }
         let selection =
             Selection::new(Rows::Mask(BooleanBuffer::from(keep)), input.rows()?, false)?;
-        kept(
-            input,
-            input.schema().clone(),
-            Effect::Rows(Arc::new(selection)),
-            context,
-        )
+        Ok(Effect::Rows(Arc::new(selection)))
     }
 }
 
@@ -388,12 +344,7 @@ impl Step for DropDuplicates {
             })
             .collect();
         let selection = Selection::new(Rows::List(kept_rows), input.rows()?, false)?;
-        kept(
-            input,
-            input.schema().clone(),
-            Effect::Rows(Arc::new(selection)),
-            context,
-        )
+        Ok(Effect::Rows(Arc::new(selection)))
     }
 }
 
@@ -450,16 +401,10 @@ impl Step for Implode {
         let sort = ascending(&self.keys);
         let source = match self.keys.is_empty() {
             true => input.clone(),
-            false => {
-                let unkept = Context {
-                    in_place: false,
-                    ..context.clone()
-                };
-                Arc::new(Node::over(
-                    input,
-                    SortRows(sort.clone()).compute(input, &unkept)?,
-                ))
-            }
+            false => Arc::new(Node::over(
+                input,
+                SortRows(sort.clone()).compute(input, context)?,
+            )),
         };
         let used = schema
             .fields()
