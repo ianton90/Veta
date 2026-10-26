@@ -447,3 +447,106 @@ materialized source for sort, fill, collect and explode) that
 `key`). The GUI runs one job at a time after every update, drops a job whose
 key went stale, and cancelling undoes the change that started it. Saving
 computes pending steps itself.
+
+## Core rewrite (target design)
+
+`veta-core` is being rewritten (#196) into a library that Rust code imports
+like a polars or pandas script. The current code is replaced area by area on
+`dv`, with no wrappers around it. This section is the design agreed in #197;
+the methods to include, their names and parameters are reviewed in #198.
+
+### Objects
+
+- `DataFrame`: one type for eager and lazy work. It holds a source, its
+  steps, each step's output and, optionally, the history.
+- `Column`: one column of a frame, with per-column methods (statistics, …).
+  Frame-level methods are separate.
+- `Expr`: a formula as a tree of operations, built with functions:
+  `sqrt(add(pow(col("a"), 2), pow(col("b"), 2)))`. It is applied with
+  `df.apply_formula(name, expr)` and evaluated recursively (each operation
+  evaluates its inputs, then itself) on whole batches, freeing intermediate
+  results as soon as they are used. Filters, conditions and computed columns
+  share it. The GUI translates an Excel-like formula (syntax to be defined)
+  into an `Expr`; the core has no formula text for now.
+
+```rust
+let df = veta_core::read_parquet("sales.parquet", ReadOptions::default())?; // eager or lazy: an option
+let df = df.filter(gt(col("amount"), 100))?
+    .apply_formula("net", mul(col("amount"), sub(1, col("discount"))))?;
+let mean = df.column("net")?.mean()?;
+df.write_parquet("out.parquet")?;
+```
+
+Every method takes `&self` and returns a new frame (`let df = df.undo()?;`).
+The new frame shares the old one's unchanged data through `Arc`; a buffer is
+freed when no frame or history entry points to it. A failed step leaves the
+old frame intact.
+
+### Eager and lazy
+
+The mode says when steps run, not what they are.
+
+- Eager: a step runs when it is added.
+- Lazy: steps are recorded and run on `collect`, saving, a statistic or
+  reading rows, in one streaming pass over the row groups. Only the columns
+  that are needed are read, row groups the filters rule out by their
+  statistics are skipped, and a step that needs its whole input (sort)
+  writes a temp file.
+
+A frame switches mode at any time; steps, history and recipes are the same
+in both.
+
+### Errors
+
+Each step is checked against the schema when it is added, without reading
+data: columns exist, types fit, casts and expressions are valid. Methods
+return `Result`, so a recipe on an unknown file stops at the first step that
+doesn't fit, before reading any data. Errors that only show up in the data
+(a value that doesn't cast, an overflow) follow the step's on-failure
+option. Nothing panics.
+
+### Step outputs
+
+A step's output is one of:
+
+- virtual: computed when read, nothing kept (rename, select, reorder, drop);
+- stored, in a form that depends on the step:
+  - the changed columns only (cast, formula, edit column);
+  - a row bitmap (filter), a permutation (sort) or row ranges (insert,
+    delete);
+  - the cell-edit log;
+  - the whole frame (buffer);
+- pending: not computed yet.
+
+Stored outputs stay in memory within the memory budget (half of RAM by
+default). Past it, the least recently used spill to Arrow IPC temp files,
+the current step's and those just before it last.
+
+In eager mode a row step can work in place: its result replaces the stored
+data. With history on, the undo entry keeps the inverse (the removed rows,
+the inverse permutation).
+
+A buffer step, like Power Query's `Table.Buffer`, stores the whole output up
+to that point. Later steps read from it, and it is recomputed when an
+earlier step changes.
+
+### History
+
+History is switched on and off with a method. With it off there are no undo
+entries and only what reading the current data needs is kept.
+
+- Steps can be added, edited, moved and removed. Each change is one undo
+  entry. Editing step k makes the outputs from k on stale (eager recomputes
+  them at once, lazy on demand); the entry keeps the old outputs so undoing
+  is instant.
+- Cell edits keep each cell's value before and after. Past 64 MB the log is
+  consolidated into a snapshot of the touched columns.
+- History may use a share of the free disk, checked as it grows. Past that,
+  the oldest kept outputs are deleted, and undoing those steps recomputes
+  them instead.
+
+### Statistics
+
+Exact by default, with a sample fraction (0–1) to compute them from a sample
+instead. Each statistic is its own method on `Column` and computes only what
+it needs; frame-level methods compute several in one pass.
