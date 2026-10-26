@@ -82,6 +82,7 @@
   "ERR_KEY_TYPE": "no es un {data_type} válido: una clave no encaja en su tipo ({error})",
   "ERR_LAST_COLUMN": "debe quedar al menos una columna",
   "ERR_LAST_STEP_NOT_EDIT": "el último paso no es una edición de celdas",
+  "ERR_MASK_LENGTH": "la máscara tiene {found} valores, no {expected}",
   "ERR_MEMORY_SIZE": "«{value}» no es un tamaño de memoria; usa p. ej. 512M, 4G o 25%",
   "ERR_MERGE_TOO_FEW": "para unir hacen falta al menos 2 columnas",
   "ERR_METADATA_KEY_EMPTY": "la clave de metadatos no puede estar vacía",

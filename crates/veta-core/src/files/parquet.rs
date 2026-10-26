@@ -115,7 +115,7 @@ pub fn open_parquet(path: &Path, options: OpenOptions) -> Result<OpenedFile> {
 /// Refuses footers whose row counts can't be right (#157): negative, fewer
 /// values in a column than rows, or a total too large to count. Row groups
 /// are trusted to that extent; data that doesn't match fails when read.
-fn check_row_counts(metadata: &ParquetMetaData) -> Result<()> {
+pub(crate) fn check_row_counts(metadata: &ParquetMetaData) -> Result<()> {
     let mut total: usize = 0;
     for (row_group, rg) in metadata.row_groups().iter().enumerate() {
         let wrong = || invalid!(FileRowCounts, row_group = row_group + 1);
@@ -151,7 +151,7 @@ fn read_within(
     Ok(Some(MemorySource::new(metadata.schema().clone(), batches)?))
 }
 
-fn file_info(metadata: &ParquetMetaData, file_size: u64) -> FileInfo {
+pub(crate) fn file_info(metadata: &ParquetMetaData, file_size: u64) -> FileInfo {
     FileInfo {
         file_size,
         row_groups: metadata
@@ -166,7 +166,7 @@ fn file_info(metadata: &ParquetMetaData, file_size: u64) -> FileInfo {
     }
 }
 
-fn file_metadata(metadata: &ParquetMetaData) -> FileMetadata {
+pub(crate) fn file_metadata(metadata: &ParquetMetaData) -> FileMetadata {
     let fm = metadata.file_metadata();
     FileMetadata {
         key_value: fm
@@ -191,7 +191,7 @@ fn file_metadata(metadata: &ParquetMetaData) -> FileMetadata {
 /// settings for every row group). The row-group size is the largest row
 /// group's row count. Things Parquet does not record (compression levels,
 /// page size limits) are left at their defaults.
-fn writer_settings(metadata: &ParquetMetaData) -> WriterSettings {
+pub(crate) fn writer_settings(metadata: &ParquetMetaData) -> WriterSettings {
     let defaults = WriterSettings::default();
     let format_version = if metadata.file_metadata().version() >= 2 {
         FormatVersion::V2
@@ -390,7 +390,7 @@ fn write_parquet(
 
 /// Writes `batches` (with the columns of `schema`) into `file` as Parquet.
 /// The next batch is produced while the last one is encoded.
-fn write_batches(
+pub(crate) fn write_batches(
     schema: &SchemaRef,
     batches: impl Iterator<Item = Result<RecordBatch>>,
     metadata: &FileMetadata,

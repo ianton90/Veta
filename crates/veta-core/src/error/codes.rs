@@ -111,6 +111,7 @@ error_codes! {
     KeyType => "not a valid {data_type}: a key doesn't fit its type ({error})",
     LastColumn => "at least one column must remain",
     LastStepNotEdit => "the last step is not a cell edit",
+    MaskLength => "the mask has {found} values, not {expected}",
     MemorySize => "\"{value}\" is not a memory size; use e.g. 512M, 4G or 25%",
     MergeTooFew => "merging needs at least 2 columns",
     MetadataKeyEmpty => "metadata key cannot be empty",

@@ -9,7 +9,7 @@
 //! step's output.
 
 pub mod checkpoint;
-mod compute;
+pub(crate) mod compute;
 mod edits;
 mod level;
 mod pipeline;

@@ -267,6 +267,19 @@ pub fn import_csv(
     memory_budget: usize,
     progress: &mut dyn FnMut(f32) -> bool,
 ) -> Result<(Document, ImportReport)> {
+    let (source, report) = read_csv_data(path, options, memory_budget, progress)?;
+    Ok((Document::imported(file_name(path), source), report))
+}
+
+/// Reads a CSV file into memory, or into a paged temporary file when it
+/// comes to more than `memory_budget` bytes, with a report of the values
+/// that didn't fit their column's type.
+pub(crate) fn read_csv_data(
+    path: &Path,
+    options: &CsvOptions,
+    memory_budget: usize,
+    progress: &mut dyn FnMut(f32) -> bool,
+) -> Result<(Arc<dyn DataSource>, ImportReport)> {
     let schema = csv_schema(path, options)?;
     let layout = import_layout(&schema, options.on_error);
     let mut failures = vec![0u64; schema.fields().len()];
@@ -315,7 +328,7 @@ pub fn import_csv(
             .collect(),
         on_error: Some(options.on_error),
     };
-    Ok((Document::imported(file_name(path), source), report))
+    Ok((source, report))
 }
 
 /// Converts a CSV file straight into a new Parquet file at `target`, as

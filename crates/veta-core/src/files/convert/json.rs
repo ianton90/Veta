@@ -103,6 +103,17 @@ pub fn import_json(
     memory_budget: usize,
     progress: &mut dyn FnMut(f32) -> bool,
 ) -> Result<Document> {
+    let source = read_json_data(path, memory_budget, progress)?;
+    Ok(Document::imported(file_name(path), source))
+}
+
+/// Reads a JSON file into memory, or into a paged temporary file when it
+/// comes to more than `memory_budget` bytes.
+pub(crate) fn read_json_data(
+    path: &Path,
+    memory_budget: usize,
+    progress: &mut dyn FnMut(f32) -> bool,
+) -> Result<Arc<dyn DataSource>> {
     let schema = json_schema(path)?;
     let mut cancelled_flag = false;
     let source = {
@@ -123,6 +134,5 @@ pub fn import_json(
             memory_budget,
         )
     };
-    let source = cancelled(source, cancelled_flag)?;
-    Ok(Document::imported(file_name(path), source))
+    cancelled(source, cancelled_flag)
 }

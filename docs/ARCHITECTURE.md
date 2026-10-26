@@ -57,6 +57,15 @@ veta-core/src/
   parallel.rs            independent work on all cores
   memory.rs              the memory budget (half of RAM by default)
   profile.rs             timings of the parts of a pass (VETA_PROFILE=1)
+  frame/                 the new core (#196): DataFrame (sources, modes,
+                         inspecting, row and column methods), Column,
+                         write.rs (Parquet, CSV, JSON)
+  plan/                  nodes (a step each, pointing to the one before),
+                         the Step trait and Effect, row selections
+                         (ranges, list or mask), stored tables (memory,
+                         spilled to Arrow IPC temp files)
+  sources/               source steps: Parquet, CSV, JSON, batches
+  ops/                   transformations (keep/drop rows and columns)
   model/                 Document (document/), Workbook, metadata, undo
                          history
   controller/            the only way to change a Document
@@ -470,7 +479,7 @@ the methods to include, their names and parameters are reviewed in #198.
   into an `Expr`; the core has no formula text for now.
 
 ```rust
-let df = veta_core::read_parquet("sales.parquet", ReadOptions::default())?; // eager or lazy: an option
+let df = veta_core::read_parquet("sales.parquet")?; // read_parquet_with(path, ReadOptions { lazy: true, .. })
 let df = df.filter(gt(col("amount"), 100))?
     .apply_formula("net", mul(col("amount"), sub(1, col("discount"))))?;
 let mean = df.column("net")?.mean()?;
@@ -481,6 +490,14 @@ Every method takes `&self` and returns a new frame (`let df = df.undo()?;`).
 The new frame shares the old one's unchanged data through `Arc`; a buffer is
 freed when no frame or history entry points to it. A failed step leaves the
 old frame intact.
+
+### Sources
+
+A frame starts empty; reading a file is its first step. The free
+functions `read_parquet`, `read_csv` and `read_json` start a frame; the same
+methods on a frame are a step that replaces the data. The steps before it
+stay in the chain, so a later join can refer to an earlier point (a Power
+Query self join).
 
 ### Eager and lazy
 
@@ -555,10 +572,10 @@ unpivot come later, with the ETL system.
 
 | Area | Methods |
 |---|---|
-| Reading and writing | `read_parquet(path, ReadOptions { lazy, columns, .. })`, `read_csv`, `read_json`, `DataFrame::new(columns)`, `from_batches`; `write_parquet(path, WriterSettings)`, `write_csv`, `write_json` |
+| Reading and writing | `read_parquet` / `read_parquet_with(path, ReadOptions { lazy, columns })`, `read_csv` / `read_csv_with`, `read_json`, `DataFrame::new()`, `from_batches`; `write_parquet` / `write_parquet_with(path, &WriterSettings)`, `write_csv` / `write_csv_with`, `write_json`, `write_ndjson` |
 | Inspecting | `num_rows`, `num_columns`, `columns`, `column_types`, `schema`, `column(name or position)`, `value(row, column)`, `rows(range) -> RecordBatch`, `head(n)`, `tail(n)`, `collect`, `describe` |
 | Column steps | `keep_columns`, `drop_columns`, `rename([(from, to)])`, `move_column(name, at)`, `move_columns(names, at)`, `reorder_columns(names)`, `insert_column(name, type, at)`, `apply_formula(name, expr)`, `cast` / `cast_with`, `fill_null(column, Fill::Value / Down / Up)`, `replace(column, find, with)` / `replace_with(.., ReplaceOptions { whole_cell, case_sensitive })`, `format_text`, `split`, `merge_columns`, `unnest`, `explode`, `implode`, `add_field`, `remove_field`, `shift(column, n)`, `shift_all(n)` |
-| Row steps | `filter(expr)`, `sort` / `sort_with`, `slice(range or row list)`, `sample(fraction, seed)`, `insert_rows(at, count)`, `drop_rows(rows)`, `set(row, column, value)`, `drop_nulls(columns)` (a row goes if any listed column is null; no columns means all), `unique(columns, Keep)`, `reverse`, `buffer` |
+| Row steps | `filter(expr)`, `sort` / `sort_with`, `slice(rows, columns)` (like `iloc`: rows and columns each `..`, a range or list, names or positions, or a mask), `keep_rows(rows)`, `sample(fraction, seed)`, `insert_rows(at, count)`, `drop_rows(rows)`, `set(row, column, value)`, `drop_nulls(columns)` (a row goes if any listed column is null; no columns means all), `unique(columns, Keep)`, `reverse`, `buffer` |
 | Column statistics | `len` (rows, nulls included), `count_values` (non-null), `count_nulls`, `n_unique`, `min`, `max`, `sum`, `mean`, `median`, `std` / `var` (ddof 1, `_with` for others), `quantile(q)` (linear, `_with` for others), `mode`, `skew`, `kurtosis`; later `frequencies` (how often each value appears; also the input for histograms and violin plots) |
 | Frame statistics | `describe`, `stats(columns, [Stat])` (several in one pass) |
 

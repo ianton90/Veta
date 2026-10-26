@@ -4,6 +4,8 @@ use super::*;
 use crate::error::invalid;
 use std::sync::Mutex;
 
+use crate::plan::Output;
+
 // Export.
 
 /// Writes the pipeline's output to `target` in `format`.
@@ -18,8 +20,8 @@ pub fn export(
     replacement.commit()
 }
 
-pub(super) fn write_export(
-    output: &Pipeline,
+pub(crate) fn write_export(
+    output: &impl Output,
     file: File,
     format: &ExportFormat,
     progress: &mut dyn FnMut(f32) -> bool,
@@ -44,15 +46,14 @@ pub(super) fn write_export(
             let piece_format = format.clone();
             let spare: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
             let buffers = spare.clone();
-            let pieces =
-                output.read_parallel(output.evaluated(), 0..rows, None, move |batches, first| {
-                    let n: usize = batches.iter().map(RecordBatch::num_rows).sum();
-                    let out = buffers.lock().ok().and_then(|mut b| b.pop());
-                    let text = crate::profile::time("export: turning rows into text", || {
-                        format_piece(&piece_format, &batches, first == 0, out)
-                    })?;
-                    Ok((text, n))
-                });
+            let pieces = output.read_pieces(move |batches, first| {
+                let n: usize = batches.iter().map(RecordBatch::num_rows).sum();
+                let out = buffers.lock().ok().and_then(|mut b| b.pop());
+                let text = crate::profile::time("export: turning rows into text", || {
+                    format_piece(&piece_format, &batches, first == 0, out)
+                })?;
+                Ok((text, n))
+            });
             let mut pieces = pieces.into_iter();
             let mut written = false;
             while let Some(piece) =
@@ -74,8 +75,7 @@ pub(super) fn write_export(
             file.flush()?;
         }
         ExportFormat::JsonArray => {
-            let pieces =
-                output.read_parallel(output.evaluated(), 0..rows, None, |batches, _| Ok(batches));
+            let pieces = output.read_pieces(|batches, _| Ok(batches));
             let mut writer = arrow::json::WriterBuilder::new()
                 .with_explicit_nulls(true)
                 .build::<_, arrow::json::writer::JsonArray>(file);

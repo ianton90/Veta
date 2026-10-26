@@ -5,10 +5,14 @@ pub mod controller;
 pub mod error;
 pub mod files;
 pub mod formulas;
+pub mod frame;
 pub mod memory;
 pub mod model;
+mod ops;
 mod parallel;
+mod plan;
 pub mod profile;
+mod sources;
 pub mod stats;
 pub mod steps;
 pub mod transforms;
@@ -38,9 +42,15 @@ pub mod version {
 pub use arrow;
 pub use command::Command;
 pub use error::{Error, Result};
+pub use frame::{
+    Column, ColumnRef, DataFrame, ReadOptions, read_csv, read_csv_with, read_json, read_parquet,
+    read_parquet_with,
+};
 pub use io::{OpenOptions, SaveJob, SaveResult};
 pub use model::{
     ColumnSettings, Compression, Encoding, FormatVersion, StatisticsLevel, WriterSettings,
 };
 pub use model::{Document, DocumentId, Workbook};
+pub use ops::Columns;
+pub use plan::Rows;
 pub use source::SourceMode;

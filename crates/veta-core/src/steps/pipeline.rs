@@ -381,3 +381,20 @@ impl Pipeline {
         self.read_level_columns(steps, range, names)
     }
 }
+
+impl crate::plan::Output for Pipeline {
+    fn schema(&self) -> SchemaRef {
+        Pipeline::schema(self)
+    }
+
+    fn num_rows(&self) -> usize {
+        Pipeline::num_rows(self)
+    }
+
+    fn read_pieces<T: Send + 'static>(
+        &self,
+        map: impl Fn(Vec<RecordBatch>, usize) -> Result<T> + Send + Sync + 'static,
+    ) -> crate::parallel::Ordered<T> {
+        self.read_parallel(self.evaluated(), 0..self.num_rows(), None, map)
+    }
+}

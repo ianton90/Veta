@@ -20,9 +20,14 @@ pub(crate) struct TempFile {
 
 impl TempFile {
     pub(crate) fn new() -> Result<Self> {
+        Self::with_extension("parquet")
+    }
+
+    /// A temp file named `….{extension}` (`parquet` or `arrow`).
+    pub(crate) fn with_extension(extension: &str) -> Result<Self> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = temp_dir()?.join(format!("veta-{}-{n}.parquet", std::process::id()));
+        let path = temp_dir()?.join(format!("veta-{}-{n}.{extension}", std::process::id()));
         // A new file only (never one already there), readable by its owner
         // alone.
         let mut options = std::fs::OpenOptions::new();
@@ -128,7 +133,10 @@ fn remove_stale_in(dir: &Path) -> usize {
         let Some(pid) = name
             .to_str()
             .and_then(|n| n.strip_prefix("veta-"))
-            .and_then(|n| n.strip_suffix(".parquet"))
+            .and_then(|n| {
+                n.strip_suffix(".parquet")
+                    .or_else(|| n.strip_suffix(".arrow"))
+            })
             .and_then(|n| n.split_once('-'))
             .and_then(|(pid, _)| pid.parse::<u32>().ok())
         else {

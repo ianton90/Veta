@@ -31,10 +31,13 @@ use crate::source::{DataSource, MemorySource};
 use crate::steps::checkpoint::{Checkpoint, TempFile};
 use crate::steps::{Cast, CastOptions, OnError, Pipeline};
 
+pub(crate) use csv::read_csv_data;
 pub use csv::{convert_csv, error_column_name, import_csv, preview_csv};
 pub use encoding::TextEncoding;
 use encoding::*;
 pub use export::export;
+pub(crate) use export::write_export;
+pub(crate) use json::read_json_data;
 pub use json::{import_json, preview_json};
 
 /// Rows per batch when reading or writing.
