@@ -68,7 +68,11 @@ veta-core/src/
                          spilled to Arrow IPC temp files), the cell-edit
                          log, history stacks, Progress
   sources/               source steps: Parquet, CSV, JSON, batches
-  ops/                   transformations (keep/drop rows and columns)
+  ops/                   transformations: rows, columns (keep, drop,
+                         rename, move, insert), derive.rs (ColumnOp: a
+                         step making columns from columns, row for row),
+                         convert (cast, replace, format, fill value),
+                         split, nested, shift, fill (down/up), cells
   model/                 Document (document/), Workbook, metadata, undo
                          history
   controller/            the only way to change a Document
@@ -607,20 +611,23 @@ statistics on `df.sample(..)?`.
 
 ### Adding transformations
 
-Each kind of step (filter, sort, cast, …) is one type, in its own file,
-implementing one trait. The trait answers:
+Each kind of step is one type, in its own file, implementing `Step`:
 
-- given the input columns and types, is the step valid and what columns and
-  types come out;
-- what it stores for its output: nothing, the changed columns, a row bitmap,
-  a permutation or row ranges;
-- how it computes a batch of rows, or whether it needs to see every row
-  first (sort);
-- how to undo it when it worked in place;
-- how it is written to and read from a recipe.
+- `plan`: given the input node (its columns and types), is the step valid,
+  what columns come out, and how the output is read (`Effect`): from new
+  data (sources), as input columns (picked, renamed, moved), as input rows
+  (a selection), derived row for row (`Derived`), or computed whole when
+  the step runs (`Later`: explode, fill down/up, later filter and sort);
+- `derive`: for `Derived`, the new columns for a range of rows (kept when
+  the step runs eagerly, derived as read while lazy);
+- `compute`: for `Later`, the output (a table, a row selection, columns
+  laid over the input).
 
-A new transformation is a new type plus its `DataFrame` method. History,
-memory and temp files, lazy runs and recipes work with it unchanged.
+Steps that make columns from columns, row for row, implement the smaller
+`ColumnOp` instead (which columns they read, the output fields of a schema
+and of a batch), and get `Step` from it. A new transformation is a new type
+plus its `DataFrame` method; history, memory and temp files, lazy runs and
+progress work with it unchanged.
 
 ### Statistics
 

@@ -138,6 +138,8 @@ enum RecipeStep {
         with: Option<String>,
         #[serde(default)]
         whole_cell: bool,
+        #[serde(default = "case_sensitive")]
+        case_sensitive: bool,
     },
     FormatText {
         columns: Vec<String>,
@@ -387,6 +389,7 @@ impl RecipeStep {
                 find: r.find.clone(),
                 with: r.with.clone(),
                 whole_cell: r.whole_cell,
+                case_sensitive: r.case_sensitive,
             },
             Step::FormatText { columns, op } => RecipeStep::FormatText {
                 columns: columns.clone(),
@@ -537,11 +540,13 @@ impl RecipeStep {
                 find,
                 with,
                 whole_cell,
+                case_sensitive,
             } => Step::Replace(Replace {
                 column,
                 find,
                 with,
                 whole_cell,
+                case_sensitive,
             }),
             RecipeStep::FormatText { columns, op } => Step::FormatText {
                 columns,
@@ -695,3 +700,8 @@ fn path_parts(names: &[String]) -> Vec<crate::display::PathPart> {
 
 #[cfg(test)]
 mod tests;
+
+/// Replace matches case unless a recipe says otherwise.
+fn case_sensitive() -> bool {
+    true
+}

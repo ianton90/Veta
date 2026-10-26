@@ -18,7 +18,7 @@ pub(crate) use node::Node;
 pub use progress::{Progress, Task};
 pub use rows::Rows;
 pub(crate) use rows::Selection;
-pub(crate) use step::{Context, Effect, FileSettings, Planned, Shape, Step};
+pub(crate) use step::{Col, Context, Effect, FileSettings, Planned, Step};
 
 /// Data that writers read in pieces on several threads.
 pub(crate) trait Output {
@@ -36,11 +36,11 @@ pub(crate) trait Output {
 
 impl Output for std::sync::Arc<Node> {
     fn schema(&self) -> SchemaRef {
-        self.shape.schema.clone()
+        Node::schema(self).clone()
     }
 
     fn num_rows(&self) -> usize {
-        self.shape.rows
+        self.rows().unwrap_or(0)
     }
 
     fn read_pieces<T: Send + 'static>(

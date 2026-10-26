@@ -3,9 +3,19 @@
 
 mod cells;
 mod columns;
+mod convert;
+mod derive;
+mod fill;
+mod nested;
 mod rows;
+mod shift;
+mod split;
 
 pub(crate) use cells::{SetCells, Snapshot};
 pub use columns::Columns;
-pub(crate) use columns::{KeepColumns, position};
+pub(crate) use columns::{InsertColumn, KeepColumns, Rename, Reorder, position};
+pub(crate) use convert::{FillValue, FormatText};
+pub(crate) use fill::FillNearest;
+pub(crate) use nested::{ChangeField, Explode, Unnest};
 pub(crate) use rows::KeepRows;
+pub(crate) use shift::Shift;

@@ -251,6 +251,7 @@ fn replace_format_and_fill_commands() {
                 find: Some("o".into()),
                 with: Some("0".into()),
                 whole_cell: false,
+                case_sensitive: true,
             })),
         )
         .unwrap();
@@ -285,6 +286,7 @@ fn replace_format_and_fill_commands() {
                 find: None,
                 with: Some("-1".into()),
                 whole_cell: true,
+                case_sensitive: true,
             })),
         )
         .unwrap();

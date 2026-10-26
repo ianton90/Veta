@@ -41,10 +41,11 @@ pub mod version {
 /// The Arrow crate used by core, re-exported so front ends use the same version.
 pub use arrow;
 pub use command::Command;
+pub use display::PathPart;
 pub use error::{Error, Result};
 pub use frame::{
-    Column, ColumnRef, DataFrame, IntoValue, Null, ReadOptions, read_csv, read_csv_with, read_json,
-    read_parquet, read_parquet_with,
+    Column, ColumnRef, DataFrame, Fill, IntoValue, Null, ReadOptions, ReplaceOptions, read_csv,
+    read_csv_with, read_json, read_parquet, read_parquet_with,
 };
 pub use io::{OpenOptions, SaveJob, SaveResult};
 pub use model::{
@@ -54,3 +55,6 @@ pub use model::{Document, DocumentId, Workbook};
 pub use ops::Columns;
 pub use plan::{Progress, Rows, Task};
 pub use source::SourceMode;
+pub use transforms::cast::{CastOptions, OnError};
+pub use transforms::split::SplitBy;
+pub use transforms::text::TextOp;

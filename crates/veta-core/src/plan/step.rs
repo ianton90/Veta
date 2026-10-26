@@ -2,23 +2,29 @@
 //! output relates to its input.
 
 use std::fmt;
+use std::ops::Range;
 use std::sync::Arc;
+
+use arrow::array::ArrayRef;
 
 use arrow::datatypes::SchemaRef;
 
 use super::cells::CellView;
+use super::node::Node;
 use super::progress::Progress;
 use super::rows::Selection;
 use super::store::Table;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, invalid};
 use crate::model::{FileMetadata, WriterSettings};
 use crate::source::DataSource;
 
-/// The columns and rows of a step's output.
-#[derive(Debug, Clone)]
-pub(crate) struct Shape {
-    pub(crate) schema: SchemaRef,
-    pub(crate) rows: usize,
+/// Where a column of a deriving step's output comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Col {
+    /// The input's column at this position.
+    Input(usize),
+    /// The step's `n`-th new column.
+    New(usize),
 }
 
 /// How a step's output is read.
@@ -31,6 +37,12 @@ pub(crate) enum Effect {
     Columns(Vec<usize>),
     /// Output rows are these input rows.
     Rows(Arc<Selection>),
+    /// Columns from the input or made by the step ([`Step::derive`]), row
+    /// for row: kept when the step runs, derived as read while lazy.
+    Derived(Vec<Col>),
+    /// Computed by [`Step::compute`] when the step runs (now, or when data
+    /// is needed while lazy).
+    Later,
     /// The input, with these cells changed.
     Cells(CellView),
     /// The input, with the columns of this table (same rows, same names)
@@ -70,8 +82,18 @@ pub(crate) struct FileSettings {
 /// One kind of step. A new transformation is a new type implementing this
 /// trait, plus its [`DataFrame`](crate::frame::DataFrame) method.
 pub(crate) trait Step: fmt::Debug + Send + Sync {
-    /// Checks the step against its input (columns, types, rows) and says
-    /// what comes out. Data isn't read, except by sources, which read a
-    /// file's footer, or the whole file unless the context is lazy.
-    fn plan(&self, input: &Shape, context: &Context) -> Result<Planned>;
+    /// Checks the step against its input (columns, types) and says what
+    /// comes out. Data isn't read, except by sources, which read a file's
+    /// footer, or the whole file unless the context is lazy.
+    fn plan(&self, input: &Arc<Node>, context: &Context) -> Result<Planned>;
+
+    /// For [`Effect::Derived`]: the new columns for input rows `rows`.
+    fn derive(&self, _input: &Node, _rows: Range<usize>) -> Result<Vec<ArrayRef>> {
+        Err(invalid!(ComputeFirst))
+    }
+
+    /// For [`Effect::Later`]: how the output is read, once computed.
+    fn compute(&self, _input: &Arc<Node>, _context: &Context) -> Result<Effect> {
+        Err(invalid!(ComputeFirst))
+    }
 }

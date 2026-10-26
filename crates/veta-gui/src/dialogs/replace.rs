@@ -60,6 +60,7 @@ impl ReplaceDialog {
                     find: (!self.find_null).then(|| self.find.clone()),
                     with: (!self.with_null).then(|| self.with.clone()),
                     whole_cell: self.whole_cell || !self.text_column,
+                    case_sensitive: true,
                 });
             }
         }

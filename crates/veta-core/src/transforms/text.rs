@@ -25,6 +25,9 @@ pub struct Replace {
     /// Text columns: replace only whole cells equal to `find`, instead of
     /// every occurrence inside cells. Other columns always match whole cells.
     pub whole_cell: bool,
+    /// Text columns: `find` matches only with the same upper and lower
+    /// case.
+    pub case_sensitive: bool,
 }
 
 impl Replace {
@@ -62,22 +65,37 @@ impl Replace {
         if self.substring(data_type) {
             let find = self.find.as_deref().unwrap_or_default();
             let with = self.with.as_deref().unwrap_or_default();
+            let case_sensitive = self.case_sensitive;
             return map_text(column, |s, out| {
                 if find.is_empty() {
                     out.push_str(s);
                     return;
                 }
                 let mut last = 0;
-                for (i, _) in s.match_indices(find) {
+                let mut at = 0;
+                while let Some((i, len)) = find_from(s, find, at, case_sensitive) {
                     out.push_str(&s[last..i]);
                     out.push_str(with);
-                    last = i + find.len();
+                    last = i + len;
+                    at = last;
                 }
                 out.push_str(&s[last..]);
             });
         }
         let mask = match &self.find {
             None => is_null(column)?,
+            Some(find) if is_text(data_type) && !self.case_sensitive => {
+                let find = find.to_lowercase();
+                let strings = cast(column, &DataType::Utf8)?;
+                let strings = strings
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .ok_or_else(|| invalid!(ExpectedText))?;
+                strings
+                    .iter()
+                    .map(|s| Some(s.is_some_and(|s| s.to_lowercase() == find)))
+                    .collect()
+            }
             Some(find) => {
                 let value = parse_value(Some(find), data_type)?;
                 let mask = cmp::eq(column, &Scalar::new(value))?;
@@ -129,6 +147,29 @@ impl TextOp {
             Self::Title => map_text(column, title_case),
         }
     }
+}
+
+/// The first match of `find` in `s` at or after byte `from`: its byte
+/// position and length in `s`.
+fn find_from(s: &str, find: &str, from: usize, case_sensitive: bool) -> Option<(usize, usize)> {
+    if case_sensitive {
+        return s[from..].find(find).map(|i| (from + i, find.len()));
+    }
+    let wanted: Vec<char> = find.chars().flat_map(char::to_lowercase).collect();
+    s[from..].char_indices().find_map(|(i, _)| {
+        let mut chars = s[from + i..]
+            .char_indices()
+            .flat_map(|(j, c)| c.to_lowercase().map(move |l| (j, c, l)));
+        let mut end = 0;
+        for &w in &wanted {
+            let (j, c, l) = chars.next()?;
+            if l != w {
+                return None;
+            }
+            end = j + c.len_utf8();
+        }
+        Some((from + i, end))
+    })
 }
 
 fn title_case(s: &str, out: &mut String) {
@@ -266,7 +307,26 @@ mod tests {
             find: find.map(str::to_owned),
             with: with.map(str::to_owned),
             whole_cell,
+            case_sensitive: true,
         }
+    }
+
+    #[test]
+    fn replace_ignoring_case() {
+        let column = text(&[Some("ÁbA xab"), Some("ab"), None]);
+        let r = Replace {
+            case_sensitive: false,
+            ..replace(Some("ab"), Some("-"), false)
+        };
+        assert_eq!(
+            strings(&r.apply(&column).unwrap()),
+            [Some("ÁbA x-".into()), Some("-".into()), None]
+        );
+        let whole = Replace {
+            case_sensitive: false,
+            ..replace(Some("AB"), Some("-"), true)
+        };
+        assert_eq!(strings(&whole.apply(&column).unwrap())[1], Some("-".into()));
     }
 
     #[test]

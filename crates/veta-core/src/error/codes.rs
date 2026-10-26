@@ -158,6 +158,7 @@ error_codes! {
     ReplaceNoText => "enter the text to find",
     ReplaceNoValue => "enter the value to find",
     ReplaceNullsNeedValue => "replacing nulls needs a value to put instead",
+    ReorderAll => "the new order must list every column; {column} is missing",
     RowColumn => "row {row}, {column}: {cause}",
     RowCountZero => "the number of rows must be above 0",
     RowGroupSize => "row group size must be at least 1",

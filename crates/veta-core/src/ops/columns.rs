@@ -1,12 +1,16 @@
-//! Keeping or dropping columns.
+//! Picking, dropping, renaming, moving and inserting columns.
 
 use std::ops::RangeFull;
 use std::sync::Arc;
 
-use arrow::datatypes::Schema;
+use arrow::array::new_null_array;
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::record_batch::RecordBatch;
+
+use super::derive::ColumnOp;
 
 use crate::error::{Result, invalid};
-use crate::plan::{Context, Effect, Planned, Shape, Step};
+use crate::plan::{Context, Effect, Node, Planned, Step};
 
 /// Columns given to a method: all of them (`..`), names, positions or a
 /// mask with one value per column (`true` picks the column).
@@ -80,7 +84,7 @@ impl From<Vec<bool>> for Columns {
 
 impl Columns {
     /// The positions in `schema` of the columns given, in their order.
-    fn positions(&self, schema: &Schema) -> Result<Vec<usize>> {
+    pub(crate) fn positions(&self, schema: &Schema) -> Result<Vec<usize>> {
         let count = schema.fields().len();
         let positions: Vec<usize> = match self {
             Columns::All => (0..count).collect(),
@@ -130,16 +134,116 @@ pub(crate) struct KeepColumns {
 }
 
 impl Step for KeepColumns {
-    fn plan(&self, input: &Shape, _context: &Context) -> Result<Planned> {
-        let mut positions = self.columns.positions(&input.schema)?;
+    fn plan(&self, input: &Arc<Node>, _context: &Context) -> Result<Planned> {
+        let mut positions = self.columns.positions(input.schema())?;
         if self.drop {
-            let count = input.schema.fields().len();
+            let count = input.schema().fields().len();
             positions = (0..count).filter(|p| !positions.contains(p)).collect();
         }
         Ok(Planned {
-            schema: Arc::new(input.schema.project(&positions)?),
+            schema: Arc::new(input.schema().project(&positions)?),
             effect: Effect::Columns(positions),
             file: None,
         })
+    }
+}
+
+/// Renames columns.
+#[derive(Debug)]
+pub(crate) struct Rename(pub(crate) Vec<(String, String)>);
+
+impl Step for Rename {
+    fn plan(&self, input: &Arc<Node>, _context: &Context) -> Result<Planned> {
+        let schema = input.schema();
+        let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+        for (from, to) in &self.0 {
+            if to.trim().is_empty() {
+                return Err(invalid!(ColumnNameEmpty));
+            }
+            let at = position(schema, from)?;
+            fields[at] = fields[at].clone().with_name(to);
+        }
+        for (i, field) in fields.iter().enumerate() {
+            if fields[..i].iter().any(|f| f.name() == field.name()) {
+                return Err(invalid!(ColumnExists, column = field.name()));
+            }
+        }
+        Ok(Planned {
+            schema: Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone())),
+            effect: Effect::Columns((0..schema.fields().len()).collect()),
+            file: None,
+        })
+    }
+}
+
+/// Puts columns in a new order.
+#[derive(Debug)]
+pub(crate) enum Reorder {
+    /// `columns`, in their order, to position `at` of the output; the rest
+    /// keep theirs.
+    Move { columns: Columns, at: usize },
+    /// Every column, in this order.
+    All(Columns),
+}
+
+impl Step for Reorder {
+    fn plan(&self, input: &Arc<Node>, _context: &Context) -> Result<Planned> {
+        let schema = input.schema();
+        let count = schema.fields().len();
+        let order = match self {
+            Reorder::Move { columns, at } => {
+                let moved = columns.positions(schema)?;
+                let mut rest: Vec<usize> = (0..count).filter(|p| !moved.contains(p)).collect();
+                if *at > rest.len() {
+                    return Err(invalid!(ColumnPosition, position = at));
+                }
+                rest.splice(*at..*at, moved);
+                rest
+            }
+            Reorder::All(columns) => {
+                let order = columns.positions(schema)?;
+                if let Some(missing) = (0..count).find(|p| !order.contains(p)) {
+                    return Err(invalid!(ReorderAll, column = schema.field(missing).name()));
+                }
+                order
+            }
+        };
+        Ok(Planned {
+            schema: Arc::new(schema.project(&order)?),
+            effect: Effect::Columns(order),
+            file: None,
+        })
+    }
+}
+
+/// A new column of nulls.
+#[derive(Debug)]
+pub(crate) struct InsertColumn {
+    pub(crate) name: String,
+    pub(crate) data_type: DataType,
+    pub(crate) at: usize,
+}
+
+impl ColumnOp for InsertColumn {
+    fn reads(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn fields(&self, schema: &Schema) -> Result<Vec<Field>> {
+        if self.name.trim().is_empty() {
+            return Err(invalid!(ColumnNameEmpty));
+        }
+        if schema.index_of(&self.name).is_ok() {
+            return Err(invalid!(ColumnExists, column = self.name));
+        }
+        let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+        let at = self.at.min(fields.len());
+        fields.insert(at, Field::new(&self.name, self.data_type.clone(), true));
+        Ok(fields)
+    }
+
+    fn apply(&self, batch: &RecordBatch, schema: &Arc<Schema>) -> Result<RecordBatch> {
+        let column = new_null_array(&self.data_type, batch.num_rows());
+        Ok(RecordBatch::try_new(schema.clone(), vec![column])?)
     }
 }

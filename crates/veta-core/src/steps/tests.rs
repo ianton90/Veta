@@ -614,6 +614,7 @@ fn column_reads_take_only_what_they_need() {
             find: Some("n1".into()),
             with: Some("one".into()),
             whole_cell: true,
+            case_sensitive: true,
         }),
         Step::CustomColumn(CustomColumn {
             name: "double".into(),

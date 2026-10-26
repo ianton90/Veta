@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::error::Result;
 use crate::plan::store::Table;
-use crate::plan::{Context, Effect, FileSettings, Planned, Shape, Step, Task};
+use crate::plan::{Context, Effect, FileSettings, Node, Planned, Step, Task};
 use crate::source::DataSource;
 
 pub(crate) use csv::ReadCsv;
@@ -34,7 +34,7 @@ fn reading(context: &Context) -> impl FnMut(f32) -> bool + '_ {
 pub(crate) struct Batches(pub(crate) Arc<Table>);
 
 impl Step for Batches {
-    fn plan(&self, _input: &Shape, _context: &Context) -> Result<Planned> {
+    fn plan(&self, _input: &Arc<Node>, _context: &Context) -> Result<Planned> {
         Ok(Planned {
             schema: self.0.schema(),
             effect: Effect::Data(self.0.clone()),

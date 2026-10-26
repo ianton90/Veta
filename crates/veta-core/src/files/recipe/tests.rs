@@ -66,6 +66,7 @@ fn all_steps() -> Vec<Step> {
             find: None,
             with: Some("ok".into()),
             whole_cell: true,
+            case_sensitive: true,
         }),
         Step::FormatText {
             columns: vec!["label errors".into()],

@@ -12,6 +12,7 @@
 
 mod cells;
 mod column;
+mod columns;
 mod history;
 mod steps;
 mod value;
@@ -33,6 +34,7 @@ use crate::plan::{Context, History, Node, Progress, Rows, Step, Task};
 use crate::sources::{Batches, ReadCsv, ReadJson, ReadParquet};
 
 pub use column::{Column, ColumnRef};
+pub use columns::{Fill, ReplaceOptions};
 pub use value::{IntoValue, Null};
 
 /// How to read a Parquet file.
@@ -226,13 +228,13 @@ impl DataFrame {
         if let Some((_, error)) = self.broken_step() {
             return Err(error);
         }
-        Ok(self.node.shape.rows)
+        self.node.rows()
     }
 
     /// Columns. With a broken step, those of its input (as are
     /// [`Self::columns`] and [`Self::schema`]).
     pub fn num_columns(&self) -> usize {
-        self.node.shape.schema.fields().len()
+        self.node.schema().fields().len()
     }
 
     /// Column names, in order.
@@ -255,11 +257,11 @@ impl DataFrame {
 
     /// Columns with their types, nullability and metadata.
     pub fn schema(&self) -> SchemaRef {
-        self.node.shape.schema.clone()
+        self.node.schema().clone()
     }
 
     fn schema_ref(&self) -> &Schema {
-        &self.node.shape.schema
+        self.node.schema()
     }
 
     /// A column, by name or position.

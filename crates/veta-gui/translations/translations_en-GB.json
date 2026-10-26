@@ -130,6 +130,7 @@
   "ERR_REPLACE_NO_VALUE": "enter the value to find",
   "ERR_REPLACE_NULLS_NEED_VALUE": "replacing nulls needs a value to put instead",
   "ERR_ROWS_FROM_THERE": "there are only {rows} rows from there",
+  "ERR_REORDER_ALL": "the new order must list every column; {column} is missing",
   "ERR_ROW_COLUMN": "row {row}, {column}: {cause}",
   "ERR_ROW_COUNT_ZERO": "the number of rows must be above 0",
   "ERR_ROW_GROUP_SIZE": "row group size must be at least 1",

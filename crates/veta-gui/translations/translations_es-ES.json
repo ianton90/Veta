@@ -130,6 +130,7 @@
   "ERR_REPLACE_NO_VALUE": "escribe el valor que buscar",
   "ERR_REPLACE_NULLS_NEED_VALUE": "para reemplazar nulos hace falta un valor que poner",
   "ERR_ROWS_FROM_THERE": "desde ahí solo hay {rows} filas",
+  "ERR_REORDER_ALL": "el nuevo orden debe incluir todas las columnas; falta «{column}»",
   "ERR_ROW_COLUMN": "fila {row}, {column}: {cause}",
   "ERR_ROW_COUNT_ZERO": "el número de filas debe ser mayor que 0",
   "ERR_ROW_GROUP_SIZE": "el tamaño del grupo de filas debe ser al menos 1",

@@ -14,7 +14,7 @@ use parquet::file::metadata::PageIndexPolicy;
 use crate::error::{Result, invalid};
 use crate::files::parquet::{check_row_counts, file_info, file_metadata, writer_settings};
 use crate::plan::store::Table;
-use crate::plan::{Context, Effect, FileSettings, Planned, Shape, Step, Task};
+use crate::plan::{Context, Effect, FileSettings, Node, Planned, Step, Task};
 use crate::source::{DataSource, PagedSource};
 
 /// Reads a Parquet file, or only `columns` of it.
@@ -27,7 +27,7 @@ pub(crate) struct ReadParquet {
 impl Step for ReadParquet {
     /// Reads the footer, and the whole file unless `lazy` or it decodes to
     /// more than the memory budget (it is then read as needed).
-    fn plan(&self, _input: &Shape, context: &Context) -> Result<Planned> {
+    fn plan(&self, _input: &Arc<Node>, context: &Context) -> Result<Planned> {
         let file = File::open(&self.path)?;
         let file_size = file.metadata()?.len();
         let options = ArrowReaderOptions::new().with_page_index_policy(PageIndexPolicy::Optional);
