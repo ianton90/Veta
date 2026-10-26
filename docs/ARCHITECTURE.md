@@ -545,8 +545,47 @@ entries and only what reading the current data needs is kept.
   the oldest kept outputs are deleted, and undoing those steps recomputes
   them instead.
 
+### Methods
+
+Agreed in #198. Required arguments are positional. Optional ones go in an
+`…Options` struct that implements `Default`, taken by a `_with` version of
+the method (`sort(keys)`, `sort_with(keys, SortOptions { .. })`).
+Expression functions are reviewed in #200. Concat, join, group_by, pivot and
+unpivot come later, with the ETL system.
+
+| Area | Methods |
+|---|---|
+| Reading and writing | `read_parquet(path, ReadOptions { lazy, columns, .. })`, `read_csv`, `read_json`, `DataFrame::new(columns)`, `from_batches`; `write_parquet(path, WriterSettings)`, `write_csv`, `write_json` |
+| Inspecting | `num_rows`, `num_columns`, `columns`, `column_types`, `schema`, `column(name or position)`, `value(row, column)`, `rows(range) -> RecordBatch`, `head(n)`, `tail(n)`, `collect`, `describe` |
+| Column steps | `keep_columns`, `drop_columns`, `rename([(from, to)])`, `move_column(name, at)`, `move_columns(names, at)`, `reorder_columns(names)`, `insert_column(name, type, at)`, `apply_formula(name, expr)`, `cast` / `cast_with`, `fill_null(column, Fill::Value / Down / Up)`, `replace(column, find, with)` / `replace_with(.., ReplaceOptions { whole_cell, case_sensitive })`, `format_text`, `split`, `merge_columns`, `unnest`, `explode`, `implode`, `add_field`, `remove_field`, `shift(column, n)`, `shift_all(n)` |
+| Row steps | `filter(expr)`, `sort` / `sort_with`, `slice(range or row list)`, `sample(fraction, seed)`, `insert_rows(at, count)`, `drop_rows(rows)`, `set(row, column, value)`, `drop_nulls(columns)` (a row goes if any listed column is null; no columns means all), `unique(columns, Keep)`, `reverse`, `buffer` |
+| Column statistics | `len` (rows, nulls included), `count_values` (non-null), `count_nulls`, `n_unique`, `min`, `max`, `sum`, `mean`, `median`, `std` / `var` (ddof 1, `_with` for others), `quantile(q)` (linear, `_with` for others), `mode`, `skew`, `kurtosis`; later `frequencies` (how often each value appears; also the input for histograms and violin plots) |
+| Frame statistics | `describe`, `stats(columns, [Stat])` (several in one pass) |
+
+`sample(fraction, seed)` is a row step like `filter`: whether a row is kept
+depends only on its number and the seed, so every column gets the same rows
+and the same seed always picks them again. Statistics on a sample are
+statistics on `df.sample(..)?`.
+
+### Adding transformations
+
+Each kind of step (filter, sort, cast, …) is one type, in its own file,
+implementing one trait. The trait answers:
+
+- given the input columns and types, is the step valid and what columns and
+  types come out;
+- what it stores for its output: nothing, the changed columns, a row bitmap,
+  a permutation or row ranges;
+- how it computes a batch of rows, or whether it needs to see every row
+  first (sort);
+- how to undo it when it worked in place;
+- how it is written to and read from a recipe.
+
+A new transformation is a new type plus its `DataFrame` method. History,
+memory and temp files, lazy runs and recipes work with it unchanged.
+
 ### Statistics
 
-Exact by default, with a sample fraction (0–1) to compute them from a sample
-instead. Each statistic is its own method on `Column` and computes only what
-it needs; frame-level methods compute several in one pass.
+Exact by default; computed on `df.sample(fraction, seed)?` they come from a
+sample instead. Each statistic is its own method on `Column` and computes
+only what it needs; frame-level methods compute several in one pass.
