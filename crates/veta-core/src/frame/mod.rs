@@ -127,6 +127,7 @@ impl DataFrame {
 
     /// This frame with `step` added.
     fn then(&self, step: impl Step + 'static) -> Result<Self> {
+        self.check_not_broken()?;
         let node = self.node.push(Arc::new(step), &self.context())?;
         Ok(self.changed_to(node))
     }
@@ -220,12 +221,16 @@ impl DataFrame {
 
     // Inspecting.
 
-    /// Rows.
+    /// Rows; an error if a step is broken.
     pub fn num_rows(&self) -> Result<usize> {
+        if let Some((_, error)) = self.broken_step() {
+            return Err(error);
+        }
         Ok(self.node.shape.rows)
     }
 
-    /// Columns.
+    /// Columns. With a broken step, those of its input (as are
+    /// [`Self::columns`] and [`Self::schema`]).
     pub fn num_columns(&self) -> usize {
         self.node.shape.schema.fields().len()
     }

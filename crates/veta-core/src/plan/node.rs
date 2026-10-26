@@ -13,7 +13,7 @@ use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 
 use super::progress::{Progress, Task};
 use super::step::{Context, Effect, FileSettings, Shape, Step};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::source::DataSource;
 use crate::source::MemorySource;
 use crate::steps::compute::PASS_ROWS;
@@ -59,7 +59,11 @@ impl Node {
         let planned = step.plan(&self.shape, context)?;
         let rows = match &planned.effect {
             Effect::Data(source) => source.num_rows(),
-            Effect::Columns(_) | Effect::Cells(_) | Effect::Patch(_) => self.shape.rows,
+            Effect::Columns(_)
+            | Effect::Cells(_)
+            | Effect::Patch(_)
+            | Effect::Broken(_)
+            | Effect::Unplanned => self.shape.rows,
             Effect::Rows(selection) => selection.len(),
         };
         Ok(Arc::new(Self {
@@ -75,6 +79,25 @@ impl Node {
                 None => self.file.clone(),
             },
         }))
+    }
+
+    /// This node with `step` after it, which doesn't fit (`error`), or
+    /// comes after one that doesn't (`None`). Its shape is this node's.
+    pub(crate) fn push_broken(
+        self: &Arc<Self>,
+        step: Arc<dyn Step>,
+        error: Option<Error>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            parent: Some(self.clone()),
+            step: Some(step),
+            shape: self.shape.clone(),
+            effect: match error {
+                Some(error) => Effect::Broken(error),
+                None => Effect::Unplanned,
+            },
+            file: self.file.clone(),
+        })
     }
 
     fn parent(&self) -> &Node {
@@ -125,6 +148,12 @@ impl Node {
         let range = range.start.min(end)..end;
         let schema: SchemaRef = Arc::new(self.shape.schema.project(columns)?);
         let arrays = match &self.effect {
+            Effect::Broken(error) => return Err(error.clone()),
+            Effect::Unplanned => self
+                .parent()
+                .read(range.clone(), columns)?
+                .columns()
+                .to_vec(),
             Effect::Data(source) => {
                 let names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
                 let batch = source.read_columns(range.clone(), &names)?;

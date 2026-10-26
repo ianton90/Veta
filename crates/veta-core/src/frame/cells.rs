@@ -18,6 +18,7 @@ impl DataFrame {
     /// they take more than [`crate::memory::cell_edits_limit`], when they
     /// are grouped into a snapshot of the edited columns, undone as one.
     pub fn set(&self, row: usize, column: impl ColumnRef, value: impl IntoValue) -> Result<Self> {
+        self.check_not_broken()?;
         let rows = self.num_rows()?;
         if row >= rows {
             return Err(invalid!(RowPastEnd, row = row, rows = rows));

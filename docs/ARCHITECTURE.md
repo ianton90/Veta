@@ -560,7 +560,9 @@ undoing is instant. With it off there are no undo entries.
 - `edit_step(k, |before| before.keep_rows(..))`, `move_step` and
   `remove_step` plan the steps after `k` again on the new input; each is
   one undo entry, and the old nodes stay for undo. A later step that no
-  longer applies is an error naming it, and the frame is left as it was.
+  longer fits is kept, broken, with its error (`broken_step()`), and the
+  steps after it unplanned; reading data or adding steps is refused until
+  it is fixed or removed.
 - `set(row, column, value)`: edits in a row are one step over the input of
   the first. They go into one append-only log; each frame sees it up to its
   version, so an edit adds one entry and undoing one goes back a version

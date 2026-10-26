@@ -72,9 +72,25 @@ fn editing_moving_and_removing_steps() {
     let moved = df.move_step(3, 1).unwrap();
     assert_eq!(moved.columns(), ["id", "label"]);
     assert_eq!(ids(&moved), (90..100).collect::<Vec<_>>());
-    // A later step that no longer applies is an error naming it.
-    let broken = df.edit_step(1, |before| before.keep_rows(0..50));
-    assert!(matches!(broken, Err(Error::Invalid(e)) if e.arg("step") == Some("2")));
+    // A later step that no longer fits is kept, broken.
+    let broken = df.edit_step(1, |before| before.keep_rows(0..50)).unwrap();
+    assert_eq!(broken.num_steps(), 4);
+    let (step, error) = broken.broken_step().unwrap();
+    assert_eq!(step, 2);
+    assert!(matches!(&error, Error::Invalid(e) if e.arg("step") == Some("2")));
+    assert!(broken.num_rows().is_err() && broken.rows(0..1).is_err());
+    assert!(broken.keep_rows(0..1).is_err(), "fix or remove it first");
+    assert!(broken.set(0, "id", 1).is_err());
+    // Removing it, or editing what comes before, plans the rest again.
+    let fixed = broken.remove_step(2).unwrap();
+    assert!(fixed.broken_step().is_none());
+    assert_eq!(fixed.columns(), ["id", "label"]);
+    assert_eq!(ids(&fixed).len(), 50);
+    let fixed = broken
+        .edit_step(1, |before| before.keep_rows(0..95))
+        .unwrap();
+    assert_eq!(ids(&fixed), (90..95).collect::<Vec<_>>());
+    assert!(broken.undo().unwrap().broken_step().is_none());
     assert!(df.remove_step(9).is_err());
     assert!(df.edit_step(1, |_| Ok(DataFrame::new())).is_err());
 }

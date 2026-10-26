@@ -10,7 +10,7 @@ use super::cells::CellView;
 use super::progress::Progress;
 use super::rows::Selection;
 use super::store::Table;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::model::{FileMetadata, WriterSettings};
 use crate::source::DataSource;
 
@@ -36,6 +36,11 @@ pub(crate) enum Effect {
     /// The input, with the columns of this table (same rows, same names)
     /// in place of its own.
     Patch(Arc<Table>),
+    /// The step doesn't fit its input: reading gives this error.
+    Broken(Error),
+    /// After a broken step: not planned, reading gives the broken step's
+    /// error.
+    Unplanned,
 }
 
 /// What steps are planned with.

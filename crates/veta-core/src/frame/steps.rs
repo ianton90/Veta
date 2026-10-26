@@ -1,12 +1,13 @@
 //! Editing, moving and removing steps. The steps after the one changed are
 //! planned again on the new input; the frame before keeps its nodes, so the
-//! change is undone at once.
+//! change is undone at once. A step that no longer fits is kept, broken,
+//! until it is fixed or removed.
 
 use std::sync::Arc;
 
 use super::DataFrame;
-use crate::error::{Result, invalid};
-use crate::plan::{Node, Step};
+use crate::error::{Error, Result, invalid};
+use crate::plan::{Effect, Node, Step};
 
 impl DataFrame {
     /// Steps, the source included.
@@ -87,15 +88,47 @@ impl DataFrame {
         }
     }
 
+    /// The first step that doesn't fit its input, with its error.
+    pub fn broken_step(&self) -> Option<(usize, Error)> {
+        self.node
+            .chain()
+            .iter()
+            .enumerate()
+            .find_map(|(i, node)| match node.effect() {
+                Effect::Broken(error) => Some((i, error.clone())),
+                _ => None,
+            })
+    }
+
+    /// An error if a step is broken: it must be fixed or removed before
+    /// steps are added.
+    pub(super) fn check_not_broken(&self) -> Result<()> {
+        match self.broken_step() {
+            Some((step, _)) => Err(invalid!(StepBroken, step = step)),
+            None => Ok(()),
+        }
+    }
+
     /// This frame changed to `steps` added to `base`, the first of them
-    /// numbered `first`.
+    /// numbered `first`. The first that doesn't fit is kept as broken, and
+    /// those after it unplanned.
     fn replayed(&self, base: Arc<Node>, steps: &[Arc<dyn Step>], first: usize) -> Result<Self> {
         let context = self.context();
         let mut node = base;
+        let mut broken = false;
         for (i, step) in steps.iter().enumerate() {
-            node = node
-                .push(step.clone(), &context)
-                .map_err(|e| invalid!(StepHasError, step = first + i; cause = e))?;
+            node = match broken {
+                true => node.push_broken(step.clone(), None),
+                false => match node.push(step.clone(), &context) {
+                    Ok(next) => next,
+                    Err(Error::Cancelled) => return Err(Error::Cancelled),
+                    Err(e) => {
+                        broken = true;
+                        let error = invalid!(StepHasError, step = first + i; cause = e);
+                        node.push_broken(step.clone(), Some(error))
+                    }
+                },
+            };
         }
         Ok(self.changed_to(node))
     }
