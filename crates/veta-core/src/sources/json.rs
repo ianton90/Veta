@@ -2,9 +2,10 @@
 
 use std::path::PathBuf;
 
+use super::reading;
 use crate::error::Result;
 use crate::files::convert::read_json_data;
-use crate::plan::{Effect, FileSettings, Planned, Shape, Step};
+use crate::plan::{Context, Effect, FileSettings, Planned, Shape, Step};
 
 /// Reads a JSON file (one object per line, or an array of objects). It is
 /// read when the step is added, lazy or not.
@@ -14,8 +15,9 @@ pub(crate) struct ReadJson {
 }
 
 impl Step for ReadJson {
-    fn plan(&self, _input: &Shape, _lazy: bool) -> Result<Planned> {
-        let data = read_json_data(&self.path, crate::memory::budget(), &mut |_| true)?;
+    fn plan(&self, _input: &Shape, context: &Context) -> Result<Planned> {
+        let mut progress = reading(context);
+        let data = read_json_data(&self.path, crate::memory::budget(), &mut progress)?;
         Ok(Planned {
             schema: data.schema(),
             effect: Effect::Data(data),

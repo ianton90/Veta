@@ -7,6 +7,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use super::DataFrame;
 use crate::error::{Result, invalid};
 use crate::ops::position;
+use crate::plan::Task;
 
 /// A column given by name or position.
 pub trait ColumnRef {
@@ -79,12 +80,16 @@ impl Column {
         let pieces: Vec<ArrayRef> = self
             .frame
             .node
-            .read_parallel(Some(vec![self.position]), |batches, _| {
-                Ok(batches
-                    .into_iter()
-                    .map(|b| b.column(0).clone())
-                    .collect::<Vec<_>>())
-            })
+            .read_parallel(
+                Some(vec![self.position]),
+                self.frame.reporting(Task::Reading),
+                |batches, _| {
+                    Ok(batches
+                        .into_iter()
+                        .map(|b| b.column(0).clone())
+                        .collect::<Vec<_>>())
+                },
+            )
             .collect::<Result<Vec<_>>>()?
             .into_iter()
             .flatten()

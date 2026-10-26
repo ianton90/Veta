@@ -9,6 +9,7 @@ use crate::files::convert::{CsvExportOptions, ExportFormat, write_export};
 use crate::files::parquet::write_batches;
 use crate::files::replace::Replacement;
 use crate::model::WriterSettings;
+use crate::plan::Task;
 
 impl DataFrame {
     /// Writes a Parquet file, with the writer settings of the file read
@@ -26,7 +27,9 @@ impl DataFrame {
         let (replacement, file) = Replacement::create(path.as_ref())?;
         let batches = self
             .node
-            .read_parallel(None, |batches, _| Ok(batches))
+            .read_parallel(None, self.reporting(Task::Writing), |batches, _| {
+                Ok(batches)
+            })
             .flat_map(|piece| match piece {
                 Ok(batches) => batches.into_iter().map(Ok).collect(),
                 Err(e) => vec![Err(e)],
@@ -63,7 +66,14 @@ impl DataFrame {
 
     fn export(&self, path: &Path, format: ExportFormat) -> Result<()> {
         let (replacement, file) = Replacement::create(path)?;
-        write_export(&self.node, file, &format, &mut |_| true)?;
+        if let Some(progress) = &self.progress {
+            progress.start(Task::Writing, 0);
+        }
+        let mut report = |fraction| match &self.progress {
+            Some(progress) => progress.set_fraction(fraction),
+            None => true,
+        };
+        write_export(&self.node, file, &format, &mut report)?;
         replacement.commit()
     }
 }

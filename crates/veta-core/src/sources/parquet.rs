@@ -14,7 +14,7 @@ use parquet::file::metadata::PageIndexPolicy;
 use crate::error::{Result, invalid};
 use crate::files::parquet::{check_row_counts, file_info, file_metadata, writer_settings};
 use crate::plan::store::Table;
-use crate::plan::{Effect, FileSettings, Planned, Shape, Step};
+use crate::plan::{Context, Effect, FileSettings, Planned, Shape, Step, Task};
 use crate::source::{DataSource, PagedSource};
 
 /// Reads a Parquet file, or only `columns` of it.
@@ -27,7 +27,7 @@ pub(crate) struct ReadParquet {
 impl Step for ReadParquet {
     /// Reads the footer, and the whole file unless `lazy` or it decodes to
     /// more than the memory budget (it is then read as needed).
-    fn plan(&self, _input: &Shape, lazy: bool) -> Result<Planned> {
+    fn plan(&self, _input: &Shape, context: &Context) -> Result<Planned> {
         let file = File::open(&self.path)?;
         let file_size = file.metadata()?.len();
         let options = ArrowReaderOptions::new().with_page_index_policy(PageIndexPolicy::Optional);
@@ -59,8 +59,8 @@ impl Step for ReadParquet {
                 .max(file_size),
         )
         .is_ok_and(|s| s <= budget);
-        let in_memory = match fits && !lazy {
-            true => read_within(&file, &metadata, &schema, &positions, budget)?,
+        let in_memory = match fits && !context.lazy {
+            true => read_within(&file, &metadata, &schema, &positions, budget, context)?,
             false => None,
         };
         let data: Arc<dyn DataSource> = match in_memory {
@@ -89,7 +89,14 @@ fn read_within(
     schema: &Arc<Schema>,
     positions: &[usize],
     budget: usize,
+    context: &Context,
 ) -> Result<Option<Arc<Table>>> {
+    if let Some(progress) = &context.progress {
+        progress.start(
+            Task::Reading,
+            metadata.metadata().file_metadata().num_rows().max(0) as u64,
+        );
+    }
     let mask = ProjectionMask::roots(
         metadata.metadata().file_metadata().schema_descr(),
         positions.iter().copied(),
@@ -109,6 +116,9 @@ fn read_within(
     let mut bytes = 0usize;
     for batch in reader {
         let batch = batch?;
+        if let Some(progress) = &context.progress {
+            progress.advance(batch.num_rows() as u64)?;
+        }
         bytes = bytes.saturating_add(batch.get_array_memory_size());
         if bytes > budget {
             return Ok(None);

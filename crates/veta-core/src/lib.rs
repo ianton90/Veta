@@ -43,8 +43,8 @@ pub use arrow;
 pub use command::Command;
 pub use error::{Error, Result};
 pub use frame::{
-    Column, ColumnRef, DataFrame, ReadOptions, read_csv, read_csv_with, read_json, read_parquet,
-    read_parquet_with,
+    Column, ColumnRef, DataFrame, IntoValue, Null, ReadOptions, read_csv, read_csv_with, read_json,
+    read_parquet, read_parquet_with,
 };
 pub use io::{OpenOptions, SaveJob, SaveResult};
 pub use model::{
@@ -52,5 +52,5 @@ pub use model::{
 };
 pub use model::{Document, DocumentId, Workbook};
 pub use ops::Columns;
-pub use plan::Rows;
+pub use plan::{Progress, Rows, Task};
 pub use source::SourceMode;

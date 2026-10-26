@@ -6,7 +6,10 @@ use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
 
+use super::cells::CellView;
+use super::progress::Progress;
 use super::rows::Selection;
+use super::store::Table;
 use crate::error::Result;
 use crate::model::{FileMetadata, WriterSettings};
 use crate::source::DataSource;
@@ -28,6 +31,19 @@ pub(crate) enum Effect {
     Columns(Vec<usize>),
     /// Output rows are these input rows.
     Rows(Arc<Selection>),
+    /// The input, with these cells changed.
+    Cells(CellView),
+    /// The input, with the columns of this table (same rows, same names)
+    /// in place of its own.
+    Patch(Arc<Table>),
+}
+
+/// What steps are planned with.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Context {
+    /// Leave data to be read when needed.
+    pub(crate) lazy: bool,
+    pub(crate) progress: Option<Progress>,
 }
 
 /// What a step makes of its input.
@@ -51,6 +67,6 @@ pub(crate) struct FileSettings {
 pub(crate) trait Step: fmt::Debug + Send + Sync {
     /// Checks the step against its input (columns, types, rows) and says
     /// what comes out. Data isn't read, except by sources, which read a
-    /// file's footer, or the whole file unless `lazy`.
-    fn plan(&self, input: &Shape, lazy: bool) -> Result<Planned>;
+    /// file's footer, or the whole file unless the context is lazy.
+    fn plan(&self, input: &Shape, context: &Context) -> Result<Planned>;
 }

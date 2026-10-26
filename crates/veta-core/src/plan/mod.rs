@@ -1,7 +1,10 @@
 //! The plan behind a [`DataFrame`](crate::frame::DataFrame): its steps as a
 //! chain of nodes, what each step keeps, and the stored tables.
 
+mod cells;
+mod history;
 mod node;
+mod progress;
 mod rows;
 mod step;
 pub(crate) mod store;
@@ -9,10 +12,13 @@ pub(crate) mod store;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 
+pub(crate) use cells::CellView;
+pub(crate) use history::History;
 pub(crate) use node::Node;
+pub use progress::{Progress, Task};
 pub use rows::Rows;
 pub(crate) use rows::Selection;
-pub(crate) use step::{Effect, FileSettings, Planned, Shape, Step};
+pub(crate) use step::{Context, Effect, FileSettings, Planned, Shape, Step};
 
 /// Data that writers read in pieces on several threads.
 pub(crate) trait Output {
@@ -41,6 +47,6 @@ impl Output for std::sync::Arc<Node> {
         &self,
         map: impl Fn(Vec<RecordBatch>, usize) -> crate::error::Result<T> + Send + Sync + 'static,
     ) -> crate::parallel::Ordered<T> {
-        self.read_parallel(None, map)
+        self.read_parallel(None, None, map)
     }
 }

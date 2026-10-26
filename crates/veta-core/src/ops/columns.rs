@@ -6,7 +6,7 @@ use std::sync::Arc;
 use arrow::datatypes::Schema;
 
 use crate::error::{Result, invalid};
-use crate::plan::{Effect, Planned, Shape, Step};
+use crate::plan::{Context, Effect, Planned, Shape, Step};
 
 /// Columns given to a method: all of them (`..`), names, positions or a
 /// mask with one value per column (`true` picks the column).
@@ -130,7 +130,7 @@ pub(crate) struct KeepColumns {
 }
 
 impl Step for KeepColumns {
-    fn plan(&self, input: &Shape, _lazy: bool) -> Result<Planned> {
+    fn plan(&self, input: &Shape, _context: &Context) -> Result<Planned> {
         let mut positions = self.columns.positions(&input.schema)?;
         if self.drop {
             let count = input.schema.fields().len();

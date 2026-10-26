@@ -2,9 +2,10 @@
 
 use std::path::PathBuf;
 
+use super::reading;
 use crate::error::Result;
 use crate::files::convert::{CsvOptions, read_csv_data};
-use crate::plan::{Effect, FileSettings, Planned, Shape, Step};
+use crate::plan::{Context, Effect, FileSettings, Planned, Shape, Step};
 
 /// Reads a CSV file. CSV can't be read in parts, so it is read when the
 /// step is added, lazy or not; values that don't fit their column's type
@@ -16,9 +17,10 @@ pub(crate) struct ReadCsv {
 }
 
 impl Step for ReadCsv {
-    fn plan(&self, _input: &Shape, _lazy: bool) -> Result<Planned> {
+    fn plan(&self, _input: &Shape, context: &Context) -> Result<Planned> {
         let budget = crate::memory::budget();
-        let (data, _report) = read_csv_data(&self.path, &self.options, budget, &mut |_| true)?;
+        let mut progress = reading(context);
+        let (data, _report) = read_csv_data(&self.path, &self.options, budget, &mut progress)?;
         Ok(Planned {
             schema: data.schema(),
             effect: Effect::Data(data),

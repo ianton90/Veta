@@ -59,11 +59,14 @@ veta-core/src/
   profile.rs             timings of the parts of a pass (VETA_PROFILE=1)
   frame/                 the new core (#196): DataFrame (sources, modes,
                          inspecting, row and column methods), Column,
-                         write.rs (Parquet, CSV, JSON)
+                         write.rs (Parquet, CSV, JSON), history.rs (undo,
+                         redo), steps.rs (edit, move, remove steps),
+                         cells.rs (set), value.rs (values for set)
   plan/                  nodes (a step each, pointing to the one before),
                          the Step trait and Effect, row selections
                          (ranges, list or mask), stored tables (memory,
-                         spilled to Arrow IPC temp files)
+                         spilled to Arrow IPC temp files), the cell-edit
+                         log, history stacks, Progress
   sources/               source steps: Parquet, CSV, JSON, batches
   ops/                   transformations (keep/drop rows and columns)
   model/                 Document (document/), Workbook, metadata, undo
@@ -549,18 +552,31 @@ earlier step changes.
 
 ### History
 
-History is switched on and off with a method. With it off there are no undo
-entries and only what reading the current data needs is kept.
+`with_history(true)` turns history on; `undo()` and `redo()` return the
+frame before or after (`let df = df.undo()?;`). History is two stacks of
+earlier last nodes, shared between frames; nodes keep their outputs, so
+undoing is instant. With it off there are no undo entries.
 
-- Steps can be added, edited, moved and removed. Each change is one undo
-  entry. Editing step k makes the outputs from k on stale (eager recomputes
-  them at once, lazy on demand); the entry keeps the old outputs so undoing
-  is instant.
-- Cell edits keep each cell's value before and after. Past 64 MB the log is
-  consolidated into a snapshot of the touched columns.
-- History may use a share of the free disk, checked as it grows. Past that,
-  the oldest kept outputs are deleted, and undoing those steps recomputes
-  them instead.
+- `edit_step(k, |before| before.keep_rows(..))`, `move_step` and
+  `remove_step` plan the steps after `k` again on the new input; each is
+  one undo entry, and the old nodes stay for undo. A later step that no
+  longer applies is an error naming it, and the frame is left as it was.
+- `set(row, column, value)`: edits in a row are one step over the input of
+  the first. They go into one append-only log; each frame sees it up to its
+  version, so an edit adds one entry and undoing one goes back a version
+  (an edit after an undo copies the entries that frame sees). Past
+  `memory::cell_edits_limit()` (64 MiB) the edits are grouped into a
+  snapshot of the edited columns, and their undo entries into one.
+- History's disk use (a share of the free disk): #209.
+
+### Progress
+
+`with_progress(&progress)` hands the frame (and those made from it) a
+shared `Progress`: the core writes the task (`Reading`, `Writing`,
+`Computing`, a code) and the fraction done, and the caller reads them, or
+calls `cancel()`, at any time; the work stops at its next piece with
+`Error::Cancelled`. Reads in pieces count their rows, so transformations
+report without code of their own.
 
 ### Methods
 

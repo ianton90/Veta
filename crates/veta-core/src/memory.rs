@@ -86,6 +86,27 @@ pub fn parse_budget(text: &str) -> Result<usize> {
     Ok((value * scale) as usize)
 }
 
+/// Bytes of cell edits in a row before they are grouped into a snapshot of
+/// the edited columns; 0 for the default.
+static CELL_EDITS: AtomicUsize = AtomicUsize::new(0);
+
+/// The default for [`cell_edits_limit`]: 64 MiB.
+pub const DEFAULT_CELL_EDITS: usize = 64 * MIB;
+
+/// Bytes of cell edits in a row that are kept edit by edit; past it they
+/// are grouped into a snapshot of the edited columns (undone as one).
+pub fn cell_edits_limit() -> usize {
+    match CELL_EDITS.load(Ordering::Relaxed) {
+        0 => DEFAULT_CELL_EDITS,
+        set => set,
+    }
+}
+
+/// Sets [`cell_edits_limit`]; `None` goes back to the default.
+pub fn set_cell_edits_limit(bytes: Option<usize>) {
+    CELL_EDITS.store(bytes.map_or(0, |b| b.max(1)), Ordering::Relaxed);
+}
+
 /// Page cache of one paged file.
 pub(crate) fn page_cache(budget: usize) -> usize {
     (budget / 4).max(MIN_BUDGET)

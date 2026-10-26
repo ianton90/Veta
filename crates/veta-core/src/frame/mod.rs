@@ -10,7 +10,11 @@
 //! # }
 //! ```
 
+mod cells;
 mod column;
+mod history;
+mod steps;
+mod value;
 mod write;
 
 use std::ops::Range;
@@ -25,10 +29,11 @@ use crate::error::{Result, invalid};
 use crate::files::convert::CsvOptions;
 use crate::ops::{Columns, KeepColumns, KeepRows};
 use crate::plan::store::Table;
-use crate::plan::{Node, Rows, Step};
+use crate::plan::{Context, History, Node, Progress, Rows, Step, Task};
 use crate::sources::{Batches, ReadCsv, ReadJson, ReadParquet};
 
 pub use column::{Column, ColumnRef};
+pub use value::{IntoValue, Null};
 
 /// How to read a Parquet file.
 #[derive(Debug, Clone, Default)]
@@ -49,6 +54,9 @@ pub struct ReadOptions {
 pub struct DataFrame {
     node: Arc<Node>,
     lazy: bool,
+    /// `None` when history is off.
+    history: Option<History>,
+    progress: Option<Progress>,
 }
 
 impl Default for DataFrame {
@@ -89,6 +97,8 @@ impl DataFrame {
         Self {
             node: Node::empty(),
             lazy: false,
+            history: None,
+            progress: None,
         }
     }
 
@@ -107,12 +117,41 @@ impl DataFrame {
         Self::new().then(Batches(Table::new(schema, batches)?))
     }
 
+    /// What steps are planned with.
+    fn context(&self) -> Context {
+        Context {
+            lazy: self.lazy,
+            progress: self.progress.clone(),
+        }
+    }
+
     /// This frame with `step` added.
     fn then(&self, step: impl Step + 'static) -> Result<Self> {
-        Ok(Self {
-            node: self.node.push(Arc::new(step), self.lazy)?,
-            lazy: self.lazy,
-        })
+        let node = self.node.push(Arc::new(step), &self.context())?;
+        Ok(self.changed_to(node))
+    }
+
+    /// This frame at `node`, after a change it can undo.
+    fn changed_to(&self, node: Arc<Node>) -> Self {
+        Self {
+            node,
+            history: self.history.as_ref().map(|h| h.changed(self.node.clone())),
+            ..self.clone()
+        }
+    }
+
+    /// The progress to report `task` to, if any.
+    fn reporting(&self, task: Task) -> Option<(&Progress, Task)> {
+        self.progress.as_ref().map(|p| (p, task))
+    }
+
+    /// Reports the work on this frame and the frames made from it to
+    /// `progress`, which can also cancel it.
+    pub fn with_progress(&self, progress: &Progress) -> Self {
+        Self {
+            progress: Some(progress.clone()),
+            ..self.clone()
+        }
     }
 
     // Sources.
