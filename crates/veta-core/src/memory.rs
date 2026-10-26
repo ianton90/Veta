@@ -107,6 +107,20 @@ pub fn set_cell_edits_limit(bytes: Option<usize>) {
     CELL_EDITS.store(bytes.map_or(0, |b| b.max(1)), Ordering::Relaxed);
 }
 
+/// Bytes Veta's temp files may take: half of what they take plus the free
+/// space left on their disk, so they never fill it. `None` when the free
+/// space can't be read. `in_use` is what they take now.
+pub fn disk_budget(in_use: u64) -> Option<u64> {
+    let dir = crate::steps::checkpoint::temp_dir().ok()?;
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let disk = disks
+        .list()
+        .iter()
+        .filter(|d| dir.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().as_os_str().len())?;
+    Some((disk.available_space() + in_use) / 2)
+}
+
 /// Page cache of one paged file.
 pub(crate) fn page_cache(budget: usize) -> usize {
     (budget / 4).max(MIN_BUDGET)

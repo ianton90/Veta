@@ -1,7 +1,10 @@
 //! Stored tables: data a step keeps (a file read into memory, a step's
 //! output). Tables stay in memory while all of them fit the memory budget;
 //! past it, the least recently used are written to Arrow IPC temp files
-//! and read back from there.
+//! and read back from there. Those files may take a share of the free disk
+//! ([`crate::memory::disk_budget`]); past it, the least recently used
+//! tables that can be rebuilt (from the file they were read from, or the
+//! steps that made them) are deleted, and rebuilt when read again.
 
 use std::fs::File;
 use std::io::BufReader;
@@ -19,8 +22,10 @@ use crate::error::Result;
 use crate::source::{DataSource, SourceMode, project};
 use crate::steps::checkpoint::TempFile;
 
+/// Makes a table's batches again.
+pub(crate) type Rebuild = Box<dyn Fn() -> Result<Vec<RecordBatch>> + Send + Sync>;
+
 /// A table kept by a step.
-#[derive(Debug)]
 pub(crate) struct Table {
     schema: SchemaRef,
     /// Row at which each batch starts, plus the total.
@@ -30,22 +35,39 @@ pub(crate) struct Table {
     state: Mutex<State>,
     /// When last read (a tick of [`CLOCK`]).
     used: AtomicU64,
+    rebuild: Option<Rebuild>,
+}
+
+impl std::fmt::Debug for Table {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Table")
+            .field("schema", &self.schema)
+            .field("rows", &self.num_rows())
+            .field("state", &*lock(&self.state))
+            .finish()
+    }
 }
 
 #[derive(Debug)]
 enum State {
     Memory(Vec<RecordBatch>),
-    /// Written to an IPC file, batch by batch, with its open reader.
+    /// Written to an IPC file of `size` bytes, batch by batch, with its
+    /// open reader.
     Disk {
         _file: TempFile,
+        size: u64,
         reader: Box<FileReader<BufReader<File>>>,
     },
+    /// Deleted from disk, to be rebuilt.
+    Gone,
 }
 
 /// Ticks on every read, to find the least recently used table.
 static CLOCK: AtomicU64 = AtomicU64::new(0);
 /// Bytes of the tables held in memory.
 static IN_MEMORY: AtomicUsize = AtomicUsize::new(0);
+/// Bytes of the tables' files on disk.
+static ON_DISK: AtomicU64 = AtomicU64::new(0);
 /// Every table still alive.
 static TABLES: Mutex<Vec<Weak<Table>>> = Mutex::new(Vec::new());
 
@@ -53,6 +75,16 @@ impl Table {
     /// Keeps `batches` (with the columns of `schema`), writing tables to
     /// disk if memory is over the budget.
     pub(crate) fn new(schema: SchemaRef, batches: Vec<RecordBatch>) -> Result<Arc<Self>> {
+        Self::with_rebuild(schema, batches, None)
+    }
+
+    /// Like [`Self::new`]; `rebuild` makes the batches again, so the table
+    /// can be deleted from disk when the disk budget is short.
+    pub(crate) fn with_rebuild(
+        schema: SchemaRef,
+        batches: Vec<RecordBatch>,
+        rebuild: Option<Rebuild>,
+    ) -> Result<Arc<Self>> {
         let batches: Vec<_> = batches.into_iter().filter(|b| b.num_rows() > 0).collect();
         let mut offsets = Vec::with_capacity(batches.len() + 1);
         let mut total = 0;
@@ -68,6 +100,7 @@ impl Table {
             bytes,
             state: Mutex::new(State::Memory(batches)),
             used: AtomicU64::new(CLOCK.fetch_add(1, Ordering::Relaxed)),
+            rebuild,
         });
         IN_MEMORY.fetch_add(bytes, Ordering::Relaxed);
         lock(&TABLES).push(Arc::downgrade(&table));
@@ -97,16 +130,49 @@ impl Table {
         }
         writer.finish()?;
         drop(writer);
-        let reader = Box::new(FileReader::try_new_buffered(
-            File::open(file.path())?,
-            None,
-        )?);
+        let handle = File::open(file.path())?;
+        let size = handle.metadata()?.len();
+        let reader = Box::new(FileReader::try_new_buffered(handle, None)?);
         *state = State::Disk {
             _file: file,
+            size,
             reader,
         };
         IN_MEMORY.fetch_sub(self.bytes, Ordering::Relaxed);
+        ON_DISK.fetch_add(size, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Deletes the table's file, if it can be rebuilt.
+    fn delete(&self) {
+        let mut state = lock(&self.state);
+        if let (State::Disk { size, .. }, Some(_)) = (&*state, &self.rebuild) {
+            ON_DISK.fetch_sub(*size, Ordering::Relaxed);
+            *state = State::Gone;
+        }
+    }
+
+    /// Makes the batches again after [`Self::delete`], in the same pieces.
+    fn restore(&self) -> Result<()> {
+        if !matches!(*lock(&self.state), State::Gone) {
+            return Ok(());
+        }
+        let Some(rebuild) = &self.rebuild else {
+            return Ok(());
+        };
+        let all = concat_batches(&self.schema, &rebuild()?)?;
+        let batches = self
+            .offsets
+            .windows(2)
+            .map(|w| all.slice(w[0], w[1] - w[0]))
+            .collect();
+        let mut state = lock(&self.state);
+        if matches!(*state, State::Gone) {
+            *state = State::Memory(batches);
+            IN_MEMORY.fetch_add(self.bytes, Ordering::Relaxed);
+        }
+        drop(state);
+        spill_over(crate::memory::budget())
     }
 
     /// Batches `first..` that cover `range`, sliced to it.
@@ -117,6 +183,7 @@ impl Table {
             .offsets
             .partition_point(|&o| o <= range.start)
             .saturating_sub(1);
+        self.restore()?;
         let mut state = lock(&self.state);
         let mut parts = Vec::new();
         for i in first..self.offsets.len() - 1 {
@@ -126,6 +193,11 @@ impl Table {
             }
             let batch = match &mut *state {
                 State::Memory(batches) => batches[i].clone(),
+                // Deleted again since restored: read it from scratch.
+                State::Gone => {
+                    drop(state);
+                    return self.batches(range);
+                }
                 State::Disk { reader, .. } => {
                     reader.set_index(i)?;
                     reader.next().unwrap_or_else(|| {
@@ -145,8 +217,14 @@ impl Table {
 
 impl Drop for Table {
     fn drop(&mut self) {
-        if let Ok(State::Memory(_)) = self.state.get_mut().map(|s| &*s) {
-            IN_MEMORY.fetch_sub(self.bytes, Ordering::Relaxed);
+        match self.state.get_mut().map(|s| &*s) {
+            Ok(State::Memory(_)) => {
+                IN_MEMORY.fetch_sub(self.bytes, Ordering::Relaxed);
+            }
+            Ok(State::Disk { size, .. }) => {
+                ON_DISK.fetch_sub(*size, Ordering::Relaxed);
+            }
+            _ => {}
         }
     }
 }
@@ -178,6 +256,7 @@ impl DataSource for Table {
 /// Writes the least recently used tables to disk until those in memory fit
 /// `budget` bytes.
 fn spill_over(budget: usize) -> Result<()> {
+    let mut spilled = false;
     while IN_MEMORY.load(Ordering::Relaxed) > budget {
         let oldest = {
             let mut tables = lock(&TABLES);
@@ -192,8 +271,31 @@ fn spill_over(budget: usize) -> Result<()> {
             Some(table) => table.spill()?,
             None => break,
         }
+        spilled = true;
+    }
+    if spilled && let Some(limit) = crate::memory::disk_budget(ON_DISK.load(Ordering::Relaxed)) {
+        delete_over(limit);
     }
     Ok(())
+}
+
+/// Deletes the least recently used files of tables that can be rebuilt
+/// until the files on disk fit `limit` bytes.
+fn delete_over(limit: u64) {
+    while ON_DISK.load(Ordering::Relaxed) > limit {
+        let oldest = {
+            let tables = lock(&TABLES);
+            tables
+                .iter()
+                .filter_map(Weak::upgrade)
+                .filter(|t| t.rebuild.is_some() && matches!(*lock(&t.state), State::Disk { .. }))
+                .min_by_key(|t| t.used.load(Ordering::Relaxed))
+        };
+        match oldest {
+            Some(table) => table.delete(),
+            None => break,
+        }
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -219,6 +321,35 @@ mod tests {
             })
             .collect();
         Table::new(schema, batches).unwrap()
+    }
+
+    #[test]
+    fn deleted_tables_are_rebuilt() {
+        let schema = Arc::new(Schema::new(vec![Field::new("n", DataType::Int64, false)]));
+        let make = {
+            let schema = schema.clone();
+            move || {
+                let column = Int64Array::from_iter_values(0..5000);
+                Ok(vec![RecordBatch::try_new(
+                    schema.clone(),
+                    vec![Arc::new(column)],
+                )?])
+            }
+        };
+        let batches = make().unwrap();
+        let rebuilt = Table::with_rebuild(schema, batches, Some(Box::new(make))).unwrap();
+        let plain = table(0..5000);
+        spill_over(0).unwrap();
+        delete_over(0);
+        assert!(matches!(*lock(&rebuilt.state), State::Gone));
+        assert!(plain.on_disk(), "can't be rebuilt, so it stays");
+        let batch = rebuilt.read(4990..5000).unwrap();
+        let column = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(column.value(9), 4999);
     }
 
     #[test]

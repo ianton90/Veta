@@ -8,7 +8,9 @@ use super::{ColumnRef, DataFrame, IntoValue};
 use crate::error::{Result, invalid};
 use crate::ops::{SetCells, Snapshot};
 use crate::plan::store::Table;
-use crate::plan::{CellView, Effect, Task};
+use arrow::record_batch::RecordBatch;
+
+use crate::plan::{CellView, Effect, Node, Progress, Task};
 
 impl DataFrame {
     /// This frame with `row` of `column` set to `value`, converted to the
@@ -77,21 +79,12 @@ impl DataFrame {
         columns.sort_unstable();
         columns.dedup();
         let schema = Arc::new(self.schema_ref().project(&columns)?);
-        let batches: Vec<_> = self
-            .node
-            .read_parallel(
-                Some(columns),
-                self.reporting(Task::Computing),
-                |batches, _| Ok(batches),
-            )
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .flatten()
-            .collect();
-        let snapshot = base.push(
-            Arc::new(Snapshot(Table::new(schema, batches)?)),
-            &self.context(),
-        )?;
+        let batches = read_all(&self.node, &columns, self.reporting(Task::Computing))?;
+        // When deleted for disk space, read again through the edits.
+        let edits = self.node.clone();
+        let rebuild = move || read_all(&edits, &columns, None);
+        let table = Table::with_rebuild(schema, batches, Some(Box::new(rebuild)))?;
+        let snapshot = base.push(Arc::new(Snapshot(table)), &self.context())?;
         // The edits' own undo entries go: the frame before them is undone to.
         let history = self.history.as_ref().map(|h| {
             h.without_top(|n| {
@@ -105,4 +98,18 @@ impl DataFrame {
             ..self.clone()
         })
     }
+}
+
+/// Every row of `columns` of `node`'s output.
+fn read_all(
+    node: &Arc<Node>,
+    columns: &[usize],
+    progress: Option<(&Progress, Task)>,
+) -> Result<Vec<RecordBatch>> {
+    Ok(node
+        .read_parallel(Some(columns.to_vec()), progress, |batches, _| Ok(batches))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect())
 }

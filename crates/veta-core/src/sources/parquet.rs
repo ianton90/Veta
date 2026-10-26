@@ -1,7 +1,7 @@
 //! Reading a Parquet file.
 
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow::datatypes::Schema;
@@ -60,7 +60,9 @@ impl Step for ReadParquet {
         )
         .is_ok_and(|s| s <= budget);
         let in_memory = match fits && !context.lazy {
-            true => read_within(&file, &metadata, &schema, &positions, budget, context)?,
+            true => read_within(
+                &self.path, &file, &metadata, &schema, &positions, budget, context,
+            )?,
             false => None,
         };
         let data: Arc<dyn DataSource> = match in_memory {
@@ -84,6 +86,7 @@ impl Step for ReadParquet {
 /// The top-level columns at `positions` of the file, kept as a table, or
 /// `None` if they decode to more than `budget` bytes.
 fn read_within(
+    path: &Path,
     file: &File,
     metadata: &ArrowReaderMetadata,
     schema: &Arc<Schema>,
@@ -125,5 +128,24 @@ fn read_within(
         }
         batches.push(batch.project(&order)?.with_schema(schema.clone())?);
     }
-    Ok(Some(Table::new(schema.clone(), batches)?))
+    // When deleted for disk space, read again from the file.
+    let (path, metadata, schema_again) = (path.to_owned(), metadata.clone(), schema.clone());
+    let positions = positions.to_vec();
+    let rebuild = move || {
+        let file = File::open(&path)?;
+        let mask = ProjectionMask::roots(
+            metadata.metadata().file_metadata().schema_descr(),
+            positions.iter().copied(),
+        );
+        ParquetRecordBatchReaderBuilder::new_with_metadata(file, metadata.clone())
+            .with_projection(mask)
+            .build()?
+            .map(|batch| Ok(batch?.project(&order)?.with_schema(schema_again.clone())?))
+            .collect()
+    };
+    Ok(Some(Table::with_rebuild(
+        schema.clone(),
+        batches,
+        Some(Box::new(rebuild)),
+    )?))
 }

@@ -569,7 +569,10 @@ undoing is instant. With it off there are no undo entries.
   (an edit after an undo copies the entries that frame sees). Past
   `memory::cell_edits_limit()` (64 MiB) the edits are grouped into a
   snapshot of the edited columns, and their undo entries into one.
-- History's disk use (a share of the free disk): #209.
+- Disk: temp files may take half of what they take plus the free space on
+  their disk (`memory::disk_budget`). Past it, the least recently used
+  tables that can be rebuilt (files read into memory, grouped cell edits)
+  are deleted and rebuilt when read again.
 
 ### Progress
 
