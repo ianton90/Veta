@@ -5,7 +5,7 @@ use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
 
-use arrow::array::ArrayRef;
+use arrow::array::{ArrayRef, UInt32Array};
 
 use arrow::datatypes::SchemaRef;
 
@@ -37,6 +37,10 @@ pub(crate) enum Effect {
     Columns(Vec<usize>),
     /// Output rows are these input rows.
     Rows(Arc<Selection>),
+    /// Output row `i` is input row `order[i]`.
+    Order(Arc<UInt32Array>),
+    /// The input with `count` empty rows inserted at row `at`.
+    Insert { at: usize, count: usize },
     /// Columns from the input or made by the step ([`Step::derive`]), row
     /// for row: kept when the step runs, derived as read while lazy.
     Derived(Vec<Col>),
@@ -60,6 +64,9 @@ pub(crate) enum Effect {
 pub(crate) struct Context {
     /// Leave data to be read when needed.
     pub(crate) lazy: bool,
+    /// Row steps store their whole output instead of the rows they keep
+    /// (eager only).
+    pub(crate) in_place: bool,
     pub(crate) progress: Option<Progress>,
 }
 

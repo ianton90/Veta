@@ -17,5 +17,8 @@ pub(crate) use columns::{InsertColumn, KeepColumns, Rename, Reorder, position};
 pub(crate) use convert::{FillValue, FormatText};
 pub(crate) use fill::FillNearest;
 pub(crate) use nested::{ChangeField, Explode, Unnest};
-pub(crate) use rows::KeepRows;
+pub use rows::Keep;
+pub(crate) use rows::{
+    Buffer, DropDuplicates, DropNulls, Implode, InsertRows, KeepRows, Reverse, Sample, SortRows,
+};
 pub(crate) use shift::Shift;

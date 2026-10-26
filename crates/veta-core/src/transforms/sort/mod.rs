@@ -84,14 +84,14 @@ impl Sort {
 }
 
 /// Sort state shared by the in-memory and external sorts.
-struct Sorter {
+pub(crate) struct Sorter {
     /// The key columns, found by name: batches may hold only them.
     names: Vec<String>,
-    converter: RowConverter,
+    pub(crate) converter: RowConverter,
 }
 
 impl Sorter {
-    fn new(sort: &Sort, schema: &Schema) -> Result<Self> {
+    pub(crate) fn new(sort: &Sort, schema: &Schema) -> Result<Self> {
         sort.columns(schema)?;
         Ok(Self {
             names: sort.keys.iter().map(|k| k.column.clone()).collect(),
@@ -117,7 +117,7 @@ impl Sorter {
 
     /// The order of the rows of `batches`, numbered across them, that
     /// sorts them (stable). Keys are converted on all cores.
-    fn order(&self, batches: &[RecordBatch]) -> Result<Vec<u32>> {
+    pub(crate) fn order(&self, batches: &[RecordBatch]) -> Result<Vec<u32>> {
         let parts = crate::parallel::map(batches.len(), |i| self.rows(&batches[i]))?;
         Ok(sorted_order(&parts))
     }

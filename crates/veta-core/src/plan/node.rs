@@ -199,6 +199,15 @@ impl Node {
         }
     }
 
+    /// The data the output is read from, when it is read straight from
+    /// data (a source, a kept table).
+    pub(crate) fn source(&self) -> Option<&Arc<dyn DataSource>> {
+        match self.resolved() {
+            Effect::Data(source) => Some(source),
+            _ => None,
+        }
+    }
+
     /// Rows of the output (a later step's computed first).
     pub(crate) fn rows(&self) -> Result<usize> {
         if let Some(&rows) = self.rows.get() {
@@ -207,6 +216,8 @@ impl Node {
         let rows = match self.resolved() {
             Effect::Data(source) => source.num_rows(),
             Effect::Rows(selection) => selection.len(),
+            Effect::Order(order) => order.len(),
+            Effect::Insert { count, .. } => self.parent().rows()? + count,
             Effect::Broken(error) => return Err(error.clone()),
             _ => self.parent().rows()?,
         };
@@ -288,6 +299,66 @@ impl Node {
                     )
                     .collect()
             }
+            Effect::Order(order) => {
+                let rows = &order.values()[range.clone()];
+                let names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+                let taken = self
+                    .parent()
+                    .source()
+                    .and_then(|source| source.take(rows, &names));
+                let batch = match taken {
+                    Some(batch) => {
+                        let batch = batch?;
+                        let positions = names
+                            .iter()
+                            .map(|n| batch.schema().index_of(n))
+                            .collect::<std::result::Result<Vec<_>, _>>()?;
+                        batch.project(&positions)?
+                    }
+                    None => {
+                        let rows: Vec<usize> = rows.iter().map(|&r| r as usize).collect();
+                        self.read_rows(&rows, columns)?
+                    }
+                };
+                batch.columns().to_vec()
+            }
+            Effect::Insert { at, count } => {
+                let (at, count) = (*at, *count);
+                let before = range.start.min(at)..range.end.min(at);
+                let empty = range.start.max(at).min(at + count)..range.end.max(at).min(at + count);
+                let after = range.start.max(at + count) - count..range.end.max(at + count) - count;
+                let mut parts = Vec::new();
+                if !before.is_empty() {
+                    parts.push(self.parent().read(before, columns)?);
+                }
+                if !empty.is_empty() {
+                    let nulls = schema
+                        .fields()
+                        .iter()
+                        .map(|f| arrow::array::new_null_array(f.data_type(), empty.len()))
+                        .collect();
+                    let options = RecordBatchOptions::new().with_row_count(Some(empty.len()));
+                    parts.push(RecordBatch::try_new_with_options(
+                        schema.clone(),
+                        nulls,
+                        &options,
+                    )?);
+                }
+                if !after.is_empty() {
+                    parts.push(self.parent().read(after, columns)?);
+                }
+                let parts: Vec<RecordBatch> = parts
+                    .into_iter()
+                    .map(|b| {
+                        RecordBatch::try_new_with_options(
+                            schema.clone(),
+                            b.columns().to_vec(),
+                            &RecordBatchOptions::new().with_row_count(Some(b.num_rows())),
+                        )
+                    })
+                    .collect::<std::result::Result<_, _>>()?;
+                concat_batches(&schema, &parts)?.columns().to_vec()
+            }
             Effect::Rows(selection) => {
                 let runs = selection.runs(range.clone());
                 let parts = groups(&runs)
@@ -345,6 +416,79 @@ impl Node {
                 Col::New(j) => new.get(j).cloned().ok_or_else(|| invalid!(ComputeFirst)),
             })
             .collect()
+    }
+
+    /// Input rows `rows` (in any order) of `columns`, in that order: read in
+    /// spans of rows close together, then put in order.
+    fn read_rows(&self, rows: &[usize], columns: &[usize]) -> Result<RecordBatch> {
+        let mut sorted: Vec<usize> = rows.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        let runs: Vec<Range<usize>> =
+            sorted
+                .iter()
+                .fold(Vec::new(), |mut runs: Vec<Range<usize>>, &r| {
+                    match runs.last_mut() {
+                        Some(run) if run.end == r => run.end += 1,
+                        _ => runs.push(r..r + 1),
+                    }
+                    runs
+                });
+        let parts = groups(&runs)
+            .map(|group| self.read_group(group, columns))
+            .collect::<Result<Vec<_>>>()?;
+        let input_schema = Arc::new(self.parent().schema.project(columns)?);
+        let all = concat_batches(&input_schema, &parts)?;
+        let at: UInt32Array = rows
+            .iter()
+            .map(|r| sorted.partition_point(|s| s < r) as u32)
+            .collect();
+        Ok(take_record_batch(&all, &at)?)
+    }
+
+    /// A node reading `effect` over `parent`, with its columns, outside any
+    /// chain: to read a computed order or selection.
+    pub(crate) fn over(parent: &Arc<Node>, effect: Effect) -> Self {
+        Self::new(
+            Some(parent.clone()),
+            None,
+            parent.schema.clone(),
+            effect,
+            parent.file.clone(),
+        )
+    }
+
+    /// `effect` (with output `schema`) over `input`, read whole and kept as
+    /// a table: for row steps working in place and buffers.
+    pub(crate) fn kept(
+        input: &Arc<Node>,
+        schema: SchemaRef,
+        effect: Effect,
+        context: &Context,
+    ) -> Result<Effect> {
+        let node = Arc::new(Self::new(
+            Some(input.clone()),
+            None,
+            schema.clone(),
+            effect,
+            input.file.clone(),
+        ));
+        let progress = context.progress.as_ref().map(|p| (p, Task::Computing));
+        let read_all = |node: &Arc<Node>, progress| -> Result<Vec<RecordBatch>> {
+            Ok(node
+                .read_parallel(None, progress, |batches, _| Ok(batches))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect())
+        };
+        let batches = read_all(&node, progress)?;
+        let rebuild = move || read_all(&node, None);
+        Ok(Effect::Data(Table::with_rebuild(
+            schema,
+            batches,
+            Some(Box::new(rebuild)),
+        )?))
     }
 
     /// The input rows of `runs` (close together), read as one span.

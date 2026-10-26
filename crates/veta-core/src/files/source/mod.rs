@@ -43,6 +43,61 @@ pub trait DataSource: fmt::Debug + Send + Sync {
     fn read_columns(&self, range: Range<usize>, names: &[String]) -> Result<RecordBatch> {
         project(&self.read(range)?, names)
     }
+
+    /// Rows `rows` (in any order) of the columns named in `names` (in the
+    /// schema's order), in the order given; `None` when the source can't
+    /// pick rows itself (it isn't held in memory).
+    fn take(&self, _rows: &[u32], _names: &[String]) -> Option<Result<RecordBatch>> {
+        None
+    }
+}
+
+/// Rows `rows` (in any order) of `names`, from batches starting at
+/// `offsets` (plus the total), each got by `batch`. The rows are picked
+/// batch by batch in the order they are stored (fast), then put in the
+/// order asked for.
+pub(crate) fn take_rows(
+    offsets: &[usize],
+    mut batch: impl FnMut(usize) -> Result<RecordBatch>,
+    rows: &[u32],
+    names: &[String],
+) -> Result<RecordBatch> {
+    let mut by_place: Vec<(u32, u32)> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, &r)| (r, i as u32))
+        .collect();
+    by_place.sort_unstable();
+    let mut parts = Vec::new();
+    let mut start = 0;
+    while start < by_place.len() {
+        let row = by_place[start].0 as usize;
+        let b = offsets.partition_point(|&o| o <= row) - 1;
+        let end =
+            start + by_place[start..].partition_point(|(r, _)| (*r as usize) < offsets[b + 1]);
+        let local: arrow::array::UInt32Array = by_place[start..end]
+            .iter()
+            .map(|(r, _)| *r - offsets[b] as u32)
+            .collect();
+        parts.push(arrow::compute::take_record_batch(
+            &project(&batch(b)?, names)?,
+            &local,
+        )?);
+        start = end;
+    }
+    let Some(first) = parts.first() else {
+        return Ok(RecordBatch::new_empty(Arc::new(Schema::empty())));
+    };
+    let all = concat_batches(&first.schema(), &parts)?;
+    // Where each row asked for is in `all`.
+    let mut back = vec![0u32; rows.len()];
+    for (k, (_, i)) in by_place.iter().enumerate() {
+        back[*i as usize] = k as u32;
+    }
+    Ok(arrow::compute::take_record_batch(
+        &all,
+        &arrow::array::UInt32Array::from(back),
+    )?)
 }
 
 /// The columns of `batch` named in `names`, in the batch's order.
@@ -126,6 +181,15 @@ impl DataSource for MemorySource {
 
     fn mode(&self) -> SourceMode {
         SourceMode::InMemory
+    }
+
+    fn take(&self, rows: &[u32], names: &[String]) -> Option<Result<RecordBatch>> {
+        Some(take_rows(
+            &self.offsets,
+            |b| Ok(self.batches[b].clone()),
+            rows,
+            names,
+        ))
     }
 
     fn read(&self, range: Range<usize>) -> Result<RecordBatch> {

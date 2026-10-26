@@ -536,8 +536,8 @@ A step's output is one of:
 - virtual: computed when read, nothing kept (rename, select, reorder, drop);
 - stored, in a form that depends on the step:
   - the changed columns only (cast, formula, edit column);
-  - a row bitmap (filter), a permutation (sort) or row ranges (insert,
-    delete);
+  - a row selection (filter, keep/drop rows, sample, unique), an order
+    (sort of data held in memory, reverse) or inserted rows;
   - the cell-edit log;
   - the whole frame (buffer);
 - pending: not computed yet.
@@ -546,9 +546,15 @@ Stored outputs stay in memory within the memory budget (half of RAM by
 default). Past it, the least recently used spill to Arrow IPC temp files,
 the current step's and those just before it last.
 
-In eager mode a row step can work in place: its result replaces the stored
-data. With history on, the undo entry keeps the inverse (the removed rows,
-the inverse permutation).
+In eager mode, `with_rows_in_place(true)` makes row steps keep their whole
+output instead of the rows they pick: reads are faster and the data before
+can be spilled or freed, at the cost of a copy. Undo goes back to the node
+before, whose data stays (in memory, on disk, or rebuilt).
+
+A sort of data held in memory keeps the order of its rows (4 bytes a row)
+and picks them as read; any other input is sorted into a copy (in memory
+within half the budget, otherwise in pieces on disk), since picking
+scattered rows through the steps before would read everything again.
 
 A buffer step, like Power Query's `Table.Buffer`, stores the whole output up
 to that point. Later steps read from it, and it is recomputed when an

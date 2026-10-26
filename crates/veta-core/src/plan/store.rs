@@ -251,6 +251,24 @@ impl DataSource for Table {
     fn read_columns(&self, range: Range<usize>, names: &[String]) -> Result<RecordBatch> {
         project(&self.read(range)?, names)
     }
+
+    /// Only while in memory: picking rows from a file means reading it all.
+    fn take(&self, rows: &[u32], names: &[String]) -> Option<Result<RecordBatch>> {
+        let state = lock(&self.state);
+        let State::Memory(batches) = &*state else {
+            return None;
+        };
+        let batches = batches.clone();
+        drop(state);
+        self.used
+            .store(CLOCK.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
+        Some(crate::source::take_rows(
+            &self.offsets,
+            |b| Ok(batches[b].clone()),
+            rows,
+            names,
+        ))
+    }
 }
 
 /// Writes the least recently used tables to disk until those in memory fit

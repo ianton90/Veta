@@ -14,6 +14,7 @@ mod cells;
 mod column;
 mod columns;
 mod history;
+mod rows;
 mod steps;
 mod value;
 mod write;
@@ -35,6 +36,7 @@ use crate::sources::{Batches, ReadCsv, ReadJson, ReadParquet};
 
 pub use column::{Column, ColumnRef};
 pub use columns::{Fill, ReplaceOptions};
+pub use rows::{Order, SortOptions};
 pub use value::{IntoValue, Null};
 
 /// How to read a Parquet file.
@@ -58,6 +60,8 @@ pub struct DataFrame {
     lazy: bool,
     /// `None` when history is off.
     history: Option<History>,
+    /// Row steps store their whole output (eager only).
+    in_place: bool,
     progress: Option<Progress>,
 }
 
@@ -100,6 +104,7 @@ impl DataFrame {
             node: Node::empty(),
             lazy: false,
             history: None,
+            in_place: false,
             progress: None,
         }
     }
@@ -123,6 +128,7 @@ impl DataFrame {
     fn context(&self) -> Context {
         Context {
             lazy: self.lazy,
+            in_place: self.in_place && !self.lazy,
             progress: self.progress.clone(),
         }
     }

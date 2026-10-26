@@ -17,6 +17,10 @@ use crate::plan::store::Table;
 use crate::plan::{Context, Effect, FileSettings, Node, Planned, Step, Task};
 use crate::source::{DataSource, PagedSource};
 
+/// Rows per batch of a file read into memory: few batches, so rows are
+/// found fast.
+const BATCH_ROWS: usize = 64 * 1024;
+
 /// Reads a Parquet file, or only `columns` of it.
 #[derive(Debug)]
 pub(crate) struct ReadParquet {
@@ -107,6 +111,7 @@ fn read_within(
     let reader =
         ParquetRecordBatchReaderBuilder::new_with_metadata(file.try_clone()?, metadata.clone())
             .with_projection(mask)
+            .with_batch_size(BATCH_ROWS)
             .build()?;
     // Columns come in the file's order: put them in the order asked for.
     let mut in_file = positions.to_vec();
