@@ -641,7 +641,6 @@ to the fourth (merged across pieces with Pébay's formulas), every number
 parts counted on all cores) or value counts (mode). `stats(columns,
 &[Stat])` computes several for several columns in one pass; `describe()`
 gives a frame of them as text. On a sample: `df.sample(fraction, seed)?`.
-Variance, standard deviation, skew and kurtosis describe the values as a
-population by default (dividing by n; m₃/m₂^1.5; m₄/m₂² − 3); their
-`_with(Estimate::Sample)` versions treat them as a sample (n − 1;
-bias-corrected, as pandas).
+`var`, `std`, `skew` and `kurtosis` take `sample: bool`: `false` for the
+values as the whole population (dividing by n; m₃/m₂^1.5; m₄/m₂² − 3),
+`true` for a sample (n − 1; bias-corrected, as pandas).

@@ -14,7 +14,7 @@ use super::{Column, DataFrame};
 use crate::error::Result;
 use crate::ops::Columns;
 use crate::plan::Task;
-use crate::stats::{Aggregate, Estimate, Interpolation, Needs, Stat, StatValue};
+use crate::stats::{Aggregate, Interpolation, Needs, Stat, StatValue};
 
 impl DataFrame {
     /// The running statistics of the columns at `positions`, each with what
@@ -168,7 +168,7 @@ impl DataFrame {
                     .then(|| number(aggregate.finish(Stat::Mean).as_number()))
                     .flatten(),
                 numeric
-                    .then(|| number(aggregate.variance(Estimate::Population).map(f64::sqrt)))
+                    .then(|| number(aggregate.variance(false).map(f64::sqrt)))
                     .flatten(),
                 sortable.then(|| value(&mut aggregate, Stat::Min)).flatten(),
                 numeric.then(|| quantile(&mut aggregate, 0.25)).flatten(),
@@ -262,26 +262,16 @@ impl Column {
         self.number(Stat::Median)
     }
 
-    /// The standard deviation of the values as a population (dividing by
-    /// n).
-    pub fn std(&self) -> Result<Option<f64>> {
-        self.std_with(Estimate::Population)
+    /// The standard deviation: of a sample when `sample` (dividing by
+    /// n − 1), of the whole population otherwise (dividing by n).
+    pub fn std(&self, sample: bool) -> Result<Option<f64>> {
+        Ok(self.var(sample)?.map(f64::sqrt))
     }
 
-    /// The standard deviation, as a population or as a sample (dividing by
-    /// n − 1).
-    pub fn std_with(&self, estimate: Estimate) -> Result<Option<f64>> {
-        Ok(self.var_with(estimate)?.map(f64::sqrt))
-    }
-
-    /// The variance of the values as a population (dividing by n).
-    pub fn var(&self) -> Result<Option<f64>> {
-        self.var_with(Estimate::Population)
-    }
-
-    /// The variance, as a population or as a sample (dividing by n − 1).
-    pub fn var_with(&self, estimate: Estimate) -> Result<Option<f64>> {
-        Ok(self.aggregate(&[Stat::Var(estimate)])?.variance(estimate))
+    /// The variance: of a sample when `sample` (dividing by n − 1), of the
+    /// whole population otherwise (dividing by n).
+    pub fn var(&self, sample: bool) -> Result<Option<f64>> {
+        Ok(self.aggregate(&[Stat::Var(sample)])?.variance(sample))
     }
 
     /// The `q` quantile (0 to 1), interpolating linearly.
@@ -304,24 +294,15 @@ impl Column {
         }
     }
 
-    /// The skewness of the values as a population (m₃/m₂^1.5).
-    pub fn skew(&self) -> Result<Option<f64>> {
-        self.skew_with(Estimate::Population)
+    /// The skewness: of a sample when `sample` (bias-corrected, as
+    /// pandas), of the whole population otherwise (m₃/m₂^1.5).
+    pub fn skew(&self, sample: bool) -> Result<Option<f64>> {
+        self.number(Stat::Skew(sample))
     }
 
-    /// The skewness, as a population or as a sample (bias-corrected).
-    pub fn skew_with(&self, estimate: Estimate) -> Result<Option<f64>> {
-        self.number(Stat::Skew(estimate))
-    }
-
-    /// The excess kurtosis of the values as a population (m₄/m₂² − 3).
-    pub fn kurtosis(&self) -> Result<Option<f64>> {
-        self.kurtosis_with(Estimate::Population)
-    }
-
-    /// The excess kurtosis, as a population or as a sample
-    /// (bias-corrected).
-    pub fn kurtosis_with(&self, estimate: Estimate) -> Result<Option<f64>> {
-        self.number(Stat::Kurtosis(estimate))
+    /// The excess kurtosis: of a sample when `sample` (bias-corrected, as
+    /// pandas), of the whole population otherwise (m₄/m₂² − 3).
+    pub fn kurtosis(&self, sample: bool) -> Result<Option<f64>> {
+        self.number(Stat::Kurtosis(sample))
     }
 }

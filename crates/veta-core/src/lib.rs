@@ -55,7 +55,7 @@ pub use model::{Document, DocumentId, Workbook};
 pub use ops::{Columns, Keep};
 pub use plan::{Progress, Rows, Task};
 pub use source::SourceMode;
-pub use stats::{Estimate, Interpolation, Stat, StatValue};
+pub use stats::{Interpolation, Stat, StatValue};
 pub use transforms::cast::{CastOptions, OnError};
 pub use transforms::split::SplitBy;
 pub use transforms::text::TextOp;

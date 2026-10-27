@@ -31,32 +31,21 @@ pub enum Stat {
     Sum,
     Mean,
     Median,
-    /// Standard deviation.
-    Std(Estimate),
-    /// Variance.
-    Var(Estimate),
+    /// Standard deviation; `true`: of a sample (n − 1), `false`: of the
+    /// whole population (n).
+    Std(bool),
+    /// Variance; `true`: of a sample (n − 1), `false`: of the population.
+    Var(bool),
     /// The `q` quantile (0 to 1), interpolating linearly.
     Quantile(f64),
     /// The most frequent value (the first to appear, of equals).
     Mode,
-    /// Skewness.
-    Skew(Estimate),
-    /// Excess kurtosis.
-    Kurtosis(Estimate),
-}
-
-/// Whether variance, standard deviation, skew and kurtosis describe the
-/// values as the whole population or as a sample of a larger one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Estimate {
-    /// The values are all there is: variance divides by n; skew is
-    /// m₃/m₂^1.5 and excess kurtosis m₄/m₂² − 3 (as polars and scipy by
-    /// default).
-    #[default]
-    Population,
-    /// The values are a sample: variance divides by n − 1; skew and
-    /// kurtosis are bias-corrected (adjusted Fisher–Pearson, as pandas).
-    Sample,
+    /// Skewness; `true`: of a sample (bias-corrected, as pandas),
+    /// `false`: of the population (m₃/m₂^1.5).
+    Skew(bool),
+    /// Excess kurtosis; `true`: of a sample (bias-corrected, as pandas),
+    /// `false`: of the population (m₄/m₂² − 3).
+    Kurtosis(bool),
 }
 
 /// How a quantile between two values is taken.
@@ -373,44 +362,39 @@ impl Aggregate {
     }
 
     /// The variance (dividing by n, or n − 1 for a sample).
-    pub(crate) fn variance(&self, estimate: Estimate) -> Option<f64> {
-        let divisor = match estimate {
-            Estimate::Population => self.n as f64,
-            Estimate::Sample => self.n as f64 - 1.0,
-        };
+    pub(crate) fn variance(&self, sample: bool) -> Option<f64> {
+        let divisor = self.n as f64 - if sample { 1.0 } else { 0.0 };
         (divisor > 0.0)
             .then(|| self.m2 / divisor)
             .filter(|v| v.is_finite())
     }
 
     /// The skewness.
-    fn skew(&self, estimate: Estimate) -> Option<f64> {
+    fn skew(&self, sample: bool) -> Option<f64> {
         let n = self.n as f64;
         if self.n < 1 || self.m2 <= 0.0 {
             return None;
         }
         let g1 = n.sqrt() * self.m3 / self.m2.powf(1.5);
-        let skew = match estimate {
-            Estimate::Population => g1,
-            Estimate::Sample if self.n > 2 => g1 * (n * (n - 1.0)).sqrt() / (n - 2.0),
-            Estimate::Sample => return None,
+        let skew = match sample {
+            false => g1,
+            true if self.n > 2 => g1 * (n * (n - 1.0)).sqrt() / (n - 2.0),
+            true => return None,
         };
         skew.is_finite().then_some(skew)
     }
 
     /// The excess kurtosis.
-    fn kurtosis(&self, estimate: Estimate) -> Option<f64> {
+    fn kurtosis(&self, sample: bool) -> Option<f64> {
         let n = self.n as f64;
         if self.n < 1 || self.m2 <= 0.0 {
             return None;
         }
         let g2 = n * self.m4 / (self.m2 * self.m2) - 3.0;
-        let kurtosis = match estimate {
-            Estimate::Population => g2,
-            Estimate::Sample if self.n > 3 => {
-                ((n + 1.0) * g2 + 6.0) * (n - 1.0) / ((n - 2.0) * (n - 3.0))
-            }
-            Estimate::Sample => return None,
+        let kurtosis = match sample {
+            false => g2,
+            true if self.n > 3 => ((n + 1.0) * g2 + 6.0) * (n - 1.0) / ((n - 2.0) * (n - 3.0)),
+            true => return None,
         };
         kurtosis.is_finite().then_some(kurtosis)
     }
@@ -450,12 +434,12 @@ impl Aggregate {
             Stat::Max => StatValue::Value(self.max.clone().unwrap_or_else(null)),
             Stat::Sum => StatValue::Number(Some(self.sum + self.carry)),
             Stat::Mean => StatValue::Number((self.n > 0).then_some(self.mean)),
-            Stat::Var(estimate) => StatValue::Number(self.variance(estimate)),
-            Stat::Std(estimate) => StatValue::Number(self.variance(estimate).map(f64::sqrt)),
+            Stat::Var(sample) => StatValue::Number(self.variance(sample)),
+            Stat::Std(sample) => StatValue::Number(self.variance(sample).map(f64::sqrt)),
             Stat::Median => StatValue::Number(quantile_unsorted(&mut self.values, 0.5)),
             Stat::Quantile(q) => StatValue::Number(quantile_unsorted(&mut self.values, q)),
-            Stat::Skew(estimate) => StatValue::Number(self.skew(estimate)),
-            Stat::Kurtosis(estimate) => StatValue::Number(self.kurtosis(estimate)),
+            Stat::Skew(sample) => StatValue::Number(self.skew(sample)),
+            Stat::Kurtosis(sample) => StatValue::Number(self.kurtosis(sample)),
             Stat::Mode => StatValue::Number(self.mode_row().map(|r| r as f64)),
         }
     }
@@ -477,9 +461,9 @@ mod tests {
         let xs: Vec<f64> = (0..1000).map(|i| ((i * 37) % 101) as f64 / 3.0).collect();
         let stats = [
             Stat::Mean,
-            Stat::Var(Estimate::Sample),
-            Stat::Skew(Estimate::Sample),
-            Stat::Kurtosis(Estimate::Population),
+            Stat::Var(true),
+            Stat::Skew(true),
+            Stat::Kurtosis(false),
             Stat::Sum,
             Stat::Median,
         ];
@@ -506,9 +490,15 @@ mod tests {
 
     #[test]
     fn known_values() {
-        let stats = [Estimate::Population, Estimate::Sample]
+        let stats = [false, true]
             .into_iter()
-            .flat_map(|e| [Stat::Var(e), Stat::Skew(e), Stat::Kurtosis(e)])
+            .flat_map(|sample| {
+                [
+                    Stat::Var(sample),
+                    Stat::Skew(sample),
+                    Stat::Kurtosis(sample),
+                ]
+            })
             .collect::<Vec<_>>();
         let of = |xs: &[f64]| {
             let mut agg = Aggregate::new(Needs::of(&stats), &DataType::Float64, "x").unwrap();

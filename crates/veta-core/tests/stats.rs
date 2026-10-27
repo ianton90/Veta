@@ -8,7 +8,7 @@ use std::sync::Arc;
 use arrow::array::{Array, AsArray, Float64Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Int64Type, Schema};
 use arrow::record_batch::RecordBatch;
-use veta_core::{DataFrame, Estimate, Interpolation, Stat, StatValue};
+use veta_core::{DataFrame, Interpolation, Stat, StatValue};
 
 /// x: 1..=n with a null every 10th row; name: "a", "b", "b", "c" repeated.
 fn frame(n: i64) -> DataFrame {
@@ -56,14 +56,11 @@ fn column_methods() {
         assert_eq!(x.max().unwrap().as_primitive::<Int64Type>().value(0), n - 1);
         assert!(close(Some(x.sum().unwrap()), values.iter().sum()));
         assert!(close(x.mean().unwrap(), mean));
-        assert!(close(x.var().unwrap(), var));
-        assert!(close(x.std().unwrap(), var.sqrt()));
+        assert!(close(x.var(false).unwrap(), var));
+        assert!(close(x.std(false).unwrap(), var.sqrt()));
+        assert!(close(x.var(true).unwrap(), var * count / (count - 1.0)));
         assert!(close(
-            x.var_with(Estimate::Sample).unwrap(),
-            var * count / (count - 1.0)
-        ));
-        assert!(close(
-            x.std_with(Estimate::Sample).unwrap(),
+            x.std(true).unwrap(),
             (var * count / (count - 1.0)).sqrt()
         ));
         let mut sorted = values.clone();
@@ -84,10 +81,10 @@ fn column_methods() {
         ));
         // Evenly spread: no skew; flat: excess kurtosis -1.2 either way, for
         // this many values.
-        assert!(x.skew().unwrap().unwrap().abs() < 1e-3);
-        assert!(x.skew_with(Estimate::Sample).unwrap().unwrap().abs() < 1e-3);
-        assert!((x.kurtosis().unwrap().unwrap() + 1.2).abs() < 1e-4);
-        assert!((x.kurtosis_with(Estimate::Sample).unwrap().unwrap() + 1.2).abs() < 1e-4);
+        assert!(x.skew(false).unwrap().unwrap().abs() < 1e-3);
+        assert!(x.skew(true).unwrap().unwrap().abs() < 1e-3);
+        assert!((x.kurtosis(false).unwrap().unwrap() + 1.2).abs() < 1e-4);
+        assert!((x.kurtosis(true).unwrap().unwrap() + 1.2).abs() < 1e-4);
         let name = df.column("name").unwrap();
         assert_eq!(name.n_unique().unwrap(), 3);
         assert_eq!(name.mode().unwrap().as_string::<i32>().value(0), "b");
@@ -145,7 +142,7 @@ fn on_a_sample_and_empty() {
     let empty = df.keep_rows(0..0).unwrap();
     let x = empty.column("x").unwrap();
     assert_eq!(x.mean().unwrap(), None);
-    assert_eq!(x.std().unwrap(), None);
+    assert_eq!(x.std(false).unwrap(), None);
     assert!(x.min().unwrap().is_null(0));
     assert_eq!(x.n_unique().unwrap(), 0);
 }
