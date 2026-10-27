@@ -11,7 +11,7 @@ use parquet::arrow::arrow_reader::{
 };
 use parquet::file::metadata::PageIndexPolicy;
 
-use crate::error::{Result, invalid};
+use crate::error::Result;
 use crate::files::parquet::{check_row_counts, file_info, file_metadata, writer_settings};
 use crate::plan::store::Table;
 use crate::plan::{Context, Effect, FileSettings, Node, Planned, Step, Task};
@@ -21,11 +21,10 @@ use crate::source::{DataSource, PagedSource};
 /// found fast.
 const BATCH_ROWS: usize = 64 * 1024;
 
-/// Reads a Parquet file, or only `columns` of it.
+/// Reads a Parquet file.
 #[derive(Debug)]
 pub(crate) struct ReadParquet {
     pub(crate) path: PathBuf,
-    pub(crate) columns: Option<Vec<String>>,
 }
 
 impl Step for ReadParquet {
@@ -39,20 +38,7 @@ impl Step for ReadParquet {
         let footer = metadata.metadata().clone();
         check_row_counts(&footer)?;
         let all = metadata.schema().clone();
-        let positions = match &self.columns {
-            Some(names) => names
-                .iter()
-                .enumerate()
-                .map(|(i, name)| {
-                    if names[..i].contains(name) {
-                        return Err(invalid!(ColumnTwice, column = name));
-                    }
-                    all.index_of(name)
-                        .map_err(|_| invalid!(ColumnNotFound, column = name))
-                })
-                .collect::<Result<Vec<_>>>()?,
-            None => (0..all.fields().len()).collect(),
-        };
+        let positions: Vec<usize> = (0..all.fields().len()).collect();
         let schema = Arc::new(all.project(&positions)?);
         let budget = crate::memory::budget();
         // The footer's sizes can't be trusted: the file is read into memory

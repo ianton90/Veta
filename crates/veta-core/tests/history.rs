@@ -20,7 +20,7 @@ fn ids(frame: &DataFrame) -> Vec<i64> {
 fn frame(dir: &TempDir, rows: usize) -> DataFrame {
     let path = dir.path().join("large.parquet");
     fixtures::large(&path, rows, 10_000);
-    read_parquet(&path).unwrap().with_history(true)
+    read_parquet(&path, false).unwrap().with_history(true)
 }
 
 #[test]
@@ -182,12 +182,13 @@ fn progress_and_cancel() {
     let df = frame(&dir, 300_000);
     let progress = Progress::new();
     let df = df.with_progress(&progress);
-    df.write_parquet(dir.path().join("out.parquet")).unwrap();
+    df.write_parquet(dir.path().join("out.parquet"), &df.writer_settings())
+        .unwrap();
     assert_eq!(progress.task(), Some(veta_core::Task::Writing));
     assert_eq!(progress.fraction(), 1.0);
     progress.cancel();
     assert!(matches!(
-        df.write_parquet(dir.path().join("out2.parquet")),
+        df.write_parquet(dir.path().join("out2.parquet"), &df.writer_settings()),
         Err(Error::Cancelled)
     ));
     assert!(!dir.path().join("out2.parquet").exists());

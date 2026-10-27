@@ -5,7 +5,7 @@
 
 use arrow::array::{Array, AsArray};
 use arrow::datatypes::Int64Type;
-use veta_core::{DataFrame, ReadOptions, read_csv, read_parquet, read_parquet_with};
+use veta_core::{CsvExportOptions, CsvOptions, DataFrame, read_csv, read_parquet};
 use veta_testkit::{TempDir, fixtures};
 
 const ROWS: usize = 300_000;
@@ -20,15 +20,8 @@ fn eager_and_lazy_read_the_same() {
     let dir = TempDir::new();
     let path = dir.path().join("large.parquet");
     fixtures::large(&path, ROWS, 50_000);
-    let eager = read_parquet(&path).unwrap();
-    let lazy = read_parquet_with(
-        &path,
-        ReadOptions {
-            lazy: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let eager = read_parquet(&path, false).unwrap();
+    let lazy = read_parquet(&path, true).unwrap();
     assert!(!eager.is_lazy() && lazy.is_lazy());
     for frame in [&eager, &lazy] {
         assert_eq!(frame.num_rows().unwrap(), ROWS);
@@ -40,27 +33,14 @@ fn eager_and_lazy_read_the_same() {
             &[299_998, 299_999]
         );
     }
-    let some = read_parquet_with(
-        &path,
-        ReadOptions {
-            columns: Some(vec!["label".into(), "id".into()]),
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let some = read_parquet(&path, true)
+        .unwrap()
+        .keep_columns(["label", "id"])
+        .unwrap();
     assert_eq!(some.columns(), ["label", "id"]);
     let label = some.value(7, "label").unwrap();
     assert_eq!(label.as_string::<i32>().value(0), "row-7");
-    assert!(
-        read_parquet_with(
-            &path,
-            ReadOptions {
-                columns: Some(vec!["nope".into()]),
-                ..Default::default()
-            }
-        )
-        .is_err()
-    );
+    assert!(read_parquet(dir.path().join("nope.parquet"), false).is_err());
 }
 
 #[test]
@@ -68,15 +48,8 @@ fn rows_and_columns() {
     let dir = TempDir::new();
     let path = dir.path().join("large.parquet");
     fixtures::large(&path, ROWS, 50_000);
-    let lazy = read_parquet_with(
-        &path,
-        ReadOptions {
-            lazy: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let df = read_parquet(&path).unwrap();
+    let lazy = read_parquet(&path, true).unwrap();
+    let df = read_parquet(&path, false).unwrap();
     for df in [df, lazy] {
         // A mask keeping every third row, then a range of what is left.
         let mask: Vec<bool> = (0..ROWS).map(|i| i.is_multiple_of(3)).collect();
@@ -119,11 +92,17 @@ fn a_later_source_replaces_the_data() {
     );
     fixtures::large(&large, 1000, 1000);
     fixtures::all_types(&mixed);
-    let first = read_parquet(&large).unwrap().keep_rows(0..10).unwrap();
-    let second = first.read_parquet(&mixed).unwrap();
+    let first = read_parquet(&large, false)
+        .unwrap()
+        .keep_rows(0..10)
+        .unwrap();
+    let second = first.read_parquet(&mixed, false).unwrap();
     assert_eq!(first.num_rows().unwrap(), 10);
     assert_ne!(second.columns(), first.columns());
-    assert_eq!(second.schema(), read_parquet(&mixed).unwrap().schema());
+    assert_eq!(
+        second.schema(),
+        read_parquet(&mixed, false).unwrap().schema()
+    );
 }
 
 #[test]
@@ -131,15 +110,21 @@ fn writes_and_reads_back() {
     let dir = TempDir::new();
     let path = dir.path().join("large.parquet");
     fixtures::large(&path, 10_000, 4_000);
-    let df = read_parquet(&path).unwrap().drop_rows(0..5000).unwrap();
+    let df = read_parquet(&path, false)
+        .unwrap()
+        .drop_rows(0..5000)
+        .unwrap();
     let parquet = dir.path().join("out.parquet");
-    df.write_parquet(&parquet).unwrap();
-    let back = read_parquet(&parquet).unwrap();
+    df.write_parquet(&parquet, &df.writer_settings()).unwrap();
+    let back = read_parquet(&parquet, false).unwrap();
     assert_eq!(back.schema(), df.schema());
     assert_eq!(ids(&back), (5000..10_000).collect::<Vec<_>>());
     let csv = dir.path().join("out.csv");
-    df.write_csv(&csv).unwrap();
-    assert_eq!(ids(&read_csv(&csv).unwrap()), ids(&df));
+    df.write_csv(&csv, CsvExportOptions::default()).unwrap();
+    assert_eq!(
+        ids(&read_csv(&csv, CsvOptions::default()).unwrap()),
+        ids(&df)
+    );
     let json = dir.path().join("out.json");
     df.write_ndjson(&json).unwrap();
     assert_eq!(ids(&veta_core::read_json(&json).unwrap()), ids(&df));

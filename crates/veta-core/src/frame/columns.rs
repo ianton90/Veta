@@ -114,14 +114,10 @@ impl DataFrame {
         })
     }
 
-    /// Converts `column` to `to`; values that don't convert become null.
-    pub fn cast(&self, column: &str, to: DataType) -> Result<Self> {
-        self.cast_with(column, to, CastOptions::default())
-    }
-
-    /// Like [`Self::cast`], with options (separators, date format, what to
-    /// do with values that don't convert).
-    pub fn cast_with(&self, column: &str, to: DataType, options: CastOptions) -> Result<Self> {
+    /// Converts `column` to `to`, reading text as `options` say
+    /// (separators, date format) and doing with values that don't convert
+    /// what they say (`CastOptions::default()`: they become null).
+    pub fn cast(&self, column: &str, to: DataType, options: CastOptions) -> Result<Self> {
         self.then(Cast {
             column: column.to_owned(),
             to,
@@ -155,19 +151,10 @@ impl DataFrame {
         }
     }
 
-    /// Replaces `find` with `with` in `column`, inside text cells too:
-    /// `df.replace("name", "bob", "Bob")`, `df.replace("note", Null, "n/a")`.
+    /// Replaces `find` with `with` in `column`, matching as `options` say
+    /// (`ReplaceOptions::default()`: inside text cells too, same case):
+    /// `df.replace("note", Null, "n/a", ReplaceOptions::default())`.
     pub fn replace(
-        &self,
-        column: &str,
-        find: impl IntoValue,
-        with: impl IntoValue,
-    ) -> Result<Self> {
-        self.replace_with(column, find, with, ReplaceOptions::default())
-    }
-
-    /// Like [`Self::replace`], with options (whole cells, case).
-    pub fn replace_with(
         &self,
         column: &str,
         find: impl IntoValue,

@@ -16,35 +16,20 @@ pub enum Order {
     Desc,
 }
 
-/// How [`DataFrame::sort_with`] sorts.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SortOptions {
-    /// Nulls before other values (otherwise after).
-    pub nulls_first: bool,
-}
-
 impl DataFrame {
-    /// Sorts rows by `keys`, the first first (stable):
-    /// `df.sort([("amount", Desc), ("name", Asc)])`.
+    /// Sorts rows by `keys`, the first first (stable), nulls first or
+    /// last: `df.sort([("amount", Desc), ("name", Asc)], false)`.
     pub fn sort<K: Into<String>>(
         &self,
         keys: impl IntoIterator<Item = (K, Order)>,
-    ) -> Result<Self> {
-        self.sort_with(keys, SortOptions::default())
-    }
-
-    /// Like [`Self::sort`], with options.
-    pub fn sort_with<K: Into<String>>(
-        &self,
-        keys: impl IntoIterator<Item = (K, Order)>,
-        options: SortOptions,
+        nulls_first: bool,
     ) -> Result<Self> {
         let keys = keys
             .into_iter()
             .map(|(column, order)| SortKey {
                 column: column.into(),
                 descending: order == Order::Desc,
-                nulls_first: options.nulls_first,
+                nulls_first,
             })
             .collect();
         self.then(SortRows(Sort { keys }))

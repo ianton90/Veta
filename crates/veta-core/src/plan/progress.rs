@@ -21,9 +21,9 @@ pub enum Task {
 /// ```no_run
 /// # fn main() -> veta_core::Result<()> {
 /// let progress = veta_core::Progress::new();
-/// let df = veta_core::read_parquet("big.parquet")?.with_progress(&progress);
+/// let df = veta_core::read_parquet("big.parquet", false)?.with_progress(&progress);
 /// // On another thread: progress.fraction(), progress.task(), progress.cancel().
-/// df.write_parquet("copy.parquet")?;
+/// df.write_parquet("copy.parquet", &df.writer_settings())?;
 /// # Ok(())
 /// # }
 /// ```

@@ -2,10 +2,10 @@
 //!
 //! ```no_run
 //! # fn main() -> veta_core::Result<()> {
-//! let df = veta_core::read_parquet("sales.parquet")?;
+//! let df = veta_core::read_parquet("sales.parquet", false)?;
 //! let df = df.drop_columns(["notes"])?.slice(0..1000, ..)?;
 //! println!("{} rows", df.num_rows()?);
-//! df.write_parquet("first.parquet")?;
+//! df.write_parquet("first.parquet", &df.writer_settings())?;
 //! # Ok(())
 //! # }
 //! ```
@@ -37,18 +37,8 @@ use crate::sources::{Batches, ReadCsv, ReadJson, ReadParquet};
 
 pub use column::{Column, ColumnRef};
 pub use columns::{Fill, ReplaceOptions};
-pub use rows::{Order, SortOptions};
+pub use rows::Order;
 pub use value::{IntoValue, Null};
-
-/// How to read a Parquet file.
-#[derive(Debug, Clone, Default)]
-pub struct ReadOptions {
-    /// Read data only when it is needed (the frame stays lazy), instead of
-    /// the whole file now.
-    pub lazy: bool,
-    /// Only these columns, in this order; `None` for all.
-    pub columns: Option<Vec<String>>,
-}
 
 /// A table and the steps that made it. Methods leave the frame as it is and
 /// return a new one, which shares the data it didn't change.
@@ -70,24 +60,16 @@ impl Default for DataFrame {
     }
 }
 
-/// Reads a Parquet file into a new frame.
-pub fn read_parquet(path: impl AsRef<Path>) -> Result<DataFrame> {
-    DataFrame::new().read_parquet(path)
+/// Reads a Parquet file into a new frame: now, or when data is needed if
+/// `lazy` (the frame stays lazy).
+pub fn read_parquet(path: impl AsRef<Path>, lazy: bool) -> Result<DataFrame> {
+    DataFrame::new().read_parquet(path, lazy)
 }
 
-/// Like [`read_parquet`], with options (lazy, some columns).
-pub fn read_parquet_with(path: impl AsRef<Path>, options: ReadOptions) -> Result<DataFrame> {
-    DataFrame::new().read_parquet_with(path, options)
-}
-
-/// Reads a CSV file into a new frame, guessing column types.
-pub fn read_csv(path: impl AsRef<Path>) -> Result<DataFrame> {
-    DataFrame::new().read_csv(path)
-}
-
-/// Like [`read_csv`], with options (delimiter, encoding, types, …).
-pub fn read_csv_with(path: impl AsRef<Path>, options: CsvOptions) -> Result<DataFrame> {
-    DataFrame::new().read_csv_with(path, options)
+/// Reads a CSV file into a new frame (`CsvOptions::default()` guesses
+/// column types).
+pub fn read_csv(path: impl AsRef<Path>, options: CsvOptions) -> Result<DataFrame> {
+    DataFrame::new().read_csv(path, options)
 }
 
 /// Reads a JSON file (one object per line, or an array of objects) into a
@@ -162,32 +144,21 @@ impl DataFrame {
 
     // Sources.
 
-    /// Replaces the data with a Parquet file's. The steps before stay in
-    /// the chain.
-    pub fn read_parquet(&self, path: impl AsRef<Path>) -> Result<Self> {
-        self.read_parquet_with(path, ReadOptions::default())
-    }
-
-    /// Like [`Self::read_parquet`], with options. The frame becomes lazy or
-    /// eager as `options.lazy` says.
-    pub fn read_parquet_with(&self, path: impl AsRef<Path>, options: ReadOptions) -> Result<Self> {
+    /// Replaces the data with a Parquet file's, read now or, if `lazy`,
+    /// when data is needed (the frame becomes lazy or eager as `lazy`
+    /// says). The steps before stay in the chain.
+    pub fn read_parquet(&self, path: impl AsRef<Path>, lazy: bool) -> Result<Self> {
         let frame = Self {
-            lazy: options.lazy,
+            lazy,
             ..self.clone()
         };
         frame.then(ReadParquet {
             path: path.as_ref().to_owned(),
-            columns: options.columns,
         })
     }
 
-    /// Replaces the data with a CSV file's, guessing column types.
-    pub fn read_csv(&self, path: impl AsRef<Path>) -> Result<Self> {
-        self.read_csv_with(path, CsvOptions::default())
-    }
-
-    /// Like [`Self::read_csv`], with options.
-    pub fn read_csv_with(&self, path: impl AsRef<Path>, options: CsvOptions) -> Result<Self> {
+    /// Replaces the data with a CSV file's.
+    pub fn read_csv(&self, path: impl AsRef<Path>, options: CsvOptions) -> Result<Self> {
         self.then(ReadCsv {
             path: path.as_ref().to_owned(),
             options,

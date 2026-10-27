@@ -7,7 +7,7 @@ use std::sync::Arc;
 use arrow::array::{AsArray, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Int64Type, Schema};
 use arrow::record_batch::RecordBatch;
-use veta_core::{DataFrame, Keep, Order, SortOptions, read_parquet};
+use veta_core::{DataFrame, Keep, Order, read_parquet};
 use veta_testkit::{TempDir, fixtures};
 
 /// group: i % 3 (null every 7th), id: i, name: "n{i % 5}".
@@ -56,17 +56,15 @@ fn ids(frame: &DataFrame) -> Vec<i64> {
 fn sort_reverse_sample() {
     for df in modes(20) {
         let sorted = df
-            .sort([("group", Order::Desc), ("id", Order::Asc)])
+            .sort([("group", Order::Desc), ("id", Order::Asc)], false)
             .unwrap();
         assert_eq!(ints(&sorted, "group")[..3], [Some(2), Some(2), Some(2)]);
         assert_eq!(ids(&sorted)[..3], [2, 5, 8]);
         assert_eq!(ints(&sorted, "group")[18..], [None, None], "nulls last");
-        let first = df
-            .sort_with([("group", Order::Asc)], SortOptions { nulls_first: true })
-            .unwrap();
+        let first = df.sort([("group", Order::Asc)], true).unwrap();
         assert_eq!(ints(&first, "group")[0], None);
         assert_eq!(ids(&first)[2..5], [0, 3, 9], "stable");
-        assert!(df.sort([("nope", Order::Asc)]).is_err());
+        assert!(df.sort([("nope", Order::Asc)], false).is_err());
         assert_eq!(ids(&df.reverse().unwrap())[..3], [19, 18, 17]);
         let a = df.sample(0.5, 7).unwrap();
         let b = df.sample(0.5, 7).unwrap();
@@ -124,11 +122,15 @@ fn implode_and_buffer() {
             .values()
             .to_vec();
         assert_eq!(first, [0, 3, 9]);
-        let buffered = df.sort([("id", Order::Desc)]).unwrap().buffer().unwrap();
+        let buffered = df
+            .sort([("id", Order::Desc)], false)
+            .unwrap()
+            .buffer()
+            .unwrap();
         assert_eq!(ids(&buffered)[..2], [9, 8]);
         // Editing a step before the buffer recomputes it.
         let edited = buffered
-            .edit_step(1, |before| before.sort([("id", Order::Asc)]))
+            .edit_step(1, |before| before.sort([("id", Order::Asc)], false))
             .unwrap();
         assert_eq!(ids(&edited)[..2], [0, 1]);
     }
@@ -140,15 +142,17 @@ fn large_sorted_frames_read_and_write() {
     let path = dir.path().join("large.parquet");
     fixtures::large(&path, 300_000, 50_000);
     for df in [
-        read_parquet(&path).unwrap(),
-        read_parquet(&path).unwrap().lazy(),
+        read_parquet(&path, false).unwrap(),
+        read_parquet(&path, false).unwrap().lazy(),
     ] {
-        let sorted = df.sort([("id", Order::Desc)]).unwrap();
+        let sorted = df.sort([("id", Order::Desc)], false).unwrap();
         let tail = sorted.tail(2).unwrap();
         assert_eq!(tail.column(0).as_primitive::<Int64Type>().values(), &[1, 0]);
         let out = dir.path().join(format!("sorted-{}.parquet", df.is_lazy()));
-        sorted.write_parquet(&out).unwrap();
-        let back = read_parquet(&out).unwrap();
+        sorted
+            .write_parquet(&out, &sorted.writer_settings())
+            .unwrap();
+        let back = read_parquet(&out, false).unwrap();
         assert_eq!(ids(&back)[..2], [299_999, 299_998]);
         assert_eq!(back.num_rows().unwrap(), 300_000);
     }

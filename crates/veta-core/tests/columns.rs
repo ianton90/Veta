@@ -112,19 +112,21 @@ fn rename_move_reorder_insert() {
 #[test]
 fn cast_fill_replace_format() {
     for df in both(20) {
-        let cast = df.cast("amount", DataType::Float64).unwrap();
+        let cast = df
+            .cast("amount", DataType::Float64, CastOptions::default())
+            .unwrap();
         let amounts = cast.column("amount").unwrap().values().unwrap();
         let amounts: Vec<Option<f64>> = amounts.as_primitive::<Float64Type>().iter().collect();
         assert_eq!(amounts[..3], [None, Some(0.5), Some(1.0)]);
         // Values that don't convert: null, or an error, or an error column.
-        let words = df.replace("amount", "1", "one").unwrap();
+        let words = df
+            .replace("amount", "1", "one", ReplaceOptions::default())
+            .unwrap();
         let options = CastOptions {
             on_error: OnError::ErrorColumn,
             ..Default::default()
         };
-        let with_errors = words
-            .cast_with("amount", DataType::Float64, options)
-            .unwrap();
+        let with_errors = words.cast("amount", DataType::Float64, options).unwrap();
         assert_eq!(with_errors.columns()[3], "amount errors");
         assert_eq!(
             texts(&with_errors, "amount errors")[2],
@@ -134,7 +136,7 @@ fn cast_fill_replace_format() {
             on_error: OnError::Fail,
             ..Default::default()
         };
-        let failing = words.cast_with("amount", DataType::Float64, options);
+        let failing = words.cast("amount", DataType::Float64, options);
         match df.is_lazy() {
             false => assert!(failing.is_err(), "eager runs the step now"),
             true => assert!(failing.unwrap().column("amount").unwrap().values().is_err()),
@@ -155,7 +157,9 @@ fn cast_fill_replace_format() {
         let value = df.fill_null("name", Fill::value("?")).unwrap();
         assert_eq!(texts(&value, "name")[0], Some("?".into()));
         assert!(df.fill_null("id", Fill::value("x")).is_err());
-        let replaced = df.replace("name", "name", "N").unwrap();
+        let replaced = df
+            .replace("name", "name", "N", ReplaceOptions::default())
+            .unwrap();
         assert_eq!(
             texts(&replaced, "name")[1],
             Some("Name 1".into()),
@@ -165,19 +169,18 @@ fn cast_fill_replace_format() {
             case_sensitive: false,
             ..Default::default()
         };
-        let replaced = df.replace_with("name", "name", "N", options).unwrap();
+        let replaced = df.replace("name", "name", "N", options).unwrap();
         assert_eq!(texts(&replaced, "name")[1], Some("N 1".into()));
-        let nulls = df.replace("name", Null, "nobody").unwrap();
+        let nulls = df
+            .replace("name", Null, "nobody", ReplaceOptions::default())
+            .unwrap();
         assert_eq!(texts(&nulls, "name")[0], Some("nobody".into()));
         let whole = ReplaceOptions {
             whole_cell: true,
             ..Default::default()
         };
         assert_eq!(
-            texts(
-                &df.replace_with("name", "Name", "x", whole).unwrap(),
-                "name"
-            )[1],
+            texts(&df.replace("name", "Name", "x", whole).unwrap(), "name")[1],
             Some("Name 1".into())
         );
         let upper = df.format_text(["name"], TextOp::Upper).unwrap();
@@ -233,13 +236,13 @@ fn split_merge_nested_shift() {
 fn large_derived_columns_spill_and_write() {
     let dir = TempDir::new();
     let df = frame(200_000)
-        .cast("amount", DataType::Float64)
+        .cast("amount", DataType::Float64, CastOptions::default())
         .unwrap()
         .shift("id", 1)
         .unwrap();
     let path = dir.path().join("out.parquet");
-    df.write_parquet(&path).unwrap();
-    let back = veta_core::read_parquet(&path).unwrap();
+    df.write_parquet(&path, &df.writer_settings()).unwrap();
+    let back = veta_core::read_parquet(&path, false).unwrap();
     assert_eq!(back.num_rows().unwrap(), 200_000);
     assert_eq!(ints(&back, "id")[..3], [None, Some(0), Some(1)]);
     let lazy = frame(200_000).lazy().shift("id", 1).unwrap();

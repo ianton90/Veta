@@ -12,18 +12,15 @@ use crate::model::WriterSettings;
 use crate::plan::Task;
 
 impl DataFrame {
-    /// Writes a Parquet file, with the writer settings of the file read
-    /// last (the defaults for other sources).
-    pub fn write_parquet(&self, path: impl AsRef<Path>) -> Result<()> {
-        self.write_parquet_with(path, &self.node.file.writer.clone())
+    /// The writer settings of the Parquet file read last (the defaults for
+    /// other sources), to write it back alike.
+    pub fn writer_settings(&self) -> WriterSettings {
+        self.node.file.writer.clone()
     }
 
-    /// Like [`Self::write_parquet`], with these settings.
-    pub fn write_parquet_with(
-        &self,
-        path: impl AsRef<Path>,
-        settings: &WriterSettings,
-    ) -> Result<()> {
+    /// Writes a Parquet file with `settings`:
+    /// `df.write_parquet("out.parquet", &df.writer_settings())`.
+    pub fn write_parquet(&self, path: impl AsRef<Path>, settings: &WriterSettings) -> Result<()> {
         let (replacement, file) = Replacement::create(path.as_ref())?;
         let batches = self
             .node
@@ -44,13 +41,9 @@ impl DataFrame {
         replacement.commit()
     }
 
-    /// Writes a CSV file.
-    pub fn write_csv(&self, path: impl AsRef<Path>) -> Result<()> {
-        self.write_csv_with(path, CsvExportOptions::default())
-    }
-
-    /// Like [`Self::write_csv`], with options.
-    pub fn write_csv_with(&self, path: impl AsRef<Path>, options: CsvExportOptions) -> Result<()> {
+    /// Writes a CSV file (`CsvExportOptions::default()`: commas, quotes,
+    /// a header).
+    pub fn write_csv(&self, path: impl AsRef<Path>, options: CsvExportOptions) -> Result<()> {
         self.export(path.as_ref(), ExportFormat::Csv(options))
     }
 

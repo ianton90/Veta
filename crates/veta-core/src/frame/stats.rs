@@ -258,6 +258,7 @@ impl Column {
         self.number(Stat::Mean)
     }
 
+    /// The median, interpolating linearly.
     pub fn median(&self) -> Result<Option<f64>> {
         self.number(Stat::Median)
     }
@@ -274,13 +275,9 @@ impl Column {
         Ok(self.aggregate(&[Stat::Var(sample)])?.variance(sample))
     }
 
-    /// The `q` quantile (0 to 1), interpolating linearly.
-    pub fn quantile(&self, q: f64) -> Result<Option<f64>> {
-        self.quantile_with(q, Interpolation::Linear)
-    }
-
-    /// The `q` quantile, taken as `how` says.
-    pub fn quantile_with(&self, q: f64, how: Interpolation) -> Result<Option<f64>> {
+    /// The `q` quantile (0 to 1), taken between values as `how` says:
+    /// `x.quantile(0.25, Interpolation::Linear)`.
+    pub fn quantile(&self, q: f64, how: Interpolation) -> Result<Option<f64>> {
         Ok(self.aggregate(&[Stat::Quantile(q)])?.quantile(q, how))
     }
 

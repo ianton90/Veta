@@ -43,9 +43,10 @@ pub use arrow;
 pub use command::Command;
 pub use display::PathPart;
 pub use error::{Error, Result};
+pub use files::convert::{CsvExportOptions, CsvOptions};
 pub use frame::{
-    Column, ColumnRef, DataFrame, Fill, IntoValue, Null, Order, ReadOptions, ReplaceOptions,
-    SortOptions, read_csv, read_csv_with, read_json, read_parquet, read_parquet_with,
+    Column, ColumnRef, DataFrame, Fill, IntoValue, Null, Order, ReplaceOptions, read_csv,
+    read_json, read_parquet,
 };
 pub use io::{OpenOptions, SaveJob, SaveResult};
 pub use model::{

@@ -486,11 +486,11 @@ the methods to include, their names and parameters are reviewed in #198.
   into an `Expr`; the core has no formula text for now.
 
 ```rust
-let df = veta_core::read_parquet("sales.parquet")?; // read_parquet_with(path, ReadOptions { lazy: true, .. })
+let df = veta_core::read_parquet("sales.parquet", false)?; // true: lazy
 let df = df.filter(gt(col("amount"), 100))?
     .apply_formula("net", mul(col("amount"), sub(1, col("discount"))))?;
 let mean = df.column("net")?.mean()?;
-df.write_parquet("out.parquet")?;
+df.write_parquet("out.parquet", &df.writer_settings())?;
 ```
 
 Every method takes `&self` and returns a new frame (`let df = df.undo()?;`).
@@ -590,19 +590,19 @@ report without code of their own.
 
 ### Methods
 
-Agreed in #198. Required arguments are positional. Optional ones go in an
-`…Options` struct that implements `Default`, taken by a `_with` version of
-the method (`sort(keys)`, `sort_with(keys, SortOptions { .. })`).
-Expression functions are reviewed in #200. Concat, join, group_by, pivot and
-unpivot come later, with the ETL system.
+Agreed in #198, convention changed in decision 76: one method per
+operation. Up to four parameters go in the call (`sort(keys, nulls_first)`,
+`quantile(q, Interpolation::Linear)`, `std(sample)`); more go in an options
+struct that implements `Default`, always passed
+(`cast(column, type, CastOptions::default())`).
 
 | Area | Methods |
 |---|---|
-| Reading and writing | `read_parquet` / `read_parquet_with(path, ReadOptions { lazy, columns })`, `read_csv` / `read_csv_with`, `read_json`, `DataFrame::new()`, `from_batches`; `write_parquet` / `write_parquet_with(path, &WriterSettings)`, `write_csv` / `write_csv_with`, `write_json`, `write_ndjson` |
+| Reading and writing | `read_parquet(path, lazy)`, `read_csv(path, CsvOptions)`, `read_json(path)`, `DataFrame::new()`, `from_batches`; `write_parquet(path, &WriterSettings)` (`writer_settings()`: those of the file read), `write_csv(path, CsvExportOptions)`, `write_json`, `write_ndjson` |
 | Inspecting | `num_rows`, `num_columns`, `columns`, `column_types`, `schema`, `column(name or position)`, `value(row, column)`, `rows(range) -> RecordBatch`, `head(n)`, `tail(n)`, `collect`, `describe` |
-| Column steps | `keep_columns`, `drop_columns`, `rename([(from, to)])`, `move_column(name, at)`, `move_columns(names, at)`, `reorder_columns(names)`, `insert_column(name, type, at)`, `apply_formula(name, expr)`, `cast` / `cast_with`, `fill_null(column, Fill::Value / Down / Up)`, `replace(column, find, with)` / `replace_with(.., ReplaceOptions { whole_cell, case_sensitive })`, `format_text`, `split`, `merge_columns`, `unnest`, `explode`, `implode`, `add_field`, `remove_field`, `shift(column, n)`, `shift_all(n)` |
-| Row steps | `filter(expr)`, `sort` / `sort_with`, `slice(rows, columns)` (like `iloc`: rows and columns each `..`, a range or list, names or positions, or a mask), `keep_rows(rows)`, `sample(fraction, seed)`, `insert_rows(at, count)`, `drop_rows(rows)`, `set(row, column, value)`, `drop_nulls(columns)` (a row goes if any listed column is null; no columns means all), `unique(columns, Keep)`, `reverse`, `buffer` |
-| Column statistics | `len` (rows, nulls included), `count_values` (non-null), `count_nulls`, `n_unique`, `min`, `max`, `sum`, `mean`, `median`, `std` / `var` (ddof 1, `_with` for others), `quantile(q)` (linear, `_with` for others), `mode`, `skew`, `kurtosis`; later `frequencies` (how often each value appears; also the input for histograms and violin plots) |
+| Column steps | `keep_columns`, `drop_columns`, `rename([(from, to)])`, `move_column(name, at)`, `move_columns(names, at)`, `reorder_columns(names)`, `insert_column(name, type, at)`, `apply_formula(name, expr)`, `cast(column, type, CastOptions)`, `fill_null(column, Fill::Value / Down / Up)`, `replace(column, find, with, ReplaceOptions { whole_cell, case_sensitive })`, `format_text`, `split`, `merge_columns`, `unnest`, `explode`, `implode`, `add_field`, `remove_field`, `shift(column, n)`, `shift_all(n)` |
+| Row steps | `filter(expr)`, `sort(keys, nulls_first)`, `slice(rows, columns)` (like `iloc`: rows and columns each `..`, a range or list, names or positions, or a mask), `keep_rows(rows)`, `sample(fraction, seed)`, `insert_rows(at, count)`, `drop_rows(rows)`, `set(row, column, value)`, `drop_nulls(columns)` (a row goes if any listed column is null; no columns means all), `unique(columns, Keep)`, `reverse`, `buffer` |
+| Column statistics | `len` (rows, nulls included), `count_values` (non-null), `count_nulls`, `n_unique`, `min`, `max`, `sum`, `mean`, `median`, `std(sample)`, `var(sample)`, `quantile(q, Interpolation)`, `mode`, `skew(sample)`, `kurtosis(sample)`; later `frequencies` (how often each value appears; also the input for histograms and violin plots) |
 | Frame statistics | `describe`, `stats(columns, [Stat])` (several in one pass) |
 
 `sample(fraction, seed)` is a row step like `filter`: whether a row is kept
@@ -633,9 +633,8 @@ progress work with it unchanged.
 ### Statistics
 
 Exact. Each `Column` method (`count_values`, `count_nulls`, `n_unique`,
-`min`, `max`, `sum`, `mean`, `median`, `std`, `var`, `quantile` (linear,
-`quantile_with` for others), `mode`, `skew`, `kurtosis`) computes only
-what it needs: null counts, extremes, moments up
+`min`, `max`, `sum`, `mean`, `median`, `std`, `var`, `quantile`, `mode`,
+`skew`, `kurtosis`) computes only what it needs: null counts, extremes, moments up
 to the fourth (merged across pieces with Pébay's formulas), every number
 (quantiles by selection, not sorting), hashes (distinct counts, split into
 parts counted on all cores) or value counts (mode). `stats(columns,

@@ -68,13 +68,10 @@ fn column_methods() {
         let at = 0.25 * (count - 1.0);
         let (low, high) = (sorted[at.floor() as usize], sorted[at.ceil() as usize]);
         assert!(close(
-            x.quantile(0.25).unwrap(),
+            x.quantile(0.25, Interpolation::Linear).unwrap(),
             low + (high - low) * (at - at.floor())
         ));
-        assert!(close(
-            x.quantile_with(0.25, Interpolation::Lower).unwrap(),
-            low
-        ));
+        assert!(close(x.quantile(0.25, Interpolation::Lower).unwrap(), low));
         assert!(close(
             x.median().unwrap(),
             sorted[sorted.len() / 2 - 1] / 2.0 + sorted[sorted.len() / 2] / 2.0
