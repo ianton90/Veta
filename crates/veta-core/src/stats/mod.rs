@@ -14,7 +14,7 @@ mod sample;
 mod summary;
 
 pub(crate) use aggregate::{Aggregate, Needs};
-pub use aggregate::{Interpolation, Stat, StatValue};
+pub use aggregate::{Estimate, Interpolation, Stat, StatValue};
 pub use distinct::COUNTED_LIMIT;
 pub use distribution::{DENSITY_POINTS, HISTOGRAM_BINS};
 pub use sample::SAMPLE_SIZE;

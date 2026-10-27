@@ -633,12 +633,15 @@ progress work with it unchanged.
 ### Statistics
 
 Exact. Each `Column` method (`count_values`, `count_nulls`, `n_unique`,
-`min`, `max`, `sum`, `mean`, `median`, `std`/`var` (ddof 1, `_with` for
-others), `quantile` (linear, `quantile_with` for others), `mode`, `skew`,
-`kurtosis`) computes only what it needs: null counts, extremes, moments up
+`min`, `max`, `sum`, `mean`, `median`, `std`, `var`, `quantile` (linear,
+`quantile_with` for others), `mode`, `skew`, `kurtosis`) computes only
+what it needs: null counts, extremes, moments up
 to the fourth (merged across pieces with Pébay's formulas), every number
 (quantiles by selection, not sorting), hashes (distinct counts, split into
 parts counted on all cores) or value counts (mode). `stats(columns,
 &[Stat])` computes several for several columns in one pass; `describe()`
 gives a frame of them as text. On a sample: `df.sample(fraction, seed)?`.
-Skew and kurtosis are the sample (bias-corrected) ones, as pandas.
+Variance, standard deviation, skew and kurtosis describe the values as a
+population by default (dividing by n; m₃/m₂^1.5; m₄/m₂² − 3); their
+`_with(Estimate::Sample)` versions treat them as a sample (n − 1;
+bias-corrected, as pandas).

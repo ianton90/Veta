@@ -8,7 +8,7 @@ use std::sync::Arc;
 use arrow::array::{Array, AsArray, Float64Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Int64Type, Schema};
 use arrow::record_batch::RecordBatch;
-use veta_core::{DataFrame, Interpolation, Stat, StatValue};
+use veta_core::{DataFrame, Estimate, Interpolation, Stat, StatValue};
 
 /// x: 1..=n with a null every 10th row; name: "a", "b", "b", "c" repeated.
 fn frame(n: i64) -> DataFrame {
@@ -45,7 +45,7 @@ fn column_methods() {
     let values = xs(n);
     let count = values.len() as f64;
     let mean = values.iter().sum::<f64>() / count;
-    let var = values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (count - 1.0);
+    let var = values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / count;
     for df in [frame(n), frame(n).lazy()] {
         let x = df.column("x").unwrap();
         assert_eq!(x.len().unwrap(), n as usize);
@@ -58,7 +58,14 @@ fn column_methods() {
         assert!(close(x.mean().unwrap(), mean));
         assert!(close(x.var().unwrap(), var));
         assert!(close(x.std().unwrap(), var.sqrt()));
-        assert!(close(x.var_with(0).unwrap(), var * (count - 1.0) / count));
+        assert!(close(
+            x.var_with(Estimate::Sample).unwrap(),
+            var * count / (count - 1.0)
+        ));
+        assert!(close(
+            x.std_with(Estimate::Sample).unwrap(),
+            (var * count / (count - 1.0)).sqrt()
+        ));
         let mut sorted = values.clone();
         sorted.sort_by(f64::total_cmp);
         let at = 0.25 * (count - 1.0);
@@ -75,9 +82,12 @@ fn column_methods() {
             x.median().unwrap(),
             sorted[sorted.len() / 2 - 1] / 2.0 + sorted[sorted.len() / 2] / 2.0
         ));
-        // Evenly spread: no skew; flat: negative excess kurtosis.
+        // Evenly spread: no skew; flat: excess kurtosis -1.2 either way, for
+        // this many values.
         assert!(x.skew().unwrap().unwrap().abs() < 1e-3);
-        assert!(close(x.kurtosis().unwrap(), -1.2));
+        assert!(x.skew_with(Estimate::Sample).unwrap().unwrap().abs() < 1e-3);
+        assert!((x.kurtosis().unwrap().unwrap() + 1.2).abs() < 1e-4);
+        assert!((x.kurtosis_with(Estimate::Sample).unwrap().unwrap() + 1.2).abs() < 1e-4);
         let name = df.column("name").unwrap();
         assert_eq!(name.n_unique().unwrap(), 3);
         assert_eq!(name.mode().unwrap().as_string::<i32>().value(0), "b");
