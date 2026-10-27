@@ -251,56 +251,7 @@ impl Accumulator {
     }
 
     pub(super) fn update_extremes(&mut self, array: &ArrayRef) -> Result<()> {
-        let options = SortOptions::default();
-        // Text and numbers: Arrow's kernels find the batch's extremes; other
-        // types compare value by value.
-        if let Some((low, high)) = batch_extremes(array) {
-            let keep = |current: &Option<ArrayRef>, candidate: ArrayRef, want_less: bool| {
-                let Some(current) = current else {
-                    return Ok::<_, Error>(Some(candidate));
-                };
-                let order = make_comparator(candidate.as_ref(), current.as_ref(), options)?(0, 0);
-                let better = if want_less {
-                    order.is_lt()
-                } else {
-                    order.is_gt()
-                };
-                Ok(Some(if better { candidate } else { current.clone() }))
-            };
-            self.min = keep(&self.min, low, true)?;
-            self.max = keep(&self.max, high, false)?;
-            return Ok(());
-        }
-        let compare = make_comparator(array.as_ref(), array.as_ref(), options)?;
-        let mut low: Option<usize> = None;
-        let mut high: Option<usize> = None;
-        for i in (0..array.len()).filter(|&i| array.is_valid(i)) {
-            if low.is_none_or(|l| compare(i, l).is_lt()) {
-                low = Some(i);
-            }
-            if high.is_none_or(|h| compare(i, h).is_gt()) {
-                high = Some(i);
-            }
-        }
-        let pick = |current: &Option<ArrayRef>, candidate: Option<usize>, want_less: bool| {
-            let Some(c) = candidate else {
-                return Ok(current.clone());
-            };
-            let candidate = array.slice(c, 1);
-            let Some(current) = current else {
-                return Ok(Some(candidate));
-            };
-            let order = make_comparator(candidate.as_ref(), current.as_ref(), options)?(0, 0);
-            let better = if want_less {
-                order.is_lt()
-            } else {
-                order.is_gt()
-            };
-            Ok::<_, Error>(Some(if better { candidate } else { current.clone() }))
-        };
-        self.min = pick(&self.min, low, true)?;
-        self.max = pick(&self.max, high, false)?;
-        Ok(())
+        extremes(array, &mut self.min, &mut self.max)
     }
 
     /// The statistics, and the most frequent values (when asked for) as
@@ -489,6 +440,64 @@ fn moments_of(data_type: &DataType) -> Moments {
     } else {
         Moments::None
     }
+}
+
+/// Lowers `min` and raises `max` (one value each) to `array`'s extremes.
+pub(super) fn extremes(
+    array: &ArrayRef,
+    min: &mut Option<ArrayRef>,
+    max: &mut Option<ArrayRef>,
+) -> Result<()> {
+    let options = SortOptions::default();
+    // Text and numbers: Arrow's kernels find the batch's extremes; other
+    // types compare value by value.
+    if let Some((low, high)) = batch_extremes(array) {
+        let keep = |current: &Option<ArrayRef>, candidate: ArrayRef, want_less: bool| {
+            let Some(current) = current else {
+                return Ok::<_, Error>(Some(candidate));
+            };
+            let order = make_comparator(candidate.as_ref(), current.as_ref(), options)?(0, 0);
+            let better = if want_less {
+                order.is_lt()
+            } else {
+                order.is_gt()
+            };
+            Ok(Some(if better { candidate } else { current.clone() }))
+        };
+        *min = keep(min, low, true)?;
+        *max = keep(max, high, false)?;
+        return Ok(());
+    }
+    let compare = make_comparator(array.as_ref(), array.as_ref(), options)?;
+    let mut low: Option<usize> = None;
+    let mut high: Option<usize> = None;
+    for i in (0..array.len()).filter(|&i| array.is_valid(i)) {
+        if low.is_none_or(|l| compare(i, l).is_lt()) {
+            low = Some(i);
+        }
+        if high.is_none_or(|h| compare(i, h).is_gt()) {
+            high = Some(i);
+        }
+    }
+    let pick = |current: &Option<ArrayRef>, candidate: Option<usize>, want_less: bool| {
+        let Some(c) = candidate else {
+            return Ok(current.clone());
+        };
+        let candidate = array.slice(c, 1);
+        let Some(current) = current else {
+            return Ok(Some(candidate));
+        };
+        let order = make_comparator(candidate.as_ref(), current.as_ref(), options)?(0, 0);
+        let better = if want_less {
+            order.is_lt()
+        } else {
+            order.is_gt()
+        };
+        Ok::<_, Error>(Some(if better { candidate } else { current.clone() }))
+    };
+    *min = pick(min, low, true)?;
+    *max = pick(max, high, false)?;
+    Ok(())
 }
 
 /// `array`'s values as floats, for mean, spread and quartiles: numbers as

@@ -138,6 +138,7 @@ error_codes! {
     NotListOrMapAt => "{column} at {path} is not a list or map",
     NotListOrMapColumn => "{column} is not a list or map column",
     NotNullable => "{column} cannot be empty",
+    NotNumericColumn => "{column} doesn't hold numbers",
     NotNullableRow => "{column} cannot be empty (row {row})",
     NotStreamable => "this step can't be streamed",
     NotStruct => "{at} is not a struct",

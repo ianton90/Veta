@@ -42,17 +42,17 @@ enum Seen {
 /// value can be in several pieces, and appending the pieces' hashes to
 /// parts, then sorting each part on its own on all cores, counts them
 /// faster than putting them into one set.
-const PARTS: usize = 64;
+pub(super) const PARTS: usize = 64;
 
 /// Adds `hashes` to their parts.
-fn into_parts(parts: &mut [Vec<u64>], hashes: impl IntoIterator<Item = u64>) {
+pub(super) fn into_parts(parts: &mut [Vec<u64>], hashes: impl IntoIterator<Item = u64>) {
     for hash in hashes {
         parts[(hash >> (64 - PARTS.trailing_zeros())) as usize].push(hash);
     }
 }
 
 /// Distinct hashes in `parts`, each part sorted on its own, on all cores.
-fn count_parts(mut parts: Vec<Vec<u64>>) -> u64 {
+pub(super) fn count_parts(mut parts: Vec<Vec<u64>>) -> u64 {
     let chunk = PARTS.div_ceil(crate::parallel::threads().max(1));
     let total = AtomicU64::new(0);
     std::thread::scope(|scope| {

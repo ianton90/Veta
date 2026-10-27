@@ -45,8 +45,8 @@ impl ColumnRef for usize {
 /// One column of a frame.
 #[derive(Debug, Clone)]
 pub struct Column {
-    frame: DataFrame,
-    position: usize,
+    pub(super) frame: DataFrame,
+    pub(super) position: usize,
 }
 
 impl Column {

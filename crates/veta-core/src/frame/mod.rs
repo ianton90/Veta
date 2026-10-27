@@ -15,6 +15,7 @@ mod column;
 mod columns;
 mod history;
 mod rows;
+mod stats;
 mod steps;
 mod value;
 mod write;

@@ -99,6 +99,7 @@
   "ERR_NOT_LIST_OR_MAP_AT": "{column} at {path} is not a list or map",
   "ERR_NOT_LIST_OR_MAP_COLUMN": "{column} is not a list or map column",
   "ERR_NOT_NULLABLE": "{column} cannot be empty",
+  "ERR_NOT_NUMERIC_COLUMN": "{column} doesn't hold numbers",
   "ERR_NOT_NULLABLE_ROW": "{column} cannot be empty (row {row})",
   "ERR_NOT_STREAMABLE": "this step can't be streamed",
   "ERR_NOT_STRUCT": "{at} is not a struct",

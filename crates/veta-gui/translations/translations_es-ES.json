@@ -99,6 +99,7 @@
   "ERR_NOT_LIST_OR_MAP_AT": "{column} en {path} no es una lista ni un mapa",
   "ERR_NOT_LIST_OR_MAP_COLUMN": "{column} no es una columna de lista ni de mapa",
   "ERR_NOT_NULLABLE": "{column} no puede estar vacía",
+  "ERR_NOT_NUMERIC_COLUMN": "«{column}» no contiene números",
   "ERR_NOT_NULLABLE_ROW": "{column} no puede estar vacía (fila {row})",
   "ERR_NOT_STREAMABLE": "este paso no se puede procesar en flujo",
   "ERR_NOT_STRUCT": "{at} no es una estructura",

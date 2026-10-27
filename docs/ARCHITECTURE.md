@@ -632,6 +632,13 @@ progress work with it unchanged.
 
 ### Statistics
 
-Exact by default; computed on `df.sample(fraction, seed)?` they come from a
-sample instead. Each statistic is its own method on `Column` and computes
-only what it needs; frame-level methods compute several in one pass.
+Exact. Each `Column` method (`count_values`, `count_nulls`, `n_unique`,
+`min`, `max`, `sum`, `mean`, `median`, `std`/`var` (ddof 1, `_with` for
+others), `quantile` (linear, `quantile_with` for others), `mode`, `skew`,
+`kurtosis`) computes only what it needs: null counts, extremes, moments up
+to the fourth (merged across pieces with Pébay's formulas), every number
+(quantiles by selection, not sorting), hashes (distinct counts, split into
+parts counted on all cores) or value counts (mode). `stats(columns,
+&[Stat])` computes several for several columns in one pass; `describe()`
+gives a frame of them as text. On a sample: `df.sample(fraction, seed)?`.
+Skew and kurtosis are the sample (bias-corrected) ones, as pandas.
